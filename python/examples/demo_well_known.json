@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
   "developer_name": "Example Tool Developer",
-  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEzYOBNZGtKvjE3BzgkmHn3Hd8KW64\nnPAbi77f8TzdCkFVYpP10mEKybUnYohMFPeqJa63G44Cd9G71JvgqHgQdQ==\n-----END PUBLIC KEY-----\n",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEoMd1rYu4b7H3MEiPKDgqKKOn1uVe\nk/Dkaba7CLvgcaKS0yD9XhbXK6eUA88Xy2Cxbc55hiF+Rayc1Sb4kq7x/g==\n-----END PUBLIC KEY-----\n",
   "contact": "developer@example.com"
 }

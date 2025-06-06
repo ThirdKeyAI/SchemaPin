@@ -10,7 +10,7 @@ SchemaPin provides cryptographic verification of AI tool schemas using ECDSA P-2
 
 - **ECDSA P-256 Cryptography**: Industry-standard elliptic curve signatures
 - **Schema Canonicalization**: Deterministic JSON serialization for consistent hashing
-- **Public Key Discovery**: Automatic retrieval from `.well-known/schemapin.json` endpoints
+- **Public Key Discovery**: **Automatic retrieval from `.well-known/schemapin.json` endpoints**
 - **Key Pinning**: Trust-On-First-Use security model with persistent storage
 - **Cross-Platform**: Works in Node.js environments
 - **Zero Dependencies**: Uses only Node.js built-in modules
@@ -18,7 +18,9 @@ SchemaPin provides cryptographic verification of AI tool schemas using ECDSA P-2
 ## Installation
 
 ```bash
-npm install schemapin
+# Clone the repository and install dependencies
+cd javascript
+npm install
 ```
 
 ## Quick Start

@@ -25,7 +25,7 @@ SchemaPin provides a robust defense against supply-chain attacks where benign sc
 ### For Tool Developers (Signing Schemas)
 
 ```python
-from schemapin.utils import SchemaSigningWorkflow
+from schemapin.utils import SchemaSigningWorkflow, create_well_known_response
 from schemapin.crypto import KeyManager
 
 # Generate key pair
@@ -37,7 +37,14 @@ workflow = SchemaSigningWorkflow(private_key_pem)
 schema = {
     "name": "calculate_sum",
     "description": "Calculates the sum of two numbers",
-    "parameters": {"a": "number", "b": "number"}
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "a": {"type": "number", "description": "First number"},
+            "b": {"type": "number", "description": "Second number"}
+        },
+        "required": ["a", "b"]
+    }
 }
 signature = workflow.sign_schema(schema)
 
@@ -78,6 +85,13 @@ cd python
 pip install -e .
 ```
 
+### JavaScript/Node.js
+
+```bash
+cd javascript
+npm install
+```
+
 ### Development Setup
 
 ```bash
@@ -90,12 +104,16 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r python/requirements.txt
 
-# Install in development mode
+# Install Python package in development mode
 cd python
 pip install -e .
 
-# Run tests
+# Run Python tests
 python -m pytest tests/ -v
+
+# Run JavaScript tests
+cd ../javascript
+npm test
 ```
 
 ## Examples
@@ -205,8 +223,10 @@ SchemaPin/
 ├── TECHNICAL_SPECIFICATION.md         # Protocol specification
 ├── IMPLEMENTATION_PLAN.md             # Development plan
 ├── LICENSE                            # MIT License
-├── python/                            # Python implementation
+├── python/                            # Python reference implementation
+│   ├── README.md                      # Python-specific documentation
 │   ├── schemapin/                     # Core library
+│   │   ├── __init__.py                # Package exports
 │   │   ├── core.py                    # Schema canonicalization
 │   │   ├── crypto.py                  # Cryptographic operations
 │   │   ├── discovery.py               # Public key discovery
@@ -214,8 +234,20 @@ SchemaPin/
 │   │   └── utils.py                   # High-level workflows
 │   ├── tests/                         # Test suite
 │   ├── examples/                      # Usage examples
+│   ├── requirements.txt               # Dependencies
 │   └── setup.py                       # Package configuration
-└── javascript/                        # JavaScript implementation (planned)
+└── javascript/                        # JavaScript implementation
+    ├── README.md                      # JavaScript-specific documentation
+    ├── package.json                   # NPM package configuration
+    ├── src/                           # Core library
+    │   ├── index.js                   # Package exports
+    │   ├── core.js                    # Schema canonicalization
+    │   ├── crypto.js                  # Cryptographic operations
+    │   ├── discovery.js               # Public key discovery
+    │   ├── pinning.js                 # Key pinning storage
+    │   └── utils.js                   # High-level workflows
+    ├── tests/                         # Test suite
+    └── examples/                      # Usage examples
 ```
 
 ## Contributing
