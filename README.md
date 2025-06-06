@@ -20,6 +20,29 @@ SchemaPin provides a robust defense against supply-chain attacks where benign sc
 - ✅ **Standard Compliance**: Follows RFC 8615 for key discovery
 - ✅ **Comprehensive Testing**: Full test suite with security validation
 
+```mermaid
+flowchart TD
+    A[Tool Developer] -->|Publishes| B["/.well-known/schemapin.json (Public Key)"]
+    A -->|Signs| C["Tool Schema + Signature"]
+
+    subgraph "AI Agent"
+        D["Fetch Schema + Signature"]
+        E["Fetch or Cache Public Key"]
+        F["Verify Signature"]
+        G{"Signature Valid?"}
+        H["Accept & Use Tool Schema"]
+        I["Reject / Block Tool"]
+    end
+
+    C --> D
+    B --> E
+    D --> F
+    E --> F
+    F --> G
+    G -- Yes --> H
+    G -- No --> I
+```
+
 ## Quick Start
 
 ### For Tool Developers (Signing Schemas)
