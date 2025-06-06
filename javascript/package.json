@@ -1,0 +1,40 @@
+{
+  "name": "schemapin",
+  "version": "1.0.0",
+  "description": "Cryptographic schema integrity verification for AI tools",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:watch": "node --test --watch tests/*.test.js",
+    "example:developer": "node examples/developer.js",
+    "example:client": "node examples/client.js"
+  },
+  "keywords": [
+    "cryptography",
+    "schema",
+    "verification",
+    "ecdsa",
+    "ai-tools",
+    "security"
+  ],
+  "author": "ThirdKey",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thirdkey/schemapin"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "exports": {
+    ".": "./src/index.js",
+    "./core": "./src/core.js",
+    "./crypto": "./src/crypto.js",
+    "./discovery": "./src/discovery.js",
+    "./pinning": "./src/pinning.js",
+    "./utils": "./src/utils.js"
+  }
+}
