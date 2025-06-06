@@ -1,0 +1,24 @@
+{
+  "schema": {
+    "name": "calculate_sum",
+    "description": "Calculates the sum of two numbers",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "a": {
+          "type": "number",
+          "description": "First number"
+        },
+        "b": {
+          "type": "number",
+          "description": "Second number"
+        }
+      },
+      "required": [
+        "a",
+        "b"
+      ]
+    }
+  },
+  "signature": "MEUCIAs1rLtLp8ZtX9VUTOV7Ja1ttpO+h2+a50ffFmPww7GnAiEAiG0NnkXyhLHCrBTBSxCuwuLH44JcXvVcAPii/tECh5M="
+}
