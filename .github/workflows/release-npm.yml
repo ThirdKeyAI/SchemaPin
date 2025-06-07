@@ -1,0 +1,159 @@
+name: Release npm Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.1.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (skip actual publish)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  release-npm:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        registry-url: 'https://registry.npmjs.org'
+
+    - name: Install dependencies
+      run: |
+        cd javascript
+        npm ci
+
+    - name: Run tests
+      run: |
+        cd javascript
+        npm test
+
+    - name: Run linting
+      run: |
+        cd javascript
+        npm run lint
+
+    - name: Validate package.json
+      run: |
+        cd javascript
+        node -e "
+          const pkg = require('./package.json');
+          if (!pkg.name || !pkg.version || !pkg.description) {
+            console.error('Missing required package.json fields');
+            process.exit(1);
+          }
+          console.log('Package validation passed');
+        "
+
+    - name: Check version consistency
+      run: |
+        cd javascript
+        JS_VERSION=$(node -p "require('./package.json').version")
+        cd ../python
+        PY_VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
+        if [ "$JS_VERSION" != "$PY_VERSION" ]; then
+          echo "Version mismatch: JS=$JS_VERSION, Python=$PY_VERSION"
+          exit 1
+        fi
+        echo "Version consistency check passed: $JS_VERSION"
+
+    - name: Build package
+      run: |
+        cd javascript
+        npm pack
+
+    - name: Test package installation
+      run: |
+        cd javascript
+        PACKAGE_FILE=$(ls *.tgz)
+        mkdir -p ../test-install
+        cd ../test-install
+        cat > package.json << 'EOF'
+        {
+          "name": "test-install",
+          "version": "1.0.0",
+          "type": "module"
+        }
+        EOF
+        npm install "../javascript/$PACKAGE_FILE"
+        cat > test.js << 'EOF'
+        import { KeyManager, SchemaPinCore } from 'schemapin';
+        try {
+          const { privateKey, publicKey } = KeyManager.generateKeypair();
+          const core = new SchemaPinCore();
+          console.log('✅ Package installation test passed');
+        } catch (error) {
+          console.error('❌ Package test failed:', error);
+          process.exit(1);
+        }
+        EOF
+        node test.js
+
+    - name: Check if version exists on npm
+      run: |
+        cd javascript
+        PACKAGE_NAME=$(node -p "require('./package.json').name")
+        VERSION=$(node -p "require('./package.json').version")
+        if npm view "$PACKAGE_NAME@$VERSION" version 2>/dev/null; then
+          echo "Version $VERSION already exists on npm"
+          exit 1
+        fi
+        echo "Version $VERSION is available for publishing"
+
+    - name: Publish to npm (dry run)
+      if: ${{ github.event.inputs.dry_run == 'true' }}
+      run: |
+        cd javascript
+        npm publish --dry-run --access public
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+    - name: Publish to npm
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: |
+        cd javascript
+        npm publish --access public
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+    - name: Create GitHub Release
+      if: ${{ github.event.inputs.dry_run != 'true' && startsWith(github.ref, 'refs/tags/') }}
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: Release ${{ github.ref_name }}
+        body: |
+          ## npm Package Release
+          
+          Published `schemapin@${{ github.ref_name }}` to npm registry.
+          
+          ### Installation
+          ```bash
+          npm install schemapin
+          ```
+          
+          ### Changes
+          See [CHANGELOG.md](./CHANGELOG.md) for details.
+        draft: false
+        prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+
+# Required secrets to configure in GitHub repository settings:
+# - NPM_TOKEN: npm authentication token with publish permissions
+#   Generate at: https://www.npmjs.com/settings/tokens
+#   Should be an "Automation" token with "Publish" permission

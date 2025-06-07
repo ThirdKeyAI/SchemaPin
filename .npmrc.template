@@ -1,0 +1,22 @@
+# npm configuration template for SchemaPin project
+# Copy this file to .npmrc and configure as needed
+
+# Registry configuration
+registry=https://registry.npmjs.org/
+
+# Authentication token (set via environment variable or npm login)
+# //registry.npmjs.org/:_authToken=${NPM_TOKEN}
+
+# Package access configuration
+access=public
+
+# Publishing configuration
+publish-config.access=public
+publish-config.registry=https://registry.npmjs.org/
+
+# Security settings
+audit-level=moderate
+fund=false
+
+# Cache configuration
+cache=/tmp/.npm

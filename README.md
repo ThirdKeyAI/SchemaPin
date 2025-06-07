@@ -1,6 +1,45 @@
 # SchemaPin 🧷
 
+[![npm version](https://badge.fury.io/js/schemapin.svg)](https://www.npmjs.com/package/schemapin)
+[![PyPI version](https://badge.fury.io/py/schemapin.svg)](https://pypi.org/project/schemapin/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub issues](https://img.shields.io/github/issues/thirdkey/schemapin.svg)](https://github.com/thirdkey/schemapin/issues)
+[![GitHub stars](https://img.shields.io/github/stars/thirdkey/schemapin.svg)](https://github.com/thirdkey/schemapin/stargazers)
+
 A cryptographic protocol for ensuring the integrity and authenticity of tool schemas used by AI agents. SchemaPin prevents "MCP Rug Pull" attacks by enabling developers to cryptographically sign their tool schemas and allowing clients to verify that schemas have not been altered since publication.
+
+## Table of Contents
+
+- [About](#about)
+  - [Core Security Guarantees](#core-security-guarantees)
+  - [Broader Threat Protection](#broader-threat-protection)
+  - [Real-World Attack Scenario: The "MCP Rug Pull"](#real-world-attack-scenario-the-mcp-rug-pull)
+  - [Ecosystem and Trust Benefits](#ecosystem-and-trust-benefits)
+- [Overview](#overview)
+- [Features](#features)
+- [Quick Start](#quick-start)
+  - [For Tool Developers (Signing Schemas)](#for-tool-developers-signing-schemas)
+  - [For AI Clients (Verifying Schemas)](#for-ai-clients-verifying-schemas)
+- [Installation](#installation)
+  - [From Package Repositories (Recommended)](#from-package-repositories-recommended)
+  - [From Source (Development)](#from-source-development)
+  - [Package Building](#package-building)
+- [Examples](#examples)
+- [Architecture](#architecture)
+  - [Core Components](#core-components)
+  - [Workflow](#workflow)
+- [Security](#security)
+  - [Cryptographic Standards](#cryptographic-standards)
+  - [Schema Canonicalization](#schema-canonicalization)
+  - [Key Pinning](#key-pinning)
+- [Documentation](#documentation)
+- [Testing](#testing)
+- [Project Structure](#project-structure)
+- [GitHub Actions Workflows](#github-actions-workflows)
+- [Contributing](#contributing)
+- [License](#license)
+- [Security Considerations](#security-considerations)
+- [Contact](#contact)
 
 ## About
 
@@ -282,13 +321,22 @@ SchemaPin uses Trust-On-First-Use (TOFU) key pinning:
 - Users are prompted before trusting new keys
 - Pinned keys are stored securely with metadata
 
-## Protocol Specification
+## Documentation
 
-See [`TECHNICAL_SPECIFICATION.md`](TECHNICAL_SPECIFICATION.md) for complete protocol details.
+### Core Documentation
+- **[Technical Specification](TECHNICAL_SPECIFICATION.md)** - Complete protocol details and cryptographic specifications
+- **[Implementation Plan](IMPLEMENTATION_PLAN.md)** - Development roadmap and architecture decisions
+- **[Enhancement Plan](SCHEMAPIN_ENHANCEMENT_PLAN.md)** - Latest feature enhancements and improvements
+- **[Changelog](CHANGELOG.md)** - Version history and release notes
 
-## Implementation Plan
+### Language-Specific Documentation
+- **[Python Implementation](python/README.md)** - Python package documentation, CLI tools, and examples
+- **[JavaScript Implementation](javascript/README.md)** - JavaScript/Node.js package documentation and examples
 
-See [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) for development roadmap and architecture decisions.
+### Integration and Deployment
+- **[Integration Demo](integration_demo/README.md)** - Cross-language integration examples and test scenarios
+- **[Production Server](server/README.md)** - Well-known endpoint server for production deployment
+- **[GitHub Actions Workflows](.github/workflows/README.md)** - Automated release and CI/CD documentation
 
 ## Testing
 
@@ -307,6 +355,35 @@ python tool_developer.py
 python client_verification.py
 ```
 
+## GitHub Actions Workflows
+
+SchemaPin includes automated CI/CD workflows for package releases:
+
+### Available Workflows
+- **[Release npm Package](.github/workflows/release-npm.yml)** - Automated npm package publishing
+- **[Release PyPI Package](.github/workflows/release-pypi.yml)** - Automated PyPI package publishing
+- **[Release Both Packages](.github/workflows/release-combined.yml)** - Coordinated dual-package release
+
+### Workflow Features
+- ✅ Version consistency validation between JavaScript and Python packages
+- ✅ Comprehensive testing (unit tests, linting, security checks)
+- ✅ Package installation testing in clean environments
+- ✅ Test PyPI publishing before production release
+- ✅ Automated GitHub release creation with changelogs
+- ✅ Dry run support for testing workflows
+
+### Usage
+```bash
+# Automatic release via git tags
+git tag v1.2.0
+git push origin v1.2.0
+
+# Manual release via GitHub Actions UI
+# Go to Actions tab → Select workflow → Run workflow
+```
+
+See **[GitHub Actions Documentation](.github/workflows/README.md)** for detailed setup and usage instructions.
+
 ## Project Structure
 
 ```
@@ -315,6 +392,11 @@ SchemaPin/
 ├── TECHNICAL_SPECIFICATION.md         # Protocol specification
 ├── IMPLEMENTATION_PLAN.md             # Development plan
 ├── LICENSE                            # MIT License
+├── .github/workflows/                 # GitHub Actions CI/CD
+│   ├── release-npm.yml                # npm package release
+│   ├── release-pypi.yml               # PyPI package release
+│   ├── release-combined.yml           # Dual package release
+│   └── README.md                      # Workflow documentation
 ├── python/                            # Python reference implementation
 │   ├── README.md                      # Python-specific documentation
 │   ├── schemapin/                     # Core library
@@ -328,18 +410,21 @@ SchemaPin/
 │   ├── examples/                      # Usage examples
 │   ├── requirements.txt               # Dependencies
 │   └── setup.py                       # Package configuration
-└── javascript/                        # JavaScript implementation
-    ├── README.md                      # JavaScript-specific documentation
-    ├── package.json                   # NPM package configuration
-    ├── src/                           # Core library
-    │   ├── index.js                   # Package exports
-    │   ├── core.js                    # Schema canonicalization
-    │   ├── crypto.js                  # Cryptographic operations
-    │   ├── discovery.js               # Public key discovery
-    │   ├── pinning.js                 # Key pinning storage
-    │   └── utils.js                   # High-level workflows
-    ├── tests/                         # Test suite
-    └── examples/                      # Usage examples
+├── javascript/                        # JavaScript implementation
+│   ├── README.md                      # JavaScript-specific documentation
+│   ├── package.json                   # NPM package configuration
+│   ├── src/                           # Core library
+│   │   ├── index.js                   # Package exports
+│   │   ├── core.js                    # Schema canonicalization
+│   │   ├── crypto.js                  # Cryptographic operations
+│   │   ├── discovery.js               # Public key discovery
+│   │   ├── pinning.js                 # Key pinning storage
+│   │   └── utils.js                   # High-level workflows
+│   ├── tests/                         # Test suite
+│   └── examples/                      # Usage examples
+├── integration_demo/                  # Cross-language integration
+├── server/                            # Production .well-known server
+└── scripts/                           # Build and deployment scripts
 ```
 
 ## Contributing

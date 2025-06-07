@@ -1,0 +1,243 @@
+name: Release Both Packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.1.0)'
+        required: true
+        type: string
+      npm_only:
+        description: 'Release npm package only'
+        required: false
+        type: boolean
+        default: false
+      pypi_only:
+        description: 'Release PyPI package only'
+        required: false
+        type: boolean
+        default: false
+      test_pypi_only:
+        description: 'Publish to Test PyPI only'
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run (skip actual publish)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Check version consistency
+      id: version
+      run: |
+        cd javascript
+        JS_VERSION=$(node -p "require('./package.json').version")
+        cd ../python
+        PY_VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
+        if [ "$JS_VERSION" != "$PY_VERSION" ]; then
+          echo "Version mismatch: JS=$JS_VERSION, Python=$PY_VERSION"
+          exit 1
+        fi
+        echo "version=$JS_VERSION" >> $GITHUB_OUTPUT
+        echo "Version consistency check passed: $JS_VERSION"
+
+    - name: Run build script validation
+      run: |
+        python scripts/build_packages.py clean
+        python scripts/build_packages.py test
+
+  release-npm:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.inputs.pypi_only }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        registry-url: 'https://registry.npmjs.org'
+
+    - name: Install dependencies and test
+      run: |
+        cd javascript
+        npm ci
+        npm test
+        npm run lint
+
+    - name: Build and test package
+      run: |
+        cd javascript
+        npm pack
+        
+        # Test installation
+        PACKAGE_FILE=$(ls *.tgz)
+        mkdir -p ../test-install
+        cd ../test-install
+        cat > package.json << 'EOF'
+        {
+          "name": "test-install",
+          "version": "1.0.0",
+          "type": "module"
+        }
+        EOF
+        npm install "../javascript/$PACKAGE_FILE"
+        cat > test.js << 'EOF'
+        import { KeyManager, SchemaPinCore } from 'schemapin';
+        try {
+          const { privateKey, publicKey } = KeyManager.generateKeypair();
+          const core = new SchemaPinCore();
+          console.log('✅ Package installation test passed');
+        } catch (error) {
+          console.error('❌ Package test failed:', error);
+          process.exit(1);
+        }
+        EOF
+        node test.js
+
+    - name: Publish to npm
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: |
+        cd javascript
+        npm publish --access public
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  release-pypi:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.inputs.npm_only }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies and test
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine
+        cd python
+        pip install -e ".[dev]"
+        python -m pytest tests/ -v
+        ruff check .
+        bandit -r . --exclude tests/
+
+    - name: Build and test package
+      run: |
+        cd python
+        python -m build
+        twine check dist/*
+        
+        # Test installation
+        python -m venv test_env
+        source test_env/bin/activate
+        pip install dist/*.whl
+        python -c "
+        import schemapin
+        from schemapin.crypto import KeyManager
+        print('✅ Package installation test passed')
+        "
+
+    - name: Publish to Test PyPI
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: |
+        cd python
+        twine upload --repository testpypi dist/*
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
+
+    - name: Publish to PyPI
+      if: ${{ github.event.inputs.dry_run != 'true' && github.event.inputs.test_pypi_only != 'true' }}
+      run: |
+        cd python
+        twine upload dist/*
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+  create-release:
+    needs: [validate, release-npm, release-pypi]
+    runs-on: ubuntu-latest
+    if: ${{ always() && !github.event.inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Create GitHub Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: Release ${{ github.ref_name }}
+        body: |
+          ## SchemaPin Release ${{ github.ref_name }}
+          
+          Dual-language cryptographic schema integrity verification package.
+          
+          ### npm Installation
+          ```bash
+          npm install schemapin
+          ```
+          
+          ### PyPI Installation
+          ```bash
+          pip install schemapin
+          ```
+          
+          ### CLI Tools (Python)
+          ```bash
+          schemapin-keygen --help
+          schemapin-sign --help
+          schemapin-verify --help
+          ```
+          
+          ### Changes
+          See [CHANGELOG.md](./CHANGELOG.md) for detailed changes.
+          
+          ### Package Links
+          - [npm package](https://www.npmjs.com/package/schemapin)
+          - [PyPI package](https://pypi.org/project/schemapin/)
+        draft: false
+        prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+
+# Required secrets to configure in GitHub repository settings:
+# - NPM_TOKEN: npm authentication token
+# - PYPI_API_TOKEN: PyPI API token  
+# - TEST_PYPI_API_TOKEN: Test PyPI API token

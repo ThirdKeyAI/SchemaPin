@@ -1,0 +1,17 @@
+# PyPI configuration template for SchemaPin project
+# Copy this file to ~/.pypirc and configure with your credentials
+
+[distutils]
+index-servers =
+    pypi
+    testpypi
+
+[pypi]
+repository = https://upload.pypi.org/legacy/
+username = __token__
+password = <your-pypi-api-token>
+
+[testpypi]
+repository = https://test.pypi.org/legacy/
+username = __token__
+password = <your-test-pypi-api-token>

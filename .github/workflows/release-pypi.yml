@@ -1,0 +1,230 @@
+name: Release PyPI Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.1.0)'
+        required: true
+        type: string
+      test_pypi_only:
+        description: 'Publish to Test PyPI only'
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Dry run (skip actual publish)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  release-pypi:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build twine
+
+    - name: Install package dependencies
+      run: |
+        cd python
+        pip install -e ".[dev]"
+
+    - name: Run tests
+      run: |
+        cd python
+        python -m pytest tests/ -v
+
+    - name: Run ruff checks
+      run: |
+        cd python
+        ruff check .
+
+    - name: Run bandit security checks
+      run: |
+        cd python
+        bandit -r . --exclude tests/
+
+    - name: Check version consistency
+      run: |
+        cd python
+        PY_VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
+        cd ../javascript
+        JS_VERSION=$(node -p "require('./package.json').version")
+        if [ "$PY_VERSION" != "$JS_VERSION" ]; then
+          echo "Version mismatch: Python=$PY_VERSION, JS=$JS_VERSION"
+          exit 1
+        fi
+        echo "Version consistency check passed: $PY_VERSION"
+
+    - name: Build package
+      run: |
+        cd python
+        python -m build
+
+    - name: Check package
+      run: |
+        cd python
+        twine check dist/*
+
+    - name: Test package installation
+      run: |
+        cd python
+        # Create virtual environment for testing
+        python -m venv test_env
+        source test_env/bin/activate
+        
+        # Install built package
+        pip install dist/*.whl
+        
+        # Test basic functionality
+        python -c "
+        import schemapin
+        from schemapin.crypto import KeyManager
+        from schemapin.core import SchemaPinCore
+        
+        # Test basic functionality
+        private_key, public_key = KeyManager.generate_keypair()
+        core = SchemaPinCore()
+        schema = {'test': 'schema'}
+        canonical = core.canonicalize_schema(schema)
+        print('✅ Package installation test passed')
+        "
+        
+        # Test CLI tools
+        schemapin-keygen --help
+        schemapin-sign --help
+        schemapin-verify --help
+
+    - name: Check if version exists on PyPI
+      run: |
+        cd python
+        PACKAGE_NAME=$(grep '^name = ' pyproject.toml | cut -d'"' -f2)
+        VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
+        if pip index versions "$PACKAGE_NAME" 2>/dev/null | grep -q "$VERSION"; then
+          echo "Version $VERSION already exists on PyPI"
+          exit 1
+        fi
+        echo "Version $VERSION is available for publishing"
+
+    - name: Publish to Test PyPI (dry run)
+      if: ${{ github.event.inputs.dry_run == 'true' }}
+      run: |
+        cd python
+        echo "Dry run - would publish to Test PyPI:"
+        ls -la dist/
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
+
+    - name: Publish to Test PyPI
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: |
+        cd python
+        twine upload --repository testpypi dist/*
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.TEST_PYPI_API_TOKEN }}
+
+    - name: Test installation from Test PyPI
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: |
+        # Wait for package to be available
+        sleep 60
+        
+        # Create fresh environment
+        python -m venv test_testpypi
+        source test_testpypi/bin/activate
+        
+        # Install from Test PyPI
+        pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ schemapin
+        
+        # Test functionality
+        python -c "
+        import schemapin
+        from schemapin.crypto import KeyManager
+        print('✅ Test PyPI installation successful')
+        "
+
+    - name: Publish to PyPI (production)
+      if: ${{ github.event.inputs.dry_run != 'true' && github.event.inputs.test_pypi_only != 'true' }}
+      run: |
+        cd python
+        twine upload dist/*
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+    - name: Test installation from PyPI
+      if: ${{ github.event.inputs.dry_run != 'true' && github.event.inputs.test_pypi_only != 'true' }}
+      run: |
+        # Wait for package to be available
+        sleep 60
+        
+        # Create fresh environment
+        python -m venv test_pypi
+        source test_pypi/bin/activate
+        
+        # Install from PyPI
+        pip install schemapin
+        
+        # Test functionality
+        python -c "
+        import schemapin
+        from schemapin.crypto import KeyManager
+        print('✅ PyPI installation successful')
+        "
+
+    - name: Create GitHub Release
+      if: ${{ github.event.inputs.dry_run != 'true' && startsWith(github.ref, 'refs/tags/') }}
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: Release ${{ github.ref_name }}
+        body: |
+          ## PyPI Package Release
+          
+          Published `schemapin==${{ github.ref_name }}` to PyPI.
+          
+          ### Installation
+          ```bash
+          pip install schemapin
+          ```
+          
+          ### CLI Tools
+          ```bash
+          schemapin-keygen --help
+          schemapin-sign --help
+          schemapin-verify --help
+          ```
+          
+          ### Changes
+          See [CHANGELOG.md](./CHANGELOG.md) for details.
+        draft: false
+        prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+
+# Required secrets to configure in GitHub repository settings:
+# - PYPI_API_TOKEN: PyPI API token with upload permissions
+#   Generate at: https://pypi.org/manage/account/token/
+#   Should have "Entire account" scope or specific project scope
+# - TEST_PYPI_API_TOKEN: Test PyPI API token with upload permissions
+#   Generate at: https://test.pypi.org/manage/account/token/
+#   Should have "Entire account" scope or specific project scope
