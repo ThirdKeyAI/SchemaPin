@@ -2,8 +2,12 @@
 
 from setuptools import find_packages, setup
 
-with open("../README.md", encoding="utf-8") as fh:
-    long_description = fh.read()
+try:
+    with open("../README.md", encoding="utf-8") as fh:
+        long_description = fh.read()
+except FileNotFoundError:
+    # Fallback for build environments where README.md might not be available
+    long_description = "Cryptographic schema integrity verification for AI tools"
 
 setup(
     name="schemapin",

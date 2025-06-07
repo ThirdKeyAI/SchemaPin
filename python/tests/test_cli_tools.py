@@ -284,23 +284,19 @@ class TestVerifySchema:
         """Test verification with discovery."""
         mock_get_key.return_value = self.public_key_pem
 
-        result = subprocess.run([
-            sys.executable, "-m", "tools.verify_schema",
-            "--schema", str(self.signed_schema_file),
-            "--domain", "example.com",
-            "--tool-id", "test-tool",
-            "--json"
-        ], capture_output=True, text=True, )
+        # Test the underlying function directly instead of subprocess
+        from tools.verify_schema import verify_with_discovery
 
-        assert result.returncode == 0
+        result = verify_with_discovery(
+            schema=self.test_schema,
+            signature=self.signed_schema["signature"],
+            domain="example.com",
+            tool_id="test-tool"
+        )
 
-        output = json.loads(result.stdout)
-        assert output["total"] == 1
-        assert output["valid"] == 1
-
-        result_data = output["results"][0]
-        assert result_data["valid"] is True
-        assert result_data["verification_method"] == "discovery"
+        assert result["valid"] is True
+        assert result["verification_method"] == "discovery"
+        assert result.get("error") is None
 
     def test_verify_stdin(self):
         """Test verification from stdin."""

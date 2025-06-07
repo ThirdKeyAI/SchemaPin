@@ -114,8 +114,14 @@ class PackageBuilder:
         print("🐍 Running Python tests and quality checks...")
         
         try:
+            # Install test dependencies first
+            print("📦 Installing test dependencies...")
+            result = self.run_command(["python", "-m", "pip", "install", "-e", ".[dev]"],
+                                    cwd=self.python_dir)
+            print("✅ Test dependencies installed")
+            
             # Run tests
-            result = self.run_command(["python", "-m", "pytest", "tests/", "-v"], 
+            result = self.run_command(["python", "-m", "pytest", "tests/", "-v"],
                                     cwd=self.python_dir)
             print("✅ Python tests passed")
             
@@ -124,7 +130,7 @@ class PackageBuilder:
             print("✅ Ruff checks passed")
             
             # Run bandit
-            result = self.run_command(["bandit", "-r", ".", "--exclude", "tests/"], 
+            result = self.run_command(["bandit", "-r", ".", "--exclude", "tests/"],
                                     cwd=self.python_dir)
             print("✅ Bandit security checks passed")
             
@@ -154,6 +160,12 @@ class PackageBuilder:
         print("🐍 Building Python package...")
         
         try:
+            # Install build dependencies
+            print("📦 Installing build dependencies...")
+            result = self.run_command(["python", "-m", "pip", "install", "build", "wheel"],
+                                    cwd=self.python_dir)
+            print("✅ Build dependencies installed")
+            
             # Build using build module
             result = self.run_command(["python", "-m", "build"], cwd=self.python_dir)
             print("✅ Python package built successfully")
