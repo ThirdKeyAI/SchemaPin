@@ -9,9 +9,9 @@ import { SchemaPinCore } from '../src/core.js';
 describe('SchemaPinCore', () => {
     test('canonicalizeSchema - basic', () => {
         const schema = {
-            description: "Calculates the sum",
-            name: "calculate_sum",
-            parameters: { b: "integer", a: "integer" }
+            description: 'Calculates the sum',
+            name: 'calculate_sum',
+            parameters: { b: 'integer', a: 'integer' }
         };
         
         const expected = '{"description":"Calculates the sum","name":"calculate_sum","parameters":{"a":"integer","b":"integer"}}';
@@ -22,13 +22,13 @@ describe('SchemaPinCore', () => {
 
     test('canonicalizeSchema - nested objects', () => {
         const schema = {
-            name: "complex_tool",
+            name: 'complex_tool',
             parameters: {
                 config: {
                     timeout: 30,
                     retries: 3
                 },
-                data: ["item1", "item2"]
+                data: ['item1', 'item2']
             }
         };
         
@@ -41,15 +41,15 @@ describe('SchemaPinCore', () => {
 
     test('canonicalizeSchema - unicode characters', () => {
         const schema = {
-            name: "unicode_tool",
-            description: "Tool with émojis 🔧 and ñoñó"
+            name: 'unicode_tool',
+            description: 'Tool with émojis 🔧 and ñoñó'
         };
         
         const result = SchemaPinCore.canonicalizeSchema(schema);
         
         // Should preserve Unicode characters
-        assert(result.includes("émojis 🔧"));
-        assert(result.includes("ñoñó"));
+        assert(result.includes('émojis 🔧'));
+        assert(result.includes('ñoñó'));
     });
 
     test('hashCanonical', () => {
@@ -62,7 +62,7 @@ describe('SchemaPinCore', () => {
     });
 
     test('canonicalizeAndHash', () => {
-        const schema = { name: "test", value: 42 };
+        const schema = { name: 'test', value: 42 };
         const hashResult = SchemaPinCore.canonicalizeAndHash(schema);
         
         // Should return 32 bytes
@@ -82,7 +82,7 @@ describe('SchemaPinCore', () => {
     });
 
     test('hashing is deterministic', () => {
-        const schema = { name: "test", value: 42 };
+        const schema = { name: 'test', value: 42 };
         
         const hash1 = SchemaPinCore.canonicalizeAndHash(schema);
         const hash2 = SchemaPinCore.canonicalizeAndHash(schema);

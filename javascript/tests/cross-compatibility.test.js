@@ -39,9 +39,9 @@ describe('Cross-Compatibility with Python Implementation', () => {
     test('canonicalization produces same result as Python', () => {
         // Test with the same schema structure used in Python tests
         const schema = {
-            description: "Calculates the sum",
-            name: "calculate_sum", 
-            parameters: { b: "integer", a: "integer" }
+            description: 'Calculates the sum',
+            name: 'calculate_sum', 
+            parameters: { b: 'integer', a: 'integer' }
         };
         
         const expected = '{"description":"Calculates the sum","name":"calculate_sum","parameters":{"a":"integer","b":"integer"}}';
@@ -52,13 +52,13 @@ describe('Cross-Compatibility with Python Implementation', () => {
 
     test('nested object canonicalization matches Python', () => {
         const schema = {
-            name: "complex_tool",
+            name: 'complex_tool',
             parameters: {
                 config: {
                     timeout: 30,
                     retries: 3
                 },
-                data: ["item1", "item2"]
+                data: ['item1', 'item2']
             }
         };
         
@@ -71,15 +71,15 @@ describe('Cross-Compatibility with Python Implementation', () => {
 
     test('unicode handling matches Python', () => {
         const schema = {
-            name: "unicode_tool",
-            description: "Tool with émojis 🔧 and ñoñó"
+            name: 'unicode_tool',
+            description: 'Tool with émojis 🔧 and ñoñó'
         };
         
         const result = SchemaPinCore.canonicalizeSchema(schema);
         
         // Should preserve Unicode characters like Python
-        assert(result.includes("émojis 🔧"));
-        assert(result.includes("ñoñó"));
+        assert(result.includes('émojis 🔧'));
+        assert(result.includes('ñoñó'));
         assert(result.includes('"description":"Tool with émojis 🔧 and ñoñó"'));
     });
 

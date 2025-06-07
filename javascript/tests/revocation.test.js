@@ -75,17 +75,17 @@ describe('Key Revocation', () => {
         const { publicKey } = KeyManager.generateKeypair();
         
         const revokedKeys = [
-            "sha256:abc123def456",
-            "sha256:789xyz012uvw"
+            'sha256:abc123def456',
+            'sha256:789xyz012uvw'
         ];
         
         // Create response with revoked keys
         const response = createWellKnownResponse(
             publicKey,
-            "Test Developer",
-            "test@example.com",
+            'Test Developer',
+            'test@example.com',
             revokedKeys,
-            "1.1"
+            '1.1'
         );
         
         // Verify response structure
@@ -103,7 +103,7 @@ describe('Key Revocation', () => {
         // Create response without revoked keys
         const response = createWellKnownResponse(
             publicKey,
-            "Test Developer"
+            'Test Developer'
         );
         
         // Verify response structure
@@ -120,7 +120,7 @@ describe('Key Revocation', () => {
         // Create response with empty revoked keys
         const response = createWellKnownResponse(
             publicKey,
-            "Test Developer",
+            'Test Developer',
             null,
             []
         );
@@ -139,10 +139,10 @@ describe('Key Revocation', () => {
         // Create response with schema version 1.0
         const response = createWellKnownResponse(
             publicKey,
-            "Test Developer",
+            'Test Developer',
             null,
             null,
-            "1.0"
+            '1.0'
         );
         
         // Verify response structure

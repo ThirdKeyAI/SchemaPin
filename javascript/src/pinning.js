@@ -366,13 +366,13 @@ export class KeyPinning {
             } else {
                 // Different key - handle key change
                 return await this._handleKeyChange(toolId, domain, existingKey,
-                                                 publicKeyPem, developerName);
+                    publicKeyPem, developerName);
             }
         }
         
         // First-time key encounter
         return await this._handleFirstTimeKey(toolId, domain, publicKeyPem,
-                                            developerName, forcePrompt);
+            developerName, forcePrompt);
     }
 
     /**

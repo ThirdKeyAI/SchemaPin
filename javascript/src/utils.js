@@ -156,7 +156,7 @@ export class SchemaVerificationWorkflow {
  * @param {string} schemaVersion - Schema version (default: "1.1")
  * @returns {Object} Object suitable for .well-known response
  */
-export function createWellKnownResponse(publicKeyPem, developerName, contact = null, revokedKeys = null, schemaVersion = "1.1") {
+export function createWellKnownResponse(publicKeyPem, developerName, contact = null, revokedKeys = null, schemaVersion = '1.1') {
     const response = {
         schema_version: schemaVersion,
         developer_name: developerName,

@@ -133,15 +133,15 @@ export class ConsoleInteractiveHandler extends InteractiveHandler {
         console.log('='.repeat(60));
 
         switch (context.promptType) {
-            case PromptType.FIRST_TIME_KEY:
-                this._displayFirstTimePrompt(context);
-                break;
-            case PromptType.KEY_CHANGE:
-                this._displayKeyChangePrompt(context);
-                break;
-            case PromptType.REVOKED_KEY:
-                this._displayRevokedKeyPrompt(context);
-                break;
+        case PromptType.FIRST_TIME_KEY:
+            this._displayFirstTimePrompt(context);
+            break;
+        case PromptType.KEY_CHANGE:
+            this._displayKeyChangePrompt(context);
+            break;
+        case PromptType.REVOKED_KEY:
+            this._displayRevokedKeyPrompt(context);
+            break;
         }
 
         return await this._getUserChoice(context.promptType);
@@ -404,7 +404,7 @@ export class InteractivePinningManager {
      * @returns {KeyInfo} KeyInfo object
      */
     createKeyInfo(publicKeyPem, domain, developerName = null, 
-                  pinnedAt = null, lastVerified = null, isRevoked = false) {
+        pinnedAt = null, lastVerified = null, isRevoked = false) {
         let fingerprint;
         try {
             fingerprint = this._calculateKeyFingerprint(publicKeyPem);
@@ -462,7 +462,7 @@ export class InteractivePinningManager {
      * @returns {Promise<string>} User's decision
      */
     async promptKeyChange(toolId, domain, currentKeyPem, newKeyPem, 
-                         currentKeyInfo = null, developerInfo = null) {
+        currentKeyInfo = null, developerInfo = null) {
         const currentKey = this.createKeyInfo(
             currentKeyPem,
             domain,
