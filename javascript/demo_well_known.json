@@ -1,6 +1,10 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "developer_name": "Example Tool Developer",
   "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEqgRYV9VQHHM7KH5kprlIR1RxvmWT\nJhs0kEi+liZOhc4d863ybHpLUx9Ubxh23V6gozaQBNWliqLhTVKgrAvt7A==\n-----END PUBLIC KEY-----\n",
-  "contact": "developer@example.com"
+  "contact": "developer@example.com",
+  "revoked_keys": [
+    "sha256:123abc456def789abc123def456789abc123def456789abc123def456789abc1",
+    "sha256:456def789abc123def456789abc123def456789abc123def456789abc123def4"
+  ]
 }

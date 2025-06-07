@@ -1,13 +1,13 @@
 """Setup script for SchemaPin Python implementation."""
 
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
-with open("../README.md", "r", encoding="utf-8") as fh:
+with open("../README.md", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
     name="schemapin",
-    version="1.0.0",
+    version="1.1.0",
     author="ThirdKey",
     author_email="contact@thirdkey.ai",
     description="Cryptographic schema integrity verification for AI tools",
@@ -39,6 +39,13 @@ setup(
             "pytest>=7.4.0",
             "ruff>=0.1.0",
             "bandit>=1.7.5",
+        ],
+    },
+    entry_points={
+        "console_scripts": [
+            "schemapin-keygen=tools.keygen:main",
+            "schemapin-sign=tools.schema_signer:main",
+            "schemapin-verify=tools.verify_schema:main",
         ],
     },
 )

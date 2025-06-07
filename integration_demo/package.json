@@ -1,0 +1,41 @@
+{
+  "name": "schemapin-integration-demo",
+  "version": "1.1.0",
+  "description": "Cross-language integration demonstration for SchemaPin",
+  "type": "module",
+  "main": "demo_scenario.js",
+  "scripts": {
+    "demo": "node demo_scenario.js",
+    "test": "python cross_language_test.py",
+    "setup": "python demo_scenario.py --setup",
+    "scenario1": "python demo_scenario.py --scenario 1",
+    "scenario2": "node demo_scenario.js --scenario 2",
+    "scenario3": "python demo_scenario.py --scenario 3",
+    "scenario4": "python demo_scenario.py --scenario 4",
+    "scenario5": "python demo_scenario.py --scenario 5",
+    "interactive": "python demo_scenario.py --interactive",
+    "performance": "python cross_language_test.py --performance",
+    "security": "python cross_language_test.py --security"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2",
+    "chalk": "^5.3.0",
+    "inquirer": "^9.2.12"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "keywords": [
+    "schemapin",
+    "cryptography",
+    "schema",
+    "verification",
+    "integration",
+    "cross-language"
+  ],
+  "author": "SchemaPin Contributors",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

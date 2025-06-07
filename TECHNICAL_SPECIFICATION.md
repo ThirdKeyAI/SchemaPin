@@ -1,6 +1,6 @@
 # SchemaPin: A Technical Specification
 
-Version 1.0
+Version 1.1
 
 Status: Draft
 
@@ -72,9 +72,13 @@ The contents of this file should be a JSON object specifying the public key:
 
 ```
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "developer_name": "Example Corp Tools",
-  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...etc...\n-----END PUBLIC KEY-----"
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...etc...\n-----END PUBLIC KEY-----",
+  "revoked_keys": [
+    "sha256:abc123def456789abcdef0123456789abcdef0123456789abcdef0123456789ab",
+    "sha256:def456789abc123def456789abc123def456789abc123def456789abc123def4"
+  ]
 }
 ```
 
@@ -117,9 +121,49 @@ The contents of this file should be a JSON object specifying the public key:
     - If the signature is **valid**, the client can proceed to use the tool schema.
     - If the signature is **invalid**, the client **MUST** refuse to use the tool and should alert the user of a potential security risk.
 
-### **8. Security Considerations**
+### **8. Key Revocation**
 
-- **Key Revocation:** This specification does not currently define a key revocation mechanism. In a future version, a "revocation list" could be added to the `.well-known` file.
+SchemaPin v1.1 introduces a key revocation mechanism to handle compromised or deprecated keys.
+
+#### **8.1. Revocation List Format**
+
+The `.well-known/schemapin.json` file MAY include an optional `revoked_keys` array containing SHA-256 fingerprints of revoked public keys:
+
+```json
+{
+  "schema_version": "1.1",
+  "developer_name": "Example Corp Tools",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...current_key...\n-----END PUBLIC KEY-----",
+  "revoked_keys": [
+    "sha256:abc123def456789abcdef0123456789abcdef0123456789abcdef0123456789ab"
+  ]
+}
+```
+
+#### **8.2. Key Fingerprint Calculation**
+
+Key fingerprints MUST be calculated as follows:
+1. Export the public key in DER format using SubjectPublicKeyInfo encoding
+2. Calculate the SHA-256 hash of the DER-encoded bytes
+3. Format as `sha256:` followed by the lowercase hexadecimal representation
+
+#### **8.3. Revocation Checking**
+
+Clients MUST check if a public key is revoked before using it for signature verification:
+1. Fetch the current `.well-known/schemapin.json` file
+2. Calculate the fingerprint of the public key to be used
+3. Check if the fingerprint appears in the `revoked_keys` array
+4. If the key is revoked, immediately reject the schema with an appropriate error message
+
+#### **8.4. Backward Compatibility**
+
+- Schema version 1.0 endpoints without `revoked_keys` are still valid
+- Clients MUST gracefully handle missing `revoked_keys` fields
+- Empty `revoked_keys` arrays indicate no keys are currently revoked
+
+### **9. Security Considerations**
+
+- **Key Revocation:** Keys MUST be immediately revoked upon suspected compromise. Clients MUST check revocation status before each verification.
 - **Key Compromise:** A developer whose private key is compromised must generate a new key pair and work with client applications to transition trust to the new key.
 - **Transport Security:** All communications for public key discovery MUST use HTTPS to prevent man-in-the-middle attacks during the initial key fetch.
 - **Key Pinning:** Once a public key is pinned for a tool, clients MUST NOT automatically accept a different key without explicit user consent, even if served from the same `.well-known` endpoint.
@@ -128,7 +172,7 @@ The contents of this file should be a JSON object specifying the public key:
 - **Private Key Storage:** Developers MUST store private keys securely using appropriate key management practices, including encryption at rest and restricted access controls.
 - **Clock Skew:** While this specification does not include timestamp validation, implementations should be aware that future versions may include time-based validity checks.
 
-### **9. Error Handling**
+### **10. Error Handling**
 
 Implementations MUST handle the following error conditions gracefully:
 
@@ -138,15 +182,16 @@ Implementations MUST handle the following error conditions gracefully:
 - **Missing Signatures:** Schemas without associated signatures MUST be treated as unsigned and handled according to the client's security policy.
 - **Canonicalization Errors:** JSON schemas that cannot be canonicalized (e.g., due to circular references) MUST be rejected.
 
-### **10. Implementation Guidelines**
+### **11. Implementation Guidelines**
 
 - **Library Dependencies:** Implementations SHOULD use well-established cryptographic libraries (e.g., OpenSSL, cryptography.io) rather than custom implementations.
 - **Testing:** All implementations MUST include comprehensive test suites covering signature generation, verification, and error conditions.
 - **Backwards Compatibility:** Future versions of this specification will maintain backwards compatibility with version 1.0 signatures.
 - **Performance:** Signature verification should be optimized for client-side performance, as it may be performed frequently during tool discovery.
 
-### **11. Version Compatibility**
+### **12. Version Compatibility**
 
-- **Schema Version:** This specification is version 1.0. The `schema_version` field in `.well-known` files indicates compatibility.
+- **Schema Version:** This specification is version 1.1. The `schema_version` field in `.well-known` files indicates compatibility.
+- **Backward Compatibility:** Version 1.1 clients MUST support version 1.0 endpoints for backward compatibility.
 - **Future Versions:** Clients SHOULD gracefully handle unknown schema versions by falling back to the highest supported version.
 - **Deprecation Policy:** Any breaking changes will be introduced in new major versions with appropriate migration guidance.

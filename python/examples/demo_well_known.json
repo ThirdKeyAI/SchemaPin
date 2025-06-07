@@ -1,6 +1,10 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "developer_name": "Example Tool Developer",
-  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEoMd1rYu4b7H3MEiPKDgqKKOn1uVe\nk/Dkaba7CLvgcaKS0yD9XhbXK6eUA88Xy2Cxbc55hiF+Rayc1Sb4kq7x/g==\n-----END PUBLIC KEY-----\n",
-  "contact": "developer@example.com"
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE9ISisOPYERXA0YIhfIo/8mrXXQ6V\nEIitoIzzM30URANrxqeKBlHsoPMEWb1iyGhVLSbliQHGyi+GqGUe0eDYvw==\n-----END PUBLIC KEY-----\n",
+  "contact": "developer@example.com",
+  "revoked_keys": [
+    "sha256:abc123def456789abcdef0123456789abcdef0123456789abcdef0123456789ab",
+    "sha256:def456789abc123def456789abc123def456789abc123def456789abc123def4"
+  ]
 }

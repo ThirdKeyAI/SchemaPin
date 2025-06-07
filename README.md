@@ -2,6 +2,34 @@
 
 A cryptographic protocol for ensuring the integrity and authenticity of tool schemas used by AI agents. SchemaPin prevents "MCP Rug Pull" attacks by enabling developers to cryptographically sign their tool schemas and allowing clients to verify that schemas have not been altered since publication.
 
+## About
+
+SchemaPin addresses critical security vulnerabilities in AI agent ecosystems by providing cryptographic guarantees for tool schema integrity and authenticity. As AI agents increasingly rely on external tools and services, ensuring these tools haven't been compromised becomes essential for maintaining system security and user trust.
+
+### Core Security Guarantees
+
+**Schema Integrity:** SchemaPin guarantees that tool schemas have not been altered maliciously or accidentally since publication, protecting against data corruption, misconfigured servers, or unauthorized modification. This ensures that the tool behavior your AI agent expects matches exactly what the tool developer intended.
+
+**Authenticity:** Cryptographic signatures prove schema origin, ensuring schemas genuinely come from the claimed developer. This is critical for supply-chain security, preventing attackers from impersonating legitimate tool developers or injecting malicious schemas into trusted repositories.
+
+### Broader Threat Protection
+
+**Man-in-the-Middle (MITM) Attack Mitigation:** SchemaPin provides application-layer security that prevents schema tampering even if network connections are intercepted. This complements HTTPS transport security by ensuring that even if an attacker compromises the transport layer, they cannot forge valid schema signatures without access to the developer's private key.
+
+**Compromised Infrastructure Defense:** Protection against scenarios where servers, CDNs, or repositories hosting schema files are hacked and schema files are replaced with malicious versions. Since attackers cannot forge signatures without the original developer's private keys, compromised infrastructure cannot be used to distribute malicious schemas that would pass verification.
+
+### Real-World Attack Scenario: The "MCP Rug Pull"
+
+Consider this concrete example: An AI agent uses a popular "file_manager" tool that initially provides legitimate file operations. After gaining widespread adoption, the tool's schema is maliciously updated to include a new "backup_to_cloud" function that secretly exfiltrates sensitive files to an attacker-controlled server. Without SchemaPin, AI agents would automatically trust and use this modified schema. With SchemaPin, the signature verification would fail, alerting users to the unauthorized modification and preventing the attack.
+
+### Ecosystem and Trust Benefits
+
+**Standardized Trust Mechanism:** SchemaPin provides a common, interoperable standard for verifying tools across different AI agent frameworks and programming languages. This creates a unified security foundation that benefits the entire AI ecosystem, regardless of the specific implementation or platform being used.
+
+**Enabling Automated Governance:** The protocol allows enterprises and platforms to programmatically enforce security policies requiring valid signatures before tool execution. This enables automated compliance checking and reduces the manual overhead of security reviews while maintaining strong security guarantees.
+
+**Trust on First Use (TOFU) Model:** Key pinning provides long-term security by protecting against future key substitution attacks. Once a developer's key is pinned, any attempt to use a different key for the same tool domain triggers security warnings, preventing attackers from compromising tools even if they gain control of the developer's infrastructure.
+
 ## Overview
 
 SchemaPin provides a robust defense against supply-chain attacks where benign schemas are maliciously replaced after being approved. The protocol uses:
@@ -22,25 +50,39 @@ SchemaPin provides a robust defense against supply-chain attacks where benign sc
 
 ```mermaid
 flowchart TD
-    A[Tool Developer] -->|Publishes| B["/.well-known/schemapin.json (Public Key)"]
+    A[Tool Developer] -->|Publishes| B["/.well-known/schemapin.json<br/>(Public Key + Revoked Keys)"]
     A -->|Signs| C["Tool Schema + Signature"]
 
     subgraph "AI Agent"
         D["Fetch Schema + Signature"]
         E["Fetch or Cache Public Key"]
-        F["Verify Signature"]
-        G{"Signature Valid?"}
-        H["Accept & Use Tool Schema"]
-        I["Reject / Block Tool"]
+        F["Check Key Revocation"]
+        G["Verify Signature"]
+        H{"Key Revoked?"}
+        I{"Signature Valid?"}
+        J{"Interactive Mode?"}
+        K["Prompt User Decision"]
+        L["Accept & Use Tool Schema"]
+        M["Reject / Block Tool"]
+        N["Pin Key (TOFU)"]
     end
 
     C --> D
     B --> E
-    D --> F
+    D --> G
     E --> F
-    F --> G
-    G -- Yes --> H
-    G -- No --> I
+    F --> H
+    E --> G
+    H -- Yes --> M
+    H -- No --> G
+    G --> I
+    I -- No --> M
+    I -- Yes --> J
+    J -- Yes --> K
+    J -- No --> N
+    K --> L
+    K --> M
+    N --> L
 ```
 
 ## Quick Start
@@ -101,21 +143,34 @@ else:
 
 ## Installation
 
-### Python
+### From Package Repositories (Recommended)
+
+#### Python (PyPI)
 
 ```bash
-cd python
-pip install -e .
+# Install from PyPI
+pip install schemapin
+
+# Or install with development dependencies
+pip install schemapin[dev]
 ```
 
-### JavaScript/Node.js
+After installation, CLI tools will be available:
+- `schemapin-keygen` - Generate cryptographic key pairs
+- `schemapin-sign` - Sign JSON schemas
+- `schemapin-verify` - Verify signed schemas
+
+#### JavaScript/Node.js (npm)
 
 ```bash
-cd javascript
-npm install
+# Install from npm
+npm install schemapin
+
+# Or install globally for CLI usage
+npm install -g schemapin
 ```
 
-### Development Setup
+### From Source (Development)
 
 ```bash
 # Clone repository
@@ -125,18 +180,30 @@ cd schemapin
 # Set up Python environment
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r python/requirements.txt
 
 # Install Python package in development mode
 cd python
-pip install -e .
+pip install -e .[dev]
 
-# Run Python tests
-python -m pytest tests/ -v
-
-# Run JavaScript tests
+# Install JavaScript dependencies
 cd ../javascript
-npm test
+npm install
+
+# Run tests
+cd ../python && python -m pytest tests/ -v
+cd ../javascript && npm test
+```
+
+### Package Building
+
+```bash
+# Build all packages
+python scripts/build_packages.py
+
+# Test packages
+python scripts/test_packages.py
+
+# Packages will be available in dist/
 ```
 
 ## Examples
@@ -180,10 +247,12 @@ graph LR
     
     F[Client] --> G[Fetch Schema + Signature]
     G --> H[Discover Public Key]
-    H --> I[Verify Signature]
-    I --> J{Valid?}
-    J -->|Yes| K[Use Tool]
-    J -->|No| L[Reject Tool]
+    H --> I[Check Key Revocation]
+    I --> J[Verify Signature]
+    J --> K{Valid & Not Revoked?}
+    K -->|Yes| L[Interactive Pinning Check]
+    L --> M[Use Tool]
+    K -->|No| N[Reject Tool]
 ```
 
 ## Security
@@ -295,7 +364,7 @@ MIT License - see [`LICENSE`](LICENSE) file for details.
 
 ## Contact
 
-- **Author**: Jascha Wanger / ThirdKey.ai
+- **Author**: Jascha Wanger / [ThirdKey.ai](https://thirdkey.ai)
 - **Email**: jascha@thirdkey.ai
 - **Repository**: https://github.com/thirdkey/schemapin
 

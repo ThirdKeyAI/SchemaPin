@@ -1,0 +1,31 @@
+{
+  "name": "calculate_sum",
+  "description": "Calculate the sum of a list of numbers",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "numbers": {
+        "type": "array",
+        "items": {
+          "type": "number"
+        },
+        "description": "Array of numbers to sum"
+      }
+    },
+    "required": ["numbers"]
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "sum": {
+        "type": "number",
+        "description": "The calculated sum"
+      },
+      "count": {
+        "type": "integer",
+        "description": "Number of values summed"
+      }
+    },
+    "required": ["sum", "count"]
+  }
+}

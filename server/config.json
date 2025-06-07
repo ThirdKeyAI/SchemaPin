@@ -1,0 +1,58 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "debug": true,
+    "reload": true
+  },
+  "cors": {
+    "allow_origins": ["*"],
+    "allow_credentials": true,
+    "allow_methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    "allow_headers": ["*"]
+  },
+  "security": {
+    "rate_limit": {
+      "requests_per_minute": 60
+    },
+    "max_key_size": 8192,
+    "allowed_key_types": ["ECDSA", "RSA"]
+  },
+  "storage": {
+    "keys_directory": "./keys",
+    "backup_directory": "./backups",
+    "auto_backup": true,
+    "backup_interval_hours": 24
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    "file": "./logs/server.log",
+    "max_file_size": "10MB",
+    "backup_count": 5
+  },
+  "developers": {
+    "alice.example.com": {
+      "name": "Alice Corp",
+      "contact": "security@alice.example.com",
+      "enabled": true
+    },
+    "bob.example.com": {
+      "name": "Bob Industries", 
+      "contact": "security@bob.example.com",
+      "enabled": true
+    },
+    "charlie.example.com": {
+      "name": "Charlie Tech",
+      "contact": "security@charlie.example.com",
+      "enabled": true
+    }
+  },
+  "features": {
+    "key_rotation": true,
+    "revocation_lists": true,
+    "metrics": true,
+    "health_checks": true,
+    "admin_api": false
+  }
+}

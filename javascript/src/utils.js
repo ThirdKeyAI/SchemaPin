@@ -71,7 +71,13 @@ export class SchemaVerificationWorkflow {
             let publicKey;
 
             if (pinnedKeyPem) {
-                // Use pinned key
+                // Use pinned key, but check if it's been revoked
+                const isNotRevoked = await PublicKeyDiscovery.validateKeyNotRevoked(pinnedKeyPem, domain);
+                if (!isNotRevoked) {
+                    result.error = 'Pinned public key has been revoked';
+                    return result;
+                }
+                
                 publicKey = KeyManager.loadPublicKeyPem(pinnedKeyPem);
                 result.pinned = true;
             } else {
@@ -79,6 +85,13 @@ export class SchemaVerificationWorkflow {
                 const publicKeyPem = await this.discovery.getPublicKeyPem(domain);
                 if (!publicKeyPem) {
                     result.error = 'Could not discover public key';
+                    return result;
+                }
+
+                // Check if key is revoked
+                const isNotRevoked = await PublicKeyDiscovery.validateKeyNotRevoked(publicKeyPem, domain);
+                if (!isNotRevoked) {
+                    result.error = 'Public key has been revoked';
                     return result;
                 }
 
@@ -135,21 +148,27 @@ export class SchemaVerificationWorkflow {
 
 /**
  * Create .well-known/schemapin.json response structure.
- * 
+ *
  * @param {string} publicKeyPem - PEM-encoded public key
  * @param {string} developerName - Developer or organization name
  * @param {string|null} contact - Optional contact information
+ * @param {Array<string>|null} revokedKeys - Optional array of revoked key fingerprints
+ * @param {string} schemaVersion - Schema version (default: "1.1")
  * @returns {Object} Object suitable for .well-known response
  */
-export function createWellKnownResponse(publicKeyPem, developerName, contact = null) {
+export function createWellKnownResponse(publicKeyPem, developerName, contact = null, revokedKeys = null, schemaVersion = "1.1") {
     const response = {
-        schema_version: '1.0',
+        schema_version: schemaVersion,
         developer_name: developerName,
         public_key_pem: publicKeyPem
     };
 
     if (contact) {
         response.contact = contact;
+    }
+
+    if (revokedKeys && revokedKeys.length > 0) {
+        response.revoked_keys = revokedKeys;
     }
 
     return response;

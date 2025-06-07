@@ -2,7 +2,7 @@
  * Cryptographic operations for SchemaPin using ECDSA P-256.
  */
 
-import { createSign, createVerify, generateKeyPairSync } from 'crypto';
+import { createSign, createVerify, generateKeyPairSync, createHash, createPublicKey } from 'crypto';
 
 /**
  * Manages ECDSA P-256 key generation and serialization.
@@ -67,6 +67,20 @@ export class KeyManager {
      */
     static loadPublicKeyPem(pemData) {
         return pemData;
+    }
+
+    /**
+     * Calculate SHA-256 fingerprint of public key.
+     *
+     * @param {string} publicKeyPem - PEM-encoded public key string
+     * @returns {string} SHA-256 fingerprint in format 'sha256:hexstring'
+     */
+    static calculateKeyFingerprint(publicKeyPem) {
+        // Convert PEM to DER format for consistent fingerprinting
+        const keyObject = createPublicKey(publicKeyPem);
+        const der = keyObject.export({ type: 'spki', format: 'der' });
+        const hash = createHash('sha256').update(der).digest('hex');
+        return `sha256:${hash}`;
     }
 }
 

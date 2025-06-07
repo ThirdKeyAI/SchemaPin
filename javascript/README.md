@@ -17,9 +17,22 @@ SchemaPin provides cryptographic verification of AI tool schemas using ECDSA P-2
 
 ## Installation
 
+### From npm (Recommended)
+
 ```bash
-# Clone the repository and install dependencies
-cd javascript
+# Install latest stable version
+npm install schemapin
+
+# Install globally for CLI usage (if CLI tools are added)
+npm install -g schemapin
+```
+
+### From Source (Development)
+
+```bash
+# Clone repository and install dependencies
+git clone https://github.com/thirdkey/schemapin.git
+cd schemapin/javascript
 npm install
 ```
 

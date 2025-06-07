@@ -17,9 +17,95 @@ SchemaPin provides cryptographic verification of AI tool schemas using ECDSA P-2
 
 ## Installation
 
+### From PyPI (Recommended)
+
 ```bash
-cd python
-pip install -e .
+# Install latest stable version
+pip install schemapin
+
+# Install with development dependencies
+pip install schemapin[dev]
+
+# Install with testing dependencies only
+pip install schemapin[test]
+```
+
+### From Source (Development)
+
+```bash
+# Clone repository and install in development mode
+git clone https://github.com/thirdkey/schemapin.git
+cd schemapin/python
+pip install -e .[dev]
+```
+
+After installation, the following CLI tools will be available:
+- `schemapin-keygen` - Generate cryptographic key pairs
+- `schemapin-sign` - Sign JSON schemas
+- `schemapin-verify` - Verify signed schemas
+
+## CLI Tools
+
+SchemaPin provides three command-line tools for common operations:
+
+### Key Generation (`schemapin-keygen`)
+
+Generate ECDSA or RSA key pairs with optional .well-known template:
+
+```bash
+# Generate ECDSA key pair with .well-known template
+schemapin-keygen --type ecdsa --developer "Your Company" --well-known
+
+# Generate RSA 4096-bit key pair
+schemapin-keygen --type rsa --key-size 4096 --output-dir ./keys
+
+# Generate keys in DER format
+schemapin-keygen --type ecdsa --format der --prefix mykeys
+```
+
+### Schema Signing (`schemapin-sign`)
+
+Sign JSON schema files with private keys:
+
+```bash
+# Sign a single schema
+schemapin-sign --key private.pem --schema schema.json --output signed.json
+
+# Sign with metadata
+schemapin-sign --key private.pem --schema schema.json --developer "Your Company" --version "1.0"
+
+# Batch sign multiple schemas
+schemapin-sign --key private.pem --batch ./schemas/ --output-dir ./signed/
+
+# Sign from stdin
+echo '{"type": "object"}' | schemapin-sign --key private.pem --stdin
+```
+
+### Schema Verification (`schemapin-verify`)
+
+Verify signed schemas with public keys or discovery:
+
+```bash
+# Verify with public key
+schemapin-verify --schema signed.json --public-key public.pem
+
+# Verify with domain discovery and interactive pinning
+schemapin-verify --schema signed.json --domain example.com --tool-id my-tool --interactive
+
+# Batch verify with auto-pinning
+schemapin-verify --batch ./signed/ --domain example.com --auto-pin
+
+# Verify from stdin with JSON output
+echo '{"schema": {...}, "signature": "..."}' | schemapin-verify --stdin --public-key public.pem --json
+```
+
+### CLI Examples
+
+Run the CLI examples script to see detailed usage patterns:
+
+```bash
+cd python/examples
+python cli_usage_examples.py
 ```
 
 ## Quick Start

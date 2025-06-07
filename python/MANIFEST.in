@@ -1,0 +1,47 @@
+# Include documentation and metadata files
+include README.md
+include LICENSE
+include ../CHANGELOG.md
+include ../TECHNICAL_SPECIFICATION.md
+
+# Include package configuration
+include pyproject.toml
+include setup.cfg
+include requirements.txt
+include .bandit
+
+# Include examples and tests
+recursive-include examples *.py *.pem *.json
+recursive-include tests *.py
+
+# Include source code
+recursive-include schemapin *.py
+recursive-include tools *.py
+
+# Exclude development and build artifacts
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude __pycache__
+global-exclude .pytest_cache
+global-exclude .coverage
+global-exclude .ruff_cache
+global-exclude *.egg-info
+global-exclude build
+global-exclude dist
+
+# Exclude version control
+global-exclude .git*
+global-exclude .hg*
+global-exclude .svn*
+
+# Exclude IDE files
+global-exclude .vscode
+global-exclude .idea
+global-exclude *.swp
+global-exclude *.swo
+global-exclude *~
+
+# Exclude OS files
+global-exclude .DS_Store
+global-exclude Thumbs.db

@@ -1,10 +1,15 @@
 """Cryptographic operations for SchemaPin using ECDSA P-256."""
 
 import base64
+import hashlib
 from typing import Tuple
+
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.asymmetric.ec import EllipticCurvePrivateKey, EllipticCurvePublicKey
+from cryptography.hazmat.primitives.asymmetric.ec import (
+    EllipticCurvePrivateKey,
+    EllipticCurvePublicKey,
+)
 
 
 class KeyManager:
@@ -14,7 +19,7 @@ class KeyManager:
     def generate_keypair() -> Tuple[EllipticCurvePrivateKey, EllipticCurvePublicKey]:
         """
         Generate new ECDSA P-256 key pair.
-        
+
         Returns:
             Tuple of (private_key, public_key)
         """
@@ -26,10 +31,10 @@ class KeyManager:
     def export_private_key_pem(private_key: EllipticCurvePrivateKey) -> str:
         """
         Export private key to PEM format.
-        
+
         Args:
             private_key: ECDSA private key
-            
+
         Returns:
             PEM-encoded private key string
         """
@@ -44,10 +49,10 @@ class KeyManager:
     def export_public_key_pem(public_key: EllipticCurvePublicKey) -> str:
         """
         Export public key to PEM format.
-        
+
         Args:
             public_key: ECDSA public key
-            
+
         Returns:
             PEM-encoded public key string
         """
@@ -61,10 +66,10 @@ class KeyManager:
     def load_private_key_pem(pem_data: str) -> EllipticCurvePrivateKey:
         """
         Load private key from PEM format.
-        
+
         Args:
             pem_data: PEM-encoded private key string
-            
+
         Returns:
             ECDSA private key
         """
@@ -77,14 +82,46 @@ class KeyManager:
     def load_public_key_pem(pem_data: str) -> EllipticCurvePublicKey:
         """
         Load public key from PEM format.
-        
+
         Args:
             pem_data: PEM-encoded public key string
-            
+
         Returns:
             ECDSA public key
         """
         return serialization.load_pem_public_key(pem_data.encode('utf-8'))
+
+    @staticmethod
+    def calculate_key_fingerprint(public_key: EllipticCurvePublicKey) -> str:
+        """
+        Calculate SHA-256 fingerprint of public key.
+
+        Args:
+            public_key: ECDSA public key
+
+        Returns:
+            SHA-256 fingerprint in format 'sha256:hexstring'
+        """
+        der_bytes = public_key.public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        fingerprint = hashlib.sha256(der_bytes).hexdigest()
+        return f"sha256:{fingerprint}"
+
+    @staticmethod
+    def calculate_key_fingerprint_from_pem(public_key_pem: str) -> str:
+        """
+        Calculate SHA-256 fingerprint from PEM-encoded public key.
+
+        Args:
+            public_key_pem: PEM-encoded public key string
+
+        Returns:
+            SHA-256 fingerprint in format 'sha256:hexstring'
+        """
+        public_key = KeyManager.load_public_key_pem(public_key_pem)
+        return KeyManager.calculate_key_fingerprint(public_key)
 
 
 class SignatureManager:
@@ -94,11 +131,11 @@ class SignatureManager:
     def sign_hash(hash_bytes: bytes, private_key: EllipticCurvePrivateKey) -> str:
         """
         Sign hash using ECDSA P-256 and return Base64-encoded signature.
-        
+
         Args:
             hash_bytes: SHA-256 hash to sign
             private_key: ECDSA private key
-            
+
         Returns:
             Base64-encoded signature
         """
@@ -109,12 +146,12 @@ class SignatureManager:
     def verify_signature(hash_bytes: bytes, signature_b64: str, public_key: EllipticCurvePublicKey) -> bool:
         """
         Verify ECDSA signature against hash.
-        
+
         Args:
             hash_bytes: Original SHA-256 hash
             signature_b64: Base64-encoded signature
             public_key: ECDSA public key
-            
+
         Returns:
             True if signature is valid, False otherwise
         """
@@ -129,11 +166,11 @@ class SignatureManager:
     def sign_schema_hash(cls, schema_hash: bytes, private_key: EllipticCurvePrivateKey) -> str:
         """
         Sign schema hash and return Base64 signature.
-        
+
         Args:
             schema_hash: SHA-256 hash of canonical schema
             private_key: ECDSA private key
-            
+
         Returns:
             Base64-encoded signature
         """
@@ -141,19 +178,19 @@ class SignatureManager:
 
     @classmethod
     def verify_schema_signature(
-        cls, 
-        schema_hash: bytes, 
-        signature_b64: str, 
+        cls,
+        schema_hash: bytes,
+        signature_b64: str,
         public_key: EllipticCurvePublicKey
     ) -> bool:
         """
         Verify schema signature against hash.
-        
+
         Args:
             schema_hash: SHA-256 hash of canonical schema
             signature_b64: Base64-encoded signature
             public_key: ECDSA public key
-            
+
         Returns:
             True if signature is valid, False otherwise
         """

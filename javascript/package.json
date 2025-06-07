@@ -1,14 +1,26 @@
 {
   "name": "schemapin",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Cryptographic schema integrity verification for AI tools",
   "main": "src/index.js",
   "type": "module",
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node --test tests/*.test.js",
     "test:watch": "node --test --watch tests/*.test.js",
+    "test:coverage": "c8 node --test tests/*.test.js",
+    "lint": "eslint src/ tests/",
+    "lint:fix": "eslint src/ tests/ --fix",
     "example:developer": "node examples/developer.js",
-    "example:client": "node examples/client.js"
+    "example:client": "node examples/client.js",
+    "example:interactive": "node examples/interactive-pinning-demo.js",
+    "prepublishOnly": "npm test && npm run lint",
+    "build": "echo 'No build step required for ES modules'",
+    "clean": "rm -rf node_modules package-lock.json"
   },
   "keywords": [
     "cryptography",
@@ -16,25 +28,98 @@
     "verification",
     "ecdsa",
     "ai-tools",
-    "security"
+    "security",
+    "digital-signatures",
+    "key-pinning",
+    "mcp",
+    "tool-integrity",
+    "trust-on-first-use",
+    "tofu",
+    "well-known",
+    "rfc8615",
+    "schema-validation",
+    "supply-chain-security"
   ],
-  "author": "ThirdKey",
+  "author": {
+    "name": "ThirdKey",
+    "email": "contact@thirdkey.ai",
+    "url": "https://thirdkey.ai"
+  },
+  "maintainers": [
+    {
+      "name": "Jascha Wanger",
+      "email": "jascha@thirdkey.ai"
+    }
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/thirdkey/schemapin"
+    "url": "git+https://github.com/thirdkey/schemapin.git"
   },
+  "bugs": {
+    "url": "https://github.com/thirdkey/schemapin/issues",
+    "email": "contact@thirdkey.ai"
+  },
+  "homepage": "https://github.com/thirdkey/schemapin#readme",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
   },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
   "dependencies": {},
-  "devDependencies": {},
+  "devDependencies": {
+    "c8": "^8.0.1",
+    "eslint": "^8.57.0"
+  },
+  "peerDependencies": {},
+  "optionalDependencies": {},
   "exports": {
-    ".": "./src/index.js",
-    "./core": "./src/core.js",
-    "./crypto": "./src/crypto.js",
-    "./discovery": "./src/discovery.js",
-    "./pinning": "./src/pinning.js",
-    "./utils": "./src/utils.js"
+    ".": {
+      "import": "./src/index.js",
+      "types": "./src/index.d.ts"
+    },
+    "./core": {
+      "import": "./src/core.js",
+      "types": "./src/core.d.ts"
+    },
+    "./crypto": {
+      "import": "./src/crypto.js",
+      "types": "./src/crypto.d.ts"
+    },
+    "./discovery": {
+      "import": "./src/discovery.js",
+      "types": "./src/discovery.d.ts"
+    },
+    "./pinning": {
+      "import": "./src/pinning.js",
+      "types": "./src/pinning.d.ts"
+    },
+    "./utils": {
+      "import": "./src/utils.js",
+      "types": "./src/utils.d.ts"
+    },
+    "./interactive": {
+      "import": "./src/interactive.js",
+      "types": "./src/interactive.d.ts"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/thirdkey"
+  },
+  "security": {
+    "policy": "https://github.com/thirdkey/schemapin/security/policy"
   }
 }

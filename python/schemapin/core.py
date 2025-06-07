@@ -1,8 +1,8 @@
 """Core SchemaPin functionality for schema canonicalization and hashing."""
 
-import json
 import hashlib
-from typing import Dict, Any
+import json
+from typing import Any, Dict
 
 
 class SchemaPinCore:
@@ -12,16 +12,16 @@ class SchemaPinCore:
     def canonicalize_schema(schema: Dict[str, Any]) -> str:
         """
         Convert a schema to canonical string format per SchemaPin specification.
-        
+
         Process:
         1. UTF-8 encoding
         2. Remove insignificant whitespace
         3. Sort keys lexicographically (recursive)
         4. Strict JSON serialization
-        
+
         Args:
             schema: Tool schema as dictionary
-            
+
         Returns:
             Canonical string representation
         """
@@ -31,10 +31,10 @@ class SchemaPinCore:
     def hash_canonical(canonical: str) -> bytes:
         """
         Hash canonical schema string using SHA-256.
-        
+
         Args:
             canonical: Canonical schema string
-            
+
         Returns:
             SHA-256 hash bytes
         """
@@ -44,10 +44,10 @@ class SchemaPinCore:
     def canonicalize_and_hash(cls, schema: Dict[str, Any]) -> bytes:
         """
         Convenience method to canonicalize and hash schema in one step.
-        
+
         Args:
             schema: Tool schema as dictionary
-            
+
         Returns:
             SHA-256 hash of canonical schema
         """
