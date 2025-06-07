@@ -16,6 +16,10 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   release-npm:
     runs-on: ubuntu-latest

@@ -31,6 +31,10 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   validate:
     runs-on: ubuntu-latest
