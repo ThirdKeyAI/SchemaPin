@@ -132,26 +132,28 @@ jobs:
 
     - name: Create GitHub Release
       if: ${{ github.event.inputs.dry_run != 'true' && startsWith(github.ref, 'refs/tags/') }}
-      uses: actions/create-release@v1
+      run: |
+        PRERELEASE=""
+        if [[ "${{ github.ref_name }}" == *"alpha"* ]] || [[ "${{ github.ref_name }}" == *"beta"* ]] || [[ "${{ github.ref_name }}" == *"rc"* ]]; then
+          PRERELEASE="--prerelease"
+        fi
+        
+        gh release create ${{ github.ref_name }} \
+          --title "Release ${{ github.ref_name }}" \
+          --notes "## npm Package Release
+
+        Published \`schemapin@${{ github.ref_name }}\` to npm registry.
+
+        ### Installation
+        \`\`\`bash
+        npm install schemapin
+        \`\`\`
+
+        ### Changes
+        See [CHANGELOG.md](./CHANGELOG.md) for details." \
+          $PRERELEASE
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref_name }}
-        release_name: Release ${{ github.ref_name }}
-        body: |
-          ## npm Package Release
-          
-          Published `schemapin@${{ github.ref_name }}` to npm registry.
-          
-          ### Installation
-          ```bash
-          npm install schemapin
-          ```
-          
-          ### Changes
-          See [CHANGELOG.md](./CHANGELOG.md) for details.
-        draft: false
-        prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
 
 # Required secrets to configure in GitHub repository settings:
 # - NPM_TOKEN: npm authentication token with publish permissions
