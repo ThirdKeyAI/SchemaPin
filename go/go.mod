@@ -1,6 +1,6 @@
 module github.com/ThirdKeyAi/schemapin/go
 
-go 1.19
+go 1.23.8
 
 require (
 	github.com/spf13/cobra v1.8.0
