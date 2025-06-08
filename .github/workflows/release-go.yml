@@ -33,7 +33,7 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@v4
       with:
-        go-version: '1.19'
+        go-version: '1.21'
 
     - name: Cache Go modules
       uses: actions/cache@v3
@@ -54,7 +54,7 @@ jobs:
     - name: Run tests
       run: |
         cd go
-        go test -v -race -coverprofile=coverage.out ./...
+        go test -v -race ./...
 
     - name: Run linting
       run: |
