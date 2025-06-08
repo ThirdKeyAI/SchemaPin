@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -108,7 +108,7 @@ class KeyPinning:
                     public_key_pem,
                     domain,
                     developer_name,
-                    datetime.utcnow().isoformat()
+                    datetime.now(UTC).isoformat()
                 ))
                 conn.commit()
                 return True
@@ -160,7 +160,7 @@ class KeyPinning:
                 UPDATE pinned_keys
                 SET last_verified = ?
                 WHERE tool_id = ?
-            ''', (datetime.utcnow().isoformat(), tool_id))
+            ''', (datetime.now(UTC).isoformat(), tool_id))
             conn.commit()
             return cursor.rowcount > 0
 
@@ -281,7 +281,7 @@ class KeyPinning:
                     INSERT OR REPLACE INTO domain_policies
                     (domain, policy, created_at)
                     VALUES (?, ?, ?)
-                ''', (domain, policy.value, datetime.utcnow().isoformat()))
+                ''', (domain, policy.value, datetime.now(UTC).isoformat()))
                 conn.commit()
                 return True
         except sqlite3.Error:
