@@ -1,11 +1,5 @@
 # SchemaPin 🧷
 
-[![npm version](https://badge.fury.io/js/schemapin.svg)](https://www.npmjs.com/package/schemapin)
-[![PyPI version](https://badge.fury.io/py/schemapin.svg)](https://pypi.org/project/schemapin/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![GitHub issues](https://img.shields.io/github/issues/thirdkey/schemapin.svg)](https://github.com/thirdkey/schemapin/issues)
-[![GitHub stars](https://img.shields.io/github/stars/thirdkey/schemapin.svg)](https://github.com/thirdkey/schemapin/stargazers)
-
 A cryptographic protocol for ensuring the integrity and authenticity of tool schemas used by AI agents. SchemaPin prevents "MCP Rug Pull" attacks by enabling developers to cryptographically sign their tool schemas and allowing clients to verify that schemas have not been altered since publication.
 
 ## Table of Contents
