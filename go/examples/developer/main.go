@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/jascha/schemapin-go/internal/version"
-	"github.com/jascha/schemapin-go/pkg/crypto"
-	"github.com/jascha/schemapin-go/pkg/utils"
+	"github.com/ThirdKeyAi/schemapin/go/internal/version"
+	"github.com/ThirdKeyAi/schemapin/go/pkg/crypto"
+	"github.com/ThirdKeyAi/schemapin/go/pkg/utils"
 )
 
 func main() {

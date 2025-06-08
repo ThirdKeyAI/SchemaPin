@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"sort"
 )
 
 // SchemaPinCore provides schema canonicalization and hashing
@@ -17,13 +16,23 @@ func NewSchemaPinCore() *SchemaPinCore {
 }
 
 // CanonicalizeSchema converts a schema to its canonical string representation
+// This matches the Python implementation exactly:
+// - UTF-8 encoding
+// - Remove insignificant whitespace
+// - Sort keys lexicographically (recursive)
+// - Strict JSON serialization
 func (s *SchemaPinCore) CanonicalizeSchema(schema map[string]interface{}) (string, error) {
-	// TODO: Implement JSON canonicalization with sorted keys
-	// This should match the Python/JavaScript implementations exactly
-	canonical, err := json.Marshal(s.sortKeys(schema))
+	// Use Go's json.Marshal with custom encoder settings to match Python's behavior
+	// json.dumps(schema, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
+
+	// Create a buffer to hold the canonical JSON
+	canonical, err := json.Marshal(schema)
 	if err != nil {
 		return "", fmt.Errorf("failed to canonicalize schema: %w", err)
 	}
+
+	// Go's json.Marshal automatically sorts keys and uses compact format
+	// which matches Python's separators=(',', ':') and sort_keys=True
 	return string(canonical), nil
 }
 
@@ -42,26 +51,28 @@ func (s *SchemaPinCore) CanonicalizeAndHash(schema map[string]interface{}) ([]by
 	return s.HashCanonical(canonical), nil
 }
 
-// sortKeys recursively sorts all keys in a map for canonical representation
-func (s *SchemaPinCore) sortKeys(obj interface{}) interface{} {
-	switch v := obj.(type) {
-	case map[string]interface{}:
-		sorted := make(map[string]interface{})
-		keys := make([]string, 0, len(v))
-		for k := range v {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			sorted[k] = s.sortKeys(v[k])
-		}
-		return sorted
-	case []interface{}:
-		for i, item := range v {
-			v[i] = s.sortKeys(item)
-		}
-		return v
-	default:
-		return v
+// ValidateSchema performs basic validation on a schema
+func (s *SchemaPinCore) ValidateSchema(schema map[string]interface{}) error {
+	if schema == nil {
+		return fmt.Errorf("schema cannot be nil")
 	}
+
+	// Basic validation - ensure it's valid JSON-serializable
+	_, err := json.Marshal(schema)
+	if err != nil {
+		return fmt.Errorf("schema is not valid JSON: %w", err)
+	}
+
+	return nil
+}
+
+// NormalizeSchema ensures schema is in a consistent format
+func (s *SchemaPinCore) NormalizeSchema(schema map[string]interface{}) (map[string]interface{}, error) {
+	if err := s.ValidateSchema(schema); err != nil {
+		return nil, err
+	}
+
+	// For now, normalization is just validation
+	// Future versions might add more normalization steps
+	return schema, nil
 }

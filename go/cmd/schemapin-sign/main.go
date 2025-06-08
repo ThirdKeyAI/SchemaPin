@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jascha/schemapin-go/internal/version"
+	"github.com/ThirdKeyAi/schemapin/go/internal/version"
 )
 
 func main() {
