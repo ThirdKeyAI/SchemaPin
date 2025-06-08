@@ -24,6 +24,9 @@ on:
 jobs:
   release-pypi:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     
     steps:
     - name: Checkout code
@@ -197,33 +200,35 @@ jobs:
 
     - name: Create GitHub Release
       if: ${{ github.event.inputs.dry_run != 'true' && startsWith(github.ref, 'refs/tags/') }}
-      uses: actions/create-release@v1
+      run: |
+        PRERELEASE=""
+        if [[ "${{ github.ref_name }}" == *"alpha"* ]] || [[ "${{ github.ref_name }}" == *"beta"* ]] || [[ "${{ github.ref_name }}" == *"rc"* ]]; then
+          PRERELEASE="--prerelease"
+        fi
+        
+        gh release create ${{ github.ref_name }} \
+          --title "Release ${{ github.ref_name }}" \
+          --notes "## PyPI Package Release
+        
+        Published \`schemapin==${{ github.ref_name }}\` to PyPI.
+        
+        ### Installation
+        \`\`\`bash
+        pip install schemapin
+        \`\`\`
+        
+        ### CLI Tools
+        \`\`\`bash
+        schemapin-keygen --help
+        schemapin-sign --help
+        schemapin-verify --help
+        \`\`\`
+        
+        ### Changes
+        See [CHANGELOG.md](./CHANGELOG.md) for details." \
+          $PRERELEASE
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref_name }}
-        release_name: Release ${{ github.ref_name }}
-        body: |
-          ## PyPI Package Release
-          
-          Published `schemapin==${{ github.ref_name }}` to PyPI.
-          
-          ### Installation
-          ```bash
-          pip install schemapin
-          ```
-          
-          ### CLI Tools
-          ```bash
-          schemapin-keygen --help
-          schemapin-sign --help
-          schemapin-verify --help
-          ```
-          
-          ### Changes
-          See [CHANGELOG.md](./CHANGELOG.md) for details.
-        draft: false
-        prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
 
 # Required secrets to configure in GitHub repository settings:
 # - PYPI_API_TOKEN: PyPI API token with upload permissions
