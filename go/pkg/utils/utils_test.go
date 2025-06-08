@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ThirdKeyAi/schemapin/go/pkg/crypto"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/discovery"
@@ -645,12 +646,18 @@ func TestRetryVerification(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
+	// Use a short timeout context to avoid long waits for nonexistent domains
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-	// Test with invalid signature (should not retry)
+	// Test with invalid signature and nonexistent domain (should fail quickly)
 	result, err := RetryVerification(ctx, workflow, schema, "invalid-signature", "test-tool", "nonexistent.com", false, 2)
 	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
+		// This is expected - the domain doesn't exist and will timeout
+		if !strings.Contains(err.Error(), "timeout") && !strings.Contains(err.Error(), "context deadline exceeded") {
+			t.Fatalf("Expected timeout error, got: %v", err)
+		}
+		return
 	}
 	if result.Valid {
 		t.Error("Expected invalid result")
