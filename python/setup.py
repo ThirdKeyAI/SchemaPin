@@ -11,7 +11,7 @@ except FileNotFoundError:
 
 setup(
     name="schemapin",
-    version="1.1.0",
+    version="1.1.2",
     author="ThirdKey",
     author_email="contact@thirdkey.ai",
     description="Cryptographic schema integrity verification for AI tools",

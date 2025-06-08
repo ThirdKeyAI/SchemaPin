@@ -2,5 +2,6 @@
   "schema_version": "1.1",
   "developer_name": "Demo Developer",
   "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEg+aix0OfT3YmM1E+s98N6MoGP7C5\nCvO1BtD5K4KmJgv6N0B+LNtCf4Igu6Z94oyIoVHTUQ6i/cjQ1kzXx3Mv0w==\n-----END PUBLIC KEY-----\n",
-  "contact": "demo@example.com"
+  "contact": "demo@example.com",
+  "revoked_keys": []
 }
