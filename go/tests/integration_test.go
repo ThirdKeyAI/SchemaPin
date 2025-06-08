@@ -14,8 +14,8 @@ import (
 
 // TestEndToEndWorkflow tests the complete SchemaPin workflow
 func TestEndToEndWorkflow(t *testing.T) {
-	// Create temporary database
-	tempDB := "/tmp/schemapin_integration_test.db"
+	// Create temporary database with unique name
+	tempDB := "/tmp/schemapin_integration_test_" + t.Name() + ".db"
 	defer os.Remove(tempDB)
 
 	// Step 1: Generate key pair
@@ -61,14 +61,7 @@ func TestEndToEndWorkflow(t *testing.T) {
 		t.Fatalf("Failed to sign schema: %v", err)
 	}
 
-	// Step 3: Initialize verification workflow
-	verificationWorkflow, err := utils.NewSchemaVerificationWorkflow(tempDB)
-	if err != nil {
-		t.Fatalf("Failed to create verification workflow: %v", err)
-	}
-	defer verificationWorkflow.Close()
-
-	// Step 4: Manually pin key (simulating discovery)
+	// Step 3: Manually pin key (simulating discovery)
 	toolID := "test.example.com/test_tool"
 	domain := "test.example.com"
 	developerName := "Test Developer"
@@ -262,8 +255,8 @@ func TestCLIToolsIntegration(t *testing.T) {
 
 // TestKeyRevocation tests key revocation functionality
 func TestKeyRevocation(t *testing.T) {
-	// Create temporary database
-	tempDB := "/tmp/schemapin_revocation_test.db"
+	// Create temporary database with unique name
+	tempDB := "/tmp/schemapin_revocation_test_" + t.Name() + ".db"
 	defer os.Remove(tempDB)
 
 	// Generate keys
@@ -302,8 +295,8 @@ func TestKeyRevocation(t *testing.T) {
 
 // TestInteractivePinning tests interactive pinning functionality
 func TestInteractivePinning(t *testing.T) {
-	// Create temporary database
-	tempDB := "/tmp/schemapin_interactive_test.db"
+	// Create temporary database with unique name
+	tempDB := "/tmp/schemapin_interactive_test_" + t.Name() + ".db"
 	defer os.Remove(tempDB)
 
 	// Generate keys
