@@ -117,11 +117,15 @@ jobs:
         cd python
         PACKAGE_NAME=$(grep '^name = ' pyproject.toml | cut -d'"' -f2)
         VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
-        if pip index versions "$PACKAGE_NAME" 2>/dev/null | grep -q "$VERSION"; then
-          echo "Version $VERSION already exists on PyPI"
+        echo "Checking if version $VERSION of $PACKAGE_NAME exists on PyPI..."
+        
+        # Check if version exists on PyPI by looking in the "Available versions" line
+        if pip index versions "$PACKAGE_NAME" 2>/dev/null | grep "Available versions:" | grep -q "\b$VERSION\b"; then
+          echo "❌ Version $VERSION already exists on PyPI"
           exit 1
+        else
+          echo "✅ Version $VERSION is available for publishing"
         fi
-        echo "Version $VERSION is available for publishing"
 
     - name: Publish to Test PyPI (dry run)
       if: ${{ github.event.inputs.dry_run == 'true' }}
