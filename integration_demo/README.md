@@ -1,15 +1,16 @@
 # SchemaPin Integration Demo
 
-This directory contains a comprehensive demonstration of SchemaPin's cross-language integration capabilities, showcasing Python and JavaScript implementations working together.
+This directory contains a comprehensive demonstration of SchemaPin's cross-language integration capabilities, showcasing Python, JavaScript, and Go implementations working together.
 
 ## Overview
 
 The integration demo demonstrates:
-- Cross-language schema signing and verification
+- Cross-language schema signing and verification (Python ↔ JavaScript ↔ Go)
 - Automatic and interactive key pinning scenarios
 - Key revocation handling
 - Server-based key discovery
 - Batch processing workflows
+- CLI tool interoperability
 
 ## Demo Scenarios
 
@@ -23,26 +24,37 @@ The integration demo demonstrates:
 - Python client verifies with interactive pinning prompts
 - Shows user-controlled security decisions
 
-### Scenario 3: Key Rotation with Revocation
+### Scenario 3: Go Signs, Python/JavaScript Verify
+- Go CLI tools generate keys and sign schemas
+- Python and JavaScript implementations verify signatures
+- Tests Go CLI integration with library implementations
+
+### Scenario 4: Key Rotation with Revocation
 - Demonstrates key rotation workflow
 - Shows revocation list management
 - Tests cross-language revocation checking
 
-### Scenario 4: Cross-language Batch Processing
+### Scenario 5: Cross-language Batch Processing
 - Bulk schema signing and verification
 - Performance testing across implementations
 - Compatibility validation
 
-### Scenario 5: Server-based Discovery
+### Scenario 6: Server-based Discovery
 - Uses .well-known server for key discovery
 - Tests multiple developer endpoints
 - Validates CORS and security features
+
+### Scenario 7: CLI Tool Interoperability
+- Go CLI tools with Python/JavaScript libraries
+- Mixed workflow scenarios
+- Command-line automation examples
 
 ## Setup
 
 ### Prerequisites
 - Python 3.8+ with SchemaPin package installed
 - Node.js 16+ with SchemaPin package installed
+- Go 1.19+ with SchemaPin CLI tools installed
 - Optional: Docker for server deployment
 
 ### Installation
@@ -58,7 +70,14 @@ pip install -e .
 npm install
 ```
 
-3. Generate test keys:
+3. Build Go CLI tools:
+```bash
+cd ../go
+make build
+cd ../integration_demo
+```
+
+4. Generate test keys:
 ```bash
 python demo_scenario.py --setup
 ```
@@ -76,17 +95,23 @@ python cross_language_test.py
 # Scenario 1: Python → JavaScript
 python demo_scenario.py --scenario 1
 
-# Scenario 2: JavaScript → Python  
+# Scenario 2: JavaScript → Python
 node demo_scenario.js --scenario 2
 
-# Scenario 3: Key revocation
+# Scenario 3: Go → Python/JavaScript
 python demo_scenario.py --scenario 3
 
-# Scenario 4: Batch processing
+# Scenario 4: Key revocation
 python demo_scenario.py --scenario 4
 
-# Scenario 5: Server discovery
+# Scenario 5: Batch processing
 python demo_scenario.py --scenario 5
+
+# Scenario 6: Server discovery
+python demo_scenario.py --scenario 6
+
+# Scenario 7: CLI interoperability
+python demo_scenario.py --scenario 7
 ```
 
 ### Interactive Mode
@@ -158,21 +183,26 @@ integration_demo/
 ├── README.md                 # This file
 ├── demo_scenario.py          # Python demo script
 ├── demo_scenario.js          # JavaScript demo script
+├── demo_scenario_go.py       # Go CLI integration script
 ├── cross_language_test.py    # Automated testing
 ├── package.json              # Node.js dependencies
 ├── sample_schemas/           # Test schemas
 │   ├── mcp_tool.json
 │   ├── api_endpoint.json
 │   └── complex_nested.json
+├── go_examples/              # Go-specific examples
+│   ├── cli_workflow.py       # CLI automation examples
+│   └── mixed_scenarios.py    # Mixed language workflows
 └── test_data/               # Generated during demos
     ├── keys/
     ├── signed_schemas/
+    ├── go_binaries/          # Go CLI tools
     └── verification_results/
 ```
 
 ## API Compatibility
 
-Both Python and JavaScript implementations provide identical APIs:
+Python, JavaScript, and Go implementations provide compatible APIs:
 
 ### Signing Workflow
 ```python
@@ -200,13 +230,26 @@ const workflow = new SchemaVerificationWorkflow();
 const result = await workflow.verifySchema(schema, signature, toolId, domain);
 ```
 
+### Go CLI Tools
+```bash
+# Key generation
+schemapin-keygen --developer "Company" --contact "security@company.com"
+
+# Schema signing
+schemapin-sign --key private_key.pem --schema schema.json --output signed.json
+
+# Schema verification
+schemapin-verify --schema signed.json --domain company.com --tool-id company.com/tool
+```
+
 ## Contributing
 
 When adding new demo scenarios:
-1. Update both Python and JavaScript implementations
+1. Update Python, JavaScript, and Go implementations
 2. Add corresponding test cases
 3. Update documentation
 4. Ensure cross-platform compatibility
+5. Test CLI tool integration
 
 ## Security Considerations
 

@@ -1,0 +1,172 @@
+name: Release Go Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.1.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (skip actual publish)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release-go:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.19'
+
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Install dependencies
+      run: |
+        cd go
+        go mod download
+        go mod verify
+
+    - name: Run tests
+      run: |
+        cd go
+        go test -v -race -coverprofile=coverage.out ./...
+
+    - name: Run linting
+      run: |
+        cd go
+        go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        golangci-lint run
+
+    - name: Run security checks
+      run: |
+        cd go
+        go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+        gosec ./...
+
+    - name: Build CLI tools
+      run: |
+        cd go
+        make build
+
+    - name: Test CLI tools
+      run: |
+        cd go
+        # Test keygen
+        ./bin/schemapin-keygen --help
+        
+        # Test signing and verification
+        ./bin/schemapin-keygen --developer "Test Developer" --contact "test@example.com"
+        echo '{"name": "test", "type": "object"}' > test_schema.json
+        ./bin/schemapin-sign --key private_key.pem --schema test_schema.json --output signed_schema.json
+        ./bin/schemapin-verify --schema signed_schema.json --public-key public_key.pem
+
+    - name: Cross-compile binaries
+      run: |
+        cd go
+        mkdir -p dist
+        
+        # Build for multiple platforms
+        GOOS=linux GOARCH=amd64 go build -o dist/schemapin-keygen-linux-amd64 ./cmd/schemapin-keygen
+        GOOS=linux GOARCH=arm64 go build -o dist/schemapin-keygen-linux-arm64 ./cmd/schemapin-keygen
+        GOOS=darwin GOARCH=amd64 go build -o dist/schemapin-keygen-darwin-amd64 ./cmd/schemapin-keygen
+        GOOS=darwin GOARCH=arm64 go build -o dist/schemapin-keygen-darwin-arm64 ./cmd/schemapin-keygen
+        GOOS=windows GOARCH=amd64 go build -o dist/schemapin-keygen-windows-amd64.exe ./cmd/schemapin-keygen
+        
+        GOOS=linux GOARCH=amd64 go build -o dist/schemapin-sign-linux-amd64 ./cmd/schemapin-sign
+        GOOS=linux GOARCH=arm64 go build -o dist/schemapin-sign-linux-arm64 ./cmd/schemapin-sign
+        GOOS=darwin GOARCH=amd64 go build -o dist/schemapin-sign-darwin-amd64 ./cmd/schemapin-sign
+        GOOS=darwin GOARCH=arm64 go build -o dist/schemapin-sign-darwin-arm64 ./cmd/schemapin-sign
+        GOOS=windows GOARCH=amd64 go build -o dist/schemapin-sign-windows-amd64.exe ./cmd/schemapin-sign
+        
+        GOOS=linux GOARCH=amd64 go build -o dist/schemapin-verify-linux-amd64 ./cmd/schemapin-verify
+        GOOS=linux GOARCH=arm64 go build -o dist/schemapin-verify-linux-arm64 ./cmd/schemapin-verify
+        GOOS=darwin GOARCH=amd64 go build -o dist/schemapin-verify-darwin-amd64 ./cmd/schemapin-verify
+        GOOS=darwin GOARCH=arm64 go build -o dist/schemapin-verify-darwin-arm64 ./cmd/schemapin-verify
+        GOOS=windows GOARCH=amd64 go build -o dist/schemapin-verify-windows-amd64.exe ./cmd/schemapin-verify
+
+    - name: Create release archives
+      run: |
+        cd go/dist
+        
+        # Create archives for each platform
+        tar -czf schemapin-go-linux-amd64.tar.gz schemapin-*-linux-amd64
+        tar -czf schemapin-go-linux-arm64.tar.gz schemapin-*-linux-arm64
+        tar -czf schemapin-go-darwin-amd64.tar.gz schemapin-*-darwin-amd64
+        tar -czf schemapin-go-darwin-arm64.tar.gz schemapin-*-darwin-arm64
+        zip schemapin-go-windows-amd64.zip schemapin-*-windows-amd64.exe
+
+    - name: Generate checksums
+      run: |
+        cd go/dist
+        sha256sum *.tar.gz *.zip > checksums.txt
+
+    - name: Create GitHub Release
+      if: ${{ github.event.inputs.dry_run != 'true' && startsWith(github.ref, 'refs/tags/') }}
+      run: |
+        PRERELEASE=""
+        if [[ "${{ github.ref_name }}" == *"alpha"* ]] || [[ "${{ github.ref_name }}" == *"beta"* ]] || [[ "${{ github.ref_name }}" == *"rc"* ]]; then
+          PRERELEASE="--prerelease"
+        fi
+        
+        gh release create ${{ github.ref_name }} \
+          --title "Release ${{ github.ref_name }}" \
+          --notes "## Go Package Release
+
+        SchemaPin Go implementation with CLI tools.
+
+        ### Installation
+
+        #### Using Go Install
+        \`\`\`bash
+        go install github.com/ThirdKeyAi/schemapin/go/cmd/...@${{ github.ref_name }}
+        \`\`\`
+
+        #### Binary Downloads
+        Download pre-built binaries for your platform:
+        - Linux (amd64): [schemapin-go-linux-amd64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-linux-amd64.tar.gz)
+        - Linux (arm64): [schemapin-go-linux-arm64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-linux-arm64.tar.gz)
+        - macOS (amd64): [schemapin-go-darwin-amd64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-darwin-amd64.tar.gz)
+        - macOS (arm64): [schemapin-go-darwin-arm64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-darwin-arm64.tar.gz)
+        - Windows (amd64): [schemapin-go-windows-amd64.zip](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-windows-amd64.zip)
+
+        ### CLI Tools
+        \`\`\`bash
+        schemapin-keygen --help
+        schemapin-sign --help
+        schemapin-verify --help
+        \`\`\`
+
+        ### Changes
+        See [CHANGELOG.md](./CHANGELOG.md) for details." \
+          go/dist/*.tar.gz go/dist/*.zip go/dist/checksums.txt \
+          $PRERELEASE
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# No additional secrets required for Go releases
+# Binaries are distributed via GitHub releases

@@ -1,4 +1,4 @@
-name: Release Both Packages
+name: Release All Packages
 
 on:
   push:
@@ -17,6 +17,11 @@ on:
         default: false
       pypi_only:
         description: 'Release PyPI package only'
+        required: false
+        type: boolean
+        default: false
+      go_only:
+        description: 'Release Go package only'
         required: false
         type: boolean
         default: false
@@ -57,6 +62,11 @@ jobs:
       with:
         python-version: '3.11'
 
+    - name: Setup Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.19'
+
     - name: Check version consistency
       id: version
       run: |
@@ -64,8 +74,10 @@ jobs:
         JS_VERSION=$(node -p "require('./package.json').version")
         cd ../python
         PY_VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
-        if [ "$JS_VERSION" != "$PY_VERSION" ]; then
-          echo "Version mismatch: JS=$JS_VERSION, Python=$PY_VERSION"
+        cd ../go
+        GO_VERSION=$(grep '^const Version' internal/version/version.go | cut -d'"' -f2)
+        if [ "$JS_VERSION" != "$PY_VERSION" ] || [ "$JS_VERSION" != "$GO_VERSION" ]; then
+          echo "Version mismatch: JS=$JS_VERSION, Python=$PY_VERSION, Go=$GO_VERSION"
           exit 1
         fi
         echo "version=$JS_VERSION" >> $GITHUB_OUTPUT
@@ -76,10 +88,15 @@ jobs:
         python scripts/build_packages.py clean
         python scripts/build_packages.py test
 
+    - name: Run Go tests
+      run: |
+        cd go
+        go test -v -race ./...
+
   release-npm:
     needs: validate
     runs-on: ubuntu-latest
-    if: ${{ !github.event.inputs.pypi_only }}
+    if: ${{ !github.event.inputs.pypi_only && !github.event.inputs.go_only }}
     
     steps:
     - name: Checkout code
@@ -139,7 +156,7 @@ jobs:
   release-pypi:
     needs: validate
     runs-on: ubuntu-latest
-    if: ${{ !github.event.inputs.npm_only }}
+    if: ${{ !github.event.inputs.npm_only && !github.event.inputs.go_only }}
     
     steps:
     - name: Checkout code
@@ -194,8 +211,79 @@ jobs:
         TWINE_USERNAME: __token__
         TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
 
+  release-go:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.inputs.npm_only && !github.event.inputs.pypi_only }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.19'
+
+    - name: Install dependencies and test
+      run: |
+        cd go
+        go mod download
+        go mod verify
+        go test -v -race ./...
+
+    - name: Run linting
+      run: |
+        cd go
+        go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        golangci-lint run
+
+    - name: Build and test CLI tools
+      run: |
+        cd go
+        make build
+        ./bin/schemapin-keygen --help
+        ./bin/schemapin-sign --help
+        ./bin/schemapin-verify --help
+
+    - name: Cross-compile binaries
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: |
+        cd go
+        mkdir -p dist
+        
+        # Build for multiple platforms
+        GOOS=linux GOARCH=amd64 go build -o dist/schemapin-keygen-linux-amd64 ./cmd/schemapin-keygen
+        GOOS=linux GOARCH=arm64 go build -o dist/schemapin-keygen-linux-arm64 ./cmd/schemapin-keygen
+        GOOS=darwin GOARCH=amd64 go build -o dist/schemapin-keygen-darwin-amd64 ./cmd/schemapin-keygen
+        GOOS=darwin GOARCH=arm64 go build -o dist/schemapin-keygen-darwin-arm64 ./cmd/schemapin-keygen
+        GOOS=windows GOARCH=amd64 go build -o dist/schemapin-keygen-windows-amd64.exe ./cmd/schemapin-keygen
+        
+        GOOS=linux GOARCH=amd64 go build -o dist/schemapin-sign-linux-amd64 ./cmd/schemapin-sign
+        GOOS=linux GOARCH=arm64 go build -o dist/schemapin-sign-linux-arm64 ./cmd/schemapin-sign
+        GOOS=darwin GOARCH=amd64 go build -o dist/schemapin-sign-darwin-amd64 ./cmd/schemapin-sign
+        GOOS=darwin GOARCH=arm64 go build -o dist/schemapin-sign-darwin-arm64 ./cmd/schemapin-sign
+        GOOS=windows GOARCH=amd64 go build -o dist/schemapin-sign-windows-amd64.exe ./cmd/schemapin-sign
+        
+        GOOS=linux GOARCH=amd64 go build -o dist/schemapin-verify-linux-amd64 ./cmd/schemapin-verify
+        GOOS=linux GOARCH=arm64 go build -o dist/schemapin-verify-linux-arm64 ./cmd/schemapin-verify
+        GOOS=darwin GOARCH=amd64 go build -o dist/schemapin-verify-darwin-amd64 ./cmd/schemapin-verify
+        GOOS=darwin GOARCH=arm64 go build -o dist/schemapin-verify-darwin-arm64 ./cmd/schemapin-verify
+        GOOS=windows GOARCH=amd64 go build -o dist/schemapin-verify-windows-amd64.exe ./cmd/schemapin-verify
+
+    - name: Create release archives
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: |
+        cd go/dist
+        tar -czf schemapin-go-linux-amd64.tar.gz schemapin-*-linux-amd64
+        tar -czf schemapin-go-linux-arm64.tar.gz schemapin-*-linux-arm64
+        tar -czf schemapin-go-darwin-amd64.tar.gz schemapin-*-darwin-amd64
+        tar -czf schemapin-go-darwin-arm64.tar.gz schemapin-*-darwin-arm64
+        zip schemapin-go-windows-amd64.zip schemapin-*-windows-amd64.exe
+        sha256sum *.tar.gz *.zip > checksums.txt
+
   create-release:
-    needs: [validate, release-npm, release-pypi]
+    needs: [validate, release-npm, release-pypi, release-go]
     runs-on: ubuntu-latest
     if: ${{ always() && !github.event.inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
     
@@ -210,11 +298,17 @@ jobs:
           PRERELEASE="--prerelease"
         fi
         
+        # Upload Go binaries if they exist
+        GO_ASSETS=""
+        if [ -d "go/dist" ] && [ "$(ls -A go/dist/*.tar.gz go/dist/*.zip go/dist/checksums.txt 2>/dev/null)" ]; then
+          GO_ASSETS="go/dist/*.tar.gz go/dist/*.zip go/dist/checksums.txt"
+        fi
+        
         gh release create ${{ github.ref_name }} \
           --title "Release ${{ github.ref_name }}" \
           --notes "## SchemaPin Release ${{ github.ref_name }}
 
-        Dual-language cryptographic schema integrity verification package.
+        Multi-language cryptographic schema integrity verification package.
 
         ### npm Installation
         \`\`\`bash
@@ -226,8 +320,19 @@ jobs:
         pip install schemapin
         \`\`\`
 
-        ### CLI Tools (Python)
+        ### Go Installation
         \`\`\`bash
+        go install github.com/ThirdKeyAi/schemapin/go/cmd/...@${{ github.ref_name }}
+        \`\`\`
+
+        ### CLI Tools
+        \`\`\`bash
+        # Python
+        schemapin-keygen --help
+        schemapin-sign --help
+        schemapin-verify --help
+
+        # Go (same interface)
         schemapin-keygen --help
         schemapin-sign --help
         schemapin-verify --help
@@ -238,7 +343,9 @@ jobs:
 
         ### Package Links
         - [npm package](https://www.npmjs.com/package/schemapin)
-        - [PyPI package](https://pypi.org/project/schemapin/)" \
+        - [PyPI package](https://pypi.org/project/schemapin/)
+        - [Go module](https://pkg.go.dev/github.com/ThirdKeyAi/schemapin/go)" \
+          $GO_ASSETS \
           $PRERELEASE
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
