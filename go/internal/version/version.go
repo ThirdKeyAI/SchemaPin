@@ -2,7 +2,7 @@
 package version
 
 // Version is set at build time via ldflags
-var Version = "dev"
+var Version = "1.1.2"
 
 // GetVersion returns the current version string
 func GetVersion() string {
