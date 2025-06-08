@@ -443,10 +443,10 @@ func (k *KeyPinning) handleFirstTimeKey(toolID, domain, publicKeyPEM, developerN
 		switch decision {
 		case interactive.UserDecisionAccept:
 			return k.PinKey(toolID, publicKeyPEM, domain, developerName) == nil, nil
-		case interactive.UserDecisionAlways:
+		case interactive.UserDecisionAlwaysTrust:
 			k.SetDomainPolicy(domain, PinningPolicyAlwaysTrust)
 			return k.PinKey(toolID, publicKeyPEM, domain, developerName) == nil, nil
-		case interactive.UserDecisionNever:
+		case interactive.UserDecisionNeverTrust:
 			k.SetDomainPolicy(domain, PinningPolicyNeverTrust)
 			return false, nil
 		default:
@@ -515,11 +515,11 @@ func (k *KeyPinning) handleKeyChange(toolID, domain, currentKeyPEM, newKeyPEM, d
 			// Remove old key and pin new one
 			k.RemovePinnedKey(toolID)
 			return k.PinKey(toolID, newKeyPEM, domain, developerName) == nil, nil
-		case interactive.UserDecisionAlways:
+		case interactive.UserDecisionAlwaysTrust:
 			k.SetDomainPolicy(domain, PinningPolicyAlwaysTrust)
 			k.RemovePinnedKey(toolID)
 			return k.PinKey(toolID, newKeyPEM, domain, developerName) == nil, nil
-		case interactive.UserDecisionNever:
+		case interactive.UserDecisionNeverTrust:
 			k.SetDomainPolicy(domain, PinningPolicyNeverTrust)
 			return false, nil
 		default:

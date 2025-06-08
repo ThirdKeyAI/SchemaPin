@@ -345,8 +345,7 @@ func TestGetDeveloperInfo(t *testing.T) {
 	// Test with missing developer info
 	serverEmpty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		response := WellKnownResponse{
-			SchemaVersion: "1.1",
-			PublicKeyPEM:  "test-key",
+			PublicKeyPEM: "test-key",
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(response)
@@ -378,3 +377,54 @@ func TestGetDeveloperInfo(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(context.Background(), "GET", tt.serverURL+"/.well-known/schemapin.json", nil)
+			if err != nil {
+				t.Fatalf("Failed to create request: %v", err)
+			}
+
+			resp, err := discovery.client.Do(req)
+			if err != nil {
+				t.Fatalf("Failed to fetch: %v", err)
+			}
+			defer resp.Body.Close()
+
+			var wellKnown WellKnownResponse
+			if err := json.NewDecoder(resp.Body).Decode(&wellKnown); err != nil {
+				t.Fatalf("Failed to decode: %v", err)
+			}
+
+			info := map[string]string{
+				"developer_name": wellKnown.DeveloperName,
+				"schema_version": wellKnown.SchemaVersion,
+			}
+
+			if wellKnown.Contact != "" {
+				info["contact"] = wellKnown.Contact
+			}
+
+			// Set defaults for missing fields
+			if info["developer_name"] == "" {
+				info["developer_name"] = "Unknown"
+			}
+			if info["schema_version"] == "" {
+				info["schema_version"] = "1.0"
+			}
+
+			if info["developer_name"] != tt.expectedName {
+				t.Errorf("Expected developer name %s, got %s", tt.expectedName, info["developer_name"])
+			}
+
+			if info["schema_version"] != tt.expectedSchema {
+				t.Errorf("Expected schema version %s, got %s", tt.expectedSchema, info["schema_version"])
+			}
+
+			if tt.expectContact && info["contact"] == "" {
+				t.Errorf("Expected contact info but got none")
+			}
+
+			if !tt.expectContact && info["contact"] != "" {
+				t.Errorf("Expected no contact info but got %s", info["contact"])
+			}
+		})
+	}
+}

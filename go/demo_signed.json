@@ -1,0 +1,15 @@
+{
+  "schema": {
+    "properties": {
+      "name": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "type": "object"
+  },
+  "signature": "MEQCIFN9MR+MDb1F5wFrfHmhI/nuAmmPS0EAasGGk476SoHtAiAGjUaIB6pTWZHBYc4cVoQUAQc0CxHMah9Le9m+mErHZA==",
+  "signed_at": "2025-06-08T05:15:42Z"
+}
