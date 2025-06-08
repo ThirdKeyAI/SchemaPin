@@ -81,7 +81,7 @@ SchemaPin provides a robust defense against supply-chain attacks where benign sc
 ## Features
 
 - ✅ **Strong Security**: ECDSA P-256 signatures with SHA-256 hashing
-- ✅ **Cross-Language Support**: Python and JavaScript implementations
+- ✅ **Cross-Language Support**: Python, JavaScript, and Go implementations
 - ✅ **Simple Integration**: High-level APIs for both developers and clients
 - ✅ **Key Pinning**: TOFU mechanism prevents key substitution attacks
 - ✅ **Standard Compliance**: Follows RFC 8615 for key discovery
@@ -209,6 +209,23 @@ npm install schemapin
 npm install -g schemapin
 ```
 
+#### Go
+
+```bash
+# Install CLI tools
+go install github.com/ThirdKeyAi/schemapin/go/cmd/...@latest
+
+# Or build from source
+git clone https://github.com/thirdkey/schemapin.git
+cd schemapin/go
+make install
+```
+
+After installation, CLI tools will be available:
+- `schemapin-keygen` - Generate cryptographic key pairs
+- `schemapin-sign` - Sign JSON schemas
+- `schemapin-verify` - Verify signed schemas
+
 ### From Source (Development)
 
 ```bash
@@ -228,9 +245,14 @@ pip install -e .[dev]
 cd ../javascript
 npm install
 
+# Build Go implementation
+cd ../go
+make build
+
 # Run tests
 cd ../python && python -m pytest tests/ -v
 cd ../javascript && npm test
+cd ../go && make test
 ```
 
 ### Package Building
@@ -332,6 +354,7 @@ SchemaPin uses Trust-On-First-Use (TOFU) key pinning:
 ### Language-Specific Documentation
 - **[Python Implementation](python/README.md)** - Python package documentation, CLI tools, and examples
 - **[JavaScript Implementation](javascript/README.md)** - JavaScript/Node.js package documentation and examples
+- **[Go Implementation](go/README.md)** - Go package documentation, CLI tools, and examples
 
 ### Integration and Deployment
 - **[Integration Demo](integration_demo/README.md)** - Cross-language integration examples and test scenarios
@@ -395,7 +418,8 @@ SchemaPin/
 ├── .github/workflows/                 # GitHub Actions CI/CD
 │   ├── release-npm.yml                # npm package release
 │   ├── release-pypi.yml               # PyPI package release
-│   ├── release-combined.yml           # Dual package release
+│   ├── release-go.yml                 # Go package release
+│   ├── release-combined.yml           # Multi-language package release
 │   └── README.md                      # Workflow documentation
 ├── python/                            # Python reference implementation
 │   ├── README.md                      # Python-specific documentation
@@ -422,6 +446,22 @@ SchemaPin/
 │   │   └── utils.js                   # High-level workflows
 │   ├── tests/                         # Test suite
 │   └── examples/                      # Usage examples
+├── go/                                # Go implementation
+│   ├── README.md                      # Go-specific documentation
+│   ├── go.mod                         # Go module configuration
+│   ├── cmd/                           # CLI applications
+│   │   ├── schemapin-keygen/          # Key generation tool
+│   │   ├── schemapin-sign/            # Schema signing tool
+│   │   └── schemapin-verify/          # Schema verification tool
+│   ├── pkg/                           # Public API packages
+│   │   ├── core/                      # Schema canonicalization
+│   │   ├── crypto/                    # Cryptographic operations
+│   │   ├── discovery/                 # Public key discovery
+│   │   ├── pinning/                   # Key pinning storage
+│   │   ├── interactive/               # User interaction
+│   │   └── utils/                     # High-level workflows
+│   ├── examples/                      # Usage examples
+│   └── tests/                         # Integration tests
 ├── integration_demo/                  # Cross-language integration
 ├── server/                            # Production .well-known server
 └── scripts/                           # Build and deployment scripts

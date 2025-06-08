@@ -1,0 +1,6 @@
+{
+  "contact": "developer@example.com",
+  "developer_name": "Example Tool Developer",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAErzMTvthSI9NFGAhtQ+bXpt+gexDS\nYCj0CTam+d9B2R1v2RaQtY7m7iSJVbb/4wysO/R0i6cEX1cGomysGXtm8A==\n-----END PUBLIC KEY-----\n",
+  "schema_version": "1.1"
+}

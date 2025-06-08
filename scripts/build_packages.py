@@ -6,13 +6,12 @@ This script builds both Python and JavaScript packages with proper validation
 and integrity checks.
 """
 
-import os
 import sys
 import subprocess
 import shutil
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 
 class PackageBuilder:
@@ -23,6 +22,7 @@ class PackageBuilder:
         self.root_dir = root_dir or Path(__file__).parent.parent
         self.python_dir = self.root_dir / "python"
         self.javascript_dir = self.root_dir / "javascript"
+        self.go_dir = self.root_dir / "go"
         self.dist_dir = self.root_dir / "dist"
         
     def run_command(self, cmd: List[str], cwd: Optional[Path] = None, 
@@ -60,10 +60,20 @@ class PackageBuilder:
                     setup_version = line.split('"')[1]
                     break
         
+        # Read Go version from version.go
+        go_version_file = self.go_dir / "internal" / "version" / "version.go"
+        with open(go_version_file) as f:
+            content = f.read()
+            for line in content.split('\n'):
+                if 'const Version' in line and '"' in line:
+                    go_version = line.split('"')[1]
+                    break
+        
         versions = {
             "pyproject.toml": python_version,
             "package.json": js_version,
-            "setup.py": setup_version
+            "setup.py": setup_version,
+            "version.go": go_version
         }
         
         print(f"Versions found: {versions}")
@@ -116,22 +126,22 @@ class PackageBuilder:
         try:
             # Install test dependencies first
             print("📦 Installing test dependencies...")
-            result = self.run_command(["python", "-m", "pip", "install", "-e", ".[dev]"],
-                                    cwd=self.python_dir)
+            self.run_command(["python", "-m", "pip", "install", "-e", ".[dev]"],
+                           cwd=self.python_dir)
             print("✅ Test dependencies installed")
             
             # Run tests
-            result = self.run_command(["python", "-m", "pytest", "tests/", "-v"],
-                                    cwd=self.python_dir)
+            self.run_command(["python", "-m", "pytest", "tests/", "-v"],
+                           cwd=self.python_dir)
             print("✅ Python tests passed")
             
             # Run ruff
-            result = self.run_command(["ruff", "check", "."], cwd=self.python_dir)
+            self.run_command(["ruff", "check", "."], cwd=self.python_dir)
             print("✅ Ruff checks passed")
             
             # Run bandit
-            result = self.run_command(["bandit", "-r", ".", "--exclude", "tests/"],
-                                    cwd=self.python_dir)
+            self.run_command(["bandit", "-r", ".", "--exclude", "tests/"],
+                           cwd=self.python_dir)
             print("✅ Bandit security checks passed")
             
             return True
@@ -146,7 +156,7 @@ class PackageBuilder:
         print("📦 Running JavaScript tests...")
         
         try:
-            result = self.run_command(["npm", "test"], cwd=self.javascript_dir)
+            self.run_command(["npm", "test"], cwd=self.javascript_dir)
             print("✅ JavaScript tests passed")
             return True
         except subprocess.CalledProcessError as e:
@@ -162,12 +172,12 @@ class PackageBuilder:
         try:
             # Install build dependencies
             print("📦 Installing build dependencies...")
-            result = self.run_command(["python", "-m", "pip", "install", "build", "wheel"],
-                                    cwd=self.python_dir)
+            self.run_command(["python", "-m", "pip", "install", "build", "wheel"],
+                           cwd=self.python_dir)
             print("✅ Build dependencies installed")
             
             # Build using build module
-            result = self.run_command(["python", "-m", "build"], cwd=self.python_dir)
+            self.run_command(["python", "-m", "build"], cwd=self.python_dir)
             print("✅ Python package built successfully")
             
             # Copy to dist directory
@@ -183,13 +193,53 @@ class PackageBuilder:
             print(f"stderr: {e.stderr}")
             return False
     
+    def run_go_tests(self) -> bool:
+        """Run Go tests."""
+        print("🐹 Running Go tests...")
+        
+        try:
+            self.run_command(["go", "test", "-v", "-race", "./..."], cwd=self.go_dir)
+            print("✅ Go tests passed")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Go tests failed: {e}")
+            print(f"stdout: {e.stdout}")
+            print(f"stderr: {e.stderr}")
+            return False
+    
+    def build_go_package(self) -> bool:
+        """Build Go CLI tools."""
+        print("🐹 Building Go CLI tools...")
+        
+        try:
+            # Build CLI tools
+            self.run_command(["make", "build"], cwd=self.go_dir)
+            print("✅ Go CLI tools built successfully")
+            
+            # Copy binaries to dist directory
+            go_bin_dir = self.go_dir / "bin"
+            if go_bin_dir.exists():
+                go_dist_dir = self.dist_dir / "go"
+                go_dist_dir.mkdir(exist_ok=True)
+                for binary in go_bin_dir.glob("*"):
+                    if binary.is_file():
+                        shutil.copy2(binary, go_dist_dir)
+                        print(f"Copied {binary.name} to dist/go/")
+            
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Go build failed: {e}")
+            print(f"stdout: {e.stdout}")
+            print(f"stderr: {e.stderr}")
+            return False
+    
     def build_javascript_package(self) -> bool:
         """Build JavaScript package."""
         print("📦 Building JavaScript package...")
         
         try:
             # Create npm package
-            result = self.run_command(["npm", "pack"], cwd=self.javascript_dir)
+            self.run_command(["npm", "pack"], cwd=self.javascript_dir)
             
             # Move tarball to dist directory
             for tarball in self.javascript_dir.glob("*.tgz"):
@@ -212,6 +262,7 @@ class PackageBuilder:
         python_wheel = list(self.dist_dir.glob("*.whl"))
         python_sdist = list(self.dist_dir.glob("*.tar.gz"))
         js_package = list(self.dist_dir.glob("*.tgz"))
+        go_binaries = list((self.dist_dir / "go").glob("*")) if (self.dist_dir / "go").exists() else []
         
         if not python_wheel:
             print("❌ Python wheel not found")
@@ -225,9 +276,14 @@ class PackageBuilder:
             print("❌ JavaScript package not found")
             return False
         
+        if not go_binaries:
+            print("❌ Go binaries not found")
+            return False
+        
         print(f"✅ Found Python wheel: {python_wheel[0].name}")
         print(f"✅ Found Python sdist: {python_sdist[0].name}")
         print(f"✅ Found JavaScript package: {js_package[0].name}")
+        print(f"✅ Found Go binaries: {[b.name for b in go_binaries]}")
         
         return True
     
@@ -249,11 +305,17 @@ class PackageBuilder:
         if not self.run_javascript_tests():
             return False
         
+        if not self.run_go_tests():
+            return False
+        
         # Build packages
         if not self.build_python_package():
             return False
         
         if not self.build_javascript_package():
+            return False
+        
+        if not self.build_go_package():
             return False
         
         # Validate results
@@ -268,6 +330,12 @@ class PackageBuilder:
             if package.is_file():
                 size = package.stat().st_size / 1024  # KB
                 print(f"  - {package.name} ({size:.1f} KB)")
+            elif package.is_dir() and package.name == "go":
+                print("  - go/ (Go CLI tools)")
+                for binary in package.iterdir():
+                    if binary.is_file():
+                        size = binary.stat().st_size / 1024  # KB
+                        print(f"    - {binary.name} ({size:.1f} KB)")
         
         return True
 
@@ -281,13 +349,18 @@ def main():
         if command == "clean":
             builder.clean_build_artifacts()
         elif command == "test":
-            success = builder.run_python_tests() and builder.run_javascript_tests()
+            success = (builder.run_python_tests() and
+                      builder.run_javascript_tests() and
+                      builder.run_go_tests())
             sys.exit(0 if success else 1)
         elif command == "python":
             success = builder.build_python_package()
             sys.exit(0 if success else 1)
         elif command == "javascript":
             success = builder.build_javascript_package()
+            sys.exit(0 if success else 1)
+        elif command == "go":
+            success = builder.build_go_package()
             sys.exit(0 if success else 1)
         else:
             print(f"Unknown command: {command}")
