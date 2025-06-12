@@ -6,5 +6,5 @@ aiofiles==23.2.1
 python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
 python-dotenv==1.0.0
-requests==2.32.2
+requests==2.32.4
 cryptography==44.0.1
