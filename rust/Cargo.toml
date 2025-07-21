@@ -1,0 +1,26 @@
+[package]
+name = "schemapin"
+version = "1.1.4"
+edition = "2021"
+rust-version = "1.70"
+description = "Cryptographic schema integrity verification for AI tools - Rust implementation"
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/thirdkey/schemapin"
+repository = "https://github.com/thirdkey/schemapin"
+documentation = "https://docs.rs/schemapin"
+keywords = ["cryptography", "schema", "verification", "rsa", "security"]
+categories = ["cryptography", "authentication", "development-tools"]
+authors = ["ThirdKey <contact@thirdkey.ai>", "Jascha Wanger <jascha@thirdkey.ai>"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+rsa = "0.9"
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.21"
+hex = "0.4"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

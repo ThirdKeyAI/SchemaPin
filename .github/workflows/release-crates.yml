@@ -1,0 +1,262 @@
+name: Release Crates.io Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.1.0)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (skip actual publish)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  release-crates:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+        components: rustfmt, clippy
+
+    - name: Cache Rust dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          rust/target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+
+    - name: Install dependencies
+      run: |
+        cd rust
+        cargo fetch
+
+    - name: Run tests
+      run: |
+        cd rust
+        cargo test --verbose
+
+    - name: Run clippy checks
+      run: |
+        cd rust
+        cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Run rustfmt check
+      run: |
+        cd rust
+        cargo fmt --all -- --check
+
+    - name: Check version consistency
+      run: |
+        cd rust
+        RUST_VERSION=$(grep '^version = ' Cargo.toml | cut -d'"' -f2)
+        cd ../python
+        PY_VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
+        cd ../javascript
+        JS_VERSION=$(node -p "require('./package.json').version")
+        if [ "$RUST_VERSION" != "$PY_VERSION" ] || [ "$RUST_VERSION" != "$JS_VERSION" ]; then
+          echo "Version mismatch: Rust=$RUST_VERSION, Python=$PY_VERSION, JS=$JS_VERSION"
+          exit 1
+        fi
+        echo "Version consistency check passed: $RUST_VERSION"
+
+    - name: Build package
+      run: |
+        cd rust
+        cargo build --release
+
+    - name: Package and check
+      run: |
+        cd rust
+        cargo package --verbose
+        cargo package --list
+
+    - name: Test package installation
+      run: |
+        cd rust
+        # Create a temporary project to test installation
+        TEMP_DIR=$(mktemp -d)
+        cd "$TEMP_DIR"
+        cargo init --name test_install
+        
+        # Add our package as a dependency
+        PACKAGE_FILE=$(find $GITHUB_WORKSPACE/rust/target/package -name "*.crate" | head -1)
+        tar -xzf "$PACKAGE_FILE"
+        EXTRACTED_DIR=$(find . -maxdepth 1 -type d -name "schemapin-*" | head -1)
+        
+        # Test basic functionality
+        cat > src/main.rs << 'EOF'
+        use schemapin::crypto::{generate_key_pair, sign_data, verify_signature, calculate_key_id};
+
+        fn main() -> Result<(), Box<dyn std::error::Error>> {
+            // Test key generation
+            let key_pair = generate_key_pair()?;
+            println!("✅ Key generation successful");
+            
+            // Test signing
+            let data = b"Hello, World!";
+            let signature = sign_data(&key_pair.private_key_pem, data)?;
+            println!("✅ Signing successful");
+            
+            // Test verification
+            let is_valid = verify_signature(&key_pair.public_key_pem, data, &signature)?;
+            assert!(is_valid);
+            println!("✅ Verification successful");
+            
+            // Test key ID calculation
+            let key_id = calculate_key_id(&key_pair.public_key_pem)?;
+            println!("✅ Key ID calculation successful: {}", key_id);
+            
+            println!("✅ All tests passed");
+            Ok(())
+        }
+        EOF
+        
+        # Add dependency to Cargo.toml
+        echo "" >> Cargo.toml
+        echo "[dependencies]" >> Cargo.toml
+        echo "schemapin = { path = \"$EXTRACTED_DIR\" }" >> Cargo.toml
+        
+        # Run the test
+        cargo run
+
+    - name: Check if version exists on crates.io
+      run: |
+        cd rust
+        PACKAGE_NAME=$(grep '^name = ' Cargo.toml | cut -d'"' -f2)
+        VERSION=$(grep '^version = ' Cargo.toml | cut -d'"' -f2)
+        echo "Checking if version $VERSION of $PACKAGE_NAME exists on crates.io..."
+        
+        # Check if version exists on crates.io
+        if cargo search "$PACKAGE_NAME" --limit 1 | grep -q "^$PACKAGE_NAME = \"$VERSION\""; then
+          echo "❌ Version $VERSION already exists on crates.io"
+          exit 1
+        else
+          echo "✅ Version $VERSION is available for publishing"
+        fi
+
+    - name: Publish to crates.io (dry run)
+      if: ${{ github.event.inputs.dry_run == 'true' }}
+      run: |
+        cd rust
+        echo "Dry run - would publish to crates.io:"
+        cargo publish --dry-run --verbose
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+    - name: Publish to crates.io
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: |
+        cd rust
+        cargo publish --verbose
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+    - name: Test installation from crates.io
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: |
+        # Wait for package to be available
+        sleep 180
+        
+        # Create fresh test project
+        TEMP_DIR=$(mktemp -d)
+        cd "$TEMP_DIR"
+        cargo init --name test_crates_install
+        
+        # Add dependency from crates.io
+        cd rust
+        PACKAGE_NAME=$(grep '^name = ' $GITHUB_WORKSPACE/rust/Cargo.toml | cut -d'"' -f2)
+        VERSION=$(grep '^version = ' $GITHUB_WORKSPACE/rust/Cargo.toml | cut -d'"' -f2)
+        cd "$TEMP_DIR"
+        echo "" >> Cargo.toml
+        echo "[dependencies]" >> Cargo.toml
+        echo "$PACKAGE_NAME = \"$VERSION\"" >> Cargo.toml
+        
+        # Test functionality
+        cat > src/main.rs << 'EOF'
+        use schemapin::crypto::generate_key_pair;
+        
+        fn main() -> Result<(), Box<dyn std::error::Error>> {
+            let _key_pair = generate_key_pair()?;
+            println!("✅ Crates.io installation successful");
+            Ok(())
+        }
+        EOF
+        
+        # Run the test
+        cargo run
+
+    - name: Create GitHub Release
+      if: ${{ github.event.inputs.dry_run != 'true' && startsWith(github.ref, 'refs/tags/') }}
+      run: |
+        PRERELEASE=""
+        if [[ "${{ github.ref_name }}" == *"alpha"* ]] || [[ "${{ github.ref_name }}" == *"beta"* ]] || [[ "${{ github.ref_name }}" == *"rc"* ]]; then
+          PRERELEASE="--prerelease"
+        fi
+        
+        gh release create ${{ github.ref_name }} \
+          --title "Release ${{ github.ref_name }}" \
+          --notes "## Rust Crate Release
+        
+        Published \`schemapin = \"${{ github.ref_name }}\"\` to crates.io.
+        
+        ### Installation
+        \`\`\`toml
+        [dependencies]
+        schemapin = \"${{ github.ref_name }}\"
+        \`\`\`
+        
+        ### Usage
+        \`\`\`rust
+        use schemapin::crypto::{generate_key_pair, sign_data, verify_signature, calculate_key_id};
+        
+        fn main() -> Result<(), Box<dyn std::error::Error>> {
+            // Generate a new key pair
+            let key_pair = generate_key_pair()?;
+            
+            // Sign some data
+            let data = b\"Hello, World!\";
+            let signature = sign_data(&key_pair.private_key_pem, data)?;
+            
+            // Verify the signature
+            let is_valid = verify_signature(&key_pair.public_key_pem, data, &signature)?;
+            assert!(is_valid);
+            
+            // Calculate key ID
+            let key_id = calculate_key_id(&key_pair.public_key_pem)?;
+            println!(\"Key ID: {}\", key_id);
+            
+            Ok(())
+        }
+        \`\`\`
+        
+        ### Changes
+        See [CHANGELOG.md](./CHANGELOG.md) for details." \
+          $PRERELEASE
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# Required secrets to configure in GitHub repository settings:
+# - CARGO_REGISTRY_TOKEN: Crates.io API token with publish permissions
+#   Generate at: https://crates.io/settings/tokens
+#   Should have "Publish new crates" and "Publish updates to existing crates" scopes

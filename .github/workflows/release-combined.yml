@@ -25,6 +25,11 @@ on:
         required: false
         type: boolean
         default: false
+      rust_only:
+        description: 'Release Rust crate only'
+        required: false
+        type: boolean
+        default: false
       test_pypi_only:
         description: 'Publish to Test PyPI only'
         required: false
@@ -67,6 +72,13 @@ jobs:
       with:
         go-version: '1.19'
 
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+
     - name: Check version consistency
       id: version
       run: |
@@ -76,8 +88,10 @@ jobs:
         PY_VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
         cd ../go
         GO_VERSION=$(grep '^const Version' internal/version/version.go | cut -d'"' -f2)
-        if [ "$JS_VERSION" != "$PY_VERSION" ] || [ "$JS_VERSION" != "$GO_VERSION" ]; then
-          echo "Version mismatch: JS=$JS_VERSION, Python=$PY_VERSION, Go=$GO_VERSION"
+        cd ../rust
+        RUST_VERSION=$(grep '^version = ' Cargo.toml | cut -d'"' -f2)
+        if [ "$JS_VERSION" != "$PY_VERSION" ] || [ "$JS_VERSION" != "$GO_VERSION" ] || [ "$JS_VERSION" != "$RUST_VERSION" ]; then
+          echo "Version mismatch: JS=$JS_VERSION, Python=$PY_VERSION, Go=$GO_VERSION, Rust=$RUST_VERSION"
           exit 1
         fi
         echo "version=$JS_VERSION" >> $GITHUB_OUTPUT
@@ -93,10 +107,16 @@ jobs:
         cd go
         go test -v -race ./...
 
+    - name: Run Rust tests
+      run: |
+        cd rust
+        cargo test --verbose
+        cargo clippy --all-targets --all-features -- -D warnings
+
   release-npm:
     needs: validate
     runs-on: ubuntu-latest
-    if: ${{ !github.event.inputs.pypi_only && !github.event.inputs.go_only }}
+    if: ${{ !github.event.inputs.pypi_only && !github.event.inputs.go_only && !github.event.inputs.rust_only }}
     
     steps:
     - name: Checkout code
@@ -156,7 +176,7 @@ jobs:
   release-pypi:
     needs: validate
     runs-on: ubuntu-latest
-    if: ${{ !github.event.inputs.npm_only && !github.event.inputs.go_only }}
+    if: ${{ !github.event.inputs.npm_only && !github.event.inputs.go_only && !github.event.inputs.rust_only }}
     
     steps:
     - name: Checkout code
@@ -214,7 +234,7 @@ jobs:
   release-go:
     needs: validate
     runs-on: ubuntu-latest
-    if: ${{ !github.event.inputs.npm_only && !github.event.inputs.pypi_only }}
+    if: ${{ !github.event.inputs.npm_only && !github.event.inputs.pypi_only && !github.event.inputs.rust_only }}
     
     steps:
     - name: Checkout code
@@ -282,8 +302,56 @@ jobs:
         zip schemapin-go-windows-amd64.zip schemapin-*-windows-amd64.exe
         sha256sum *.tar.gz *.zip > checksums.txt
 
+  release-rust:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.inputs.npm_only && !github.event.inputs.pypi_only && !github.event.inputs.go_only }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+        components: rustfmt, clippy
+
+    - name: Cache Rust dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          rust/target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+
+    - name: Install dependencies and test
+      run: |
+        cd rust
+        cargo fetch
+        cargo test --verbose
+        cargo clippy --all-targets --all-features -- -D warnings
+        cargo fmt --all -- --check
+
+    - name: Build and test package
+      run: |
+        cd rust
+        cargo build --release
+        cargo package --verbose
+
+    - name: Publish to crates.io
+      if: ${{ github.event.inputs.dry_run != 'true' }}
+      run: |
+        cd rust
+        cargo publish --verbose
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
   create-release:
-    needs: [validate, release-npm, release-pypi, release-go]
+    needs: [validate, release-npm, release-pypi, release-go, release-rust]
     runs-on: ubuntu-latest
     if: ${{ always() && !github.event.inputs.dry_run && startsWith(github.ref, 'refs/tags/') }}
     
@@ -325,6 +393,12 @@ jobs:
         go install github.com/ThirdKeyAi/schemapin/go/cmd/...@${{ github.ref_name }}
         \`\`\`
 
+        ### Rust Installation
+        \`\`\`toml
+        [dependencies]
+        schemapin = \"${{ github.ref_name }}\"
+        \`\`\`
+
         ### CLI Tools
         \`\`\`bash
         # Python
@@ -338,13 +412,23 @@ jobs:
         schemapin-verify --help
         \`\`\`
 
+        ### Rust Usage
+        \`\`\`rust
+        use schemapin::crypto::{generate_key_pair, sign_data, verify_signature};
+        
+        let key_pair = generate_key_pair()?;
+        let signature = sign_data(&key_pair.private_key_pem, data)?;
+        let is_valid = verify_signature(&key_pair.public_key_pem, data, &signature)?;
+        \`\`\`
+
         ### Changes
         See [CHANGELOG.md](./CHANGELOG.md) for detailed changes.
 
         ### Package Links
         - [npm package](https://www.npmjs.com/package/schemapin)
         - [PyPI package](https://pypi.org/project/schemapin/)
-        - [Go module](https://pkg.go.dev/github.com/ThirdKeyAi/schemapin/go)" \
+        - [Go module](https://pkg.go.dev/github.com/ThirdKeyAi/schemapin/go)
+        - [Rust crate](https://crates.io/crates/schemapin)" \
           $GO_ASSETS \
           $PRERELEASE
       env:
