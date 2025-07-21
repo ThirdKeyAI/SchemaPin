@@ -9,13 +9,13 @@ readme = "README.md"
 homepage = "https://github.com/thirdkey/schemapin"
 repository = "https://github.com/thirdkey/schemapin"
 documentation = "https://docs.rs/schemapin"
-keywords = ["cryptography", "schema", "verification", "rsa", "security"]
+keywords = ["cryptography", "schema", "verification", "ecdsa", "security"]
 categories = ["cryptography", "authentication", "development-tools"]
 authors = ["ThirdKey <contact@thirdkey.ai>", "Jascha Wanger <jascha@thirdkey.ai>"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-rsa = "0.9"
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 rand = "0.8"
 sha2 = "0.10"
 base64 = "0.21"

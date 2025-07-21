@@ -75,7 +75,7 @@ SchemaPin provides a robust defense against supply-chain attacks where benign sc
 ## Features
 
 - ✅ **Strong Security**: ECDSA P-256 signatures with SHA-256 hashing
-- ✅ **Cross-Language Support**: Python, JavaScript, and Go implementations
+- ✅ **Cross-Language Support**: Python, JavaScript, Go, and Rust implementations
 - ✅ **Simple Integration**: High-level APIs for both developers and clients
 - ✅ **Key Pinning**: TOFU mechanism prevents key substitution attacks
 - ✅ **Standard Compliance**: Follows RFC 8615 for key discovery
@@ -203,6 +203,17 @@ npm install schemapin
 npm install -g schemapin
 ```
 
+#### Rust (Cargo)
+
+```bash
+# Add to your Cargo.toml
+[dependencies]
+schemapin = "1.1.4"
+
+# Or install from git for latest development version
+cargo add --git https://github.com/thirdkey/schemapin schemapin
+```
+
 #### Go
 
 ```bash
@@ -243,10 +254,15 @@ npm install
 cd ../go
 make build
 
+# Build Rust implementation
+cd ../rust
+cargo build
+
 # Run tests
 cd ../python && python -m pytest tests/ -v
 cd ../javascript && npm test
 cd ../go && make test
+cd ../rust && cargo test
 ```
 
 ### Package Building
@@ -349,6 +365,7 @@ SchemaPin uses Trust-On-First-Use (TOFU) key pinning:
 - **[Python Implementation](python/README.md)** - Python package documentation, CLI tools, and examples
 - **[JavaScript Implementation](javascript/README.md)** - JavaScript/Node.js package documentation and examples
 - **[Go Implementation](go/README.md)** - Go package documentation, CLI tools, and examples
+- **[Rust Implementation](rust/README.md)** - Rust crate documentation and examples
 
 ### Integration and Deployment
 - **[Integration Demo](integration_demo/README.md)** - Cross-language integration examples and test scenarios
@@ -456,6 +473,16 @@ SchemaPin/
 │   │   └── utils/                     # High-level workflows
 │   ├── examples/                      # Usage examples
 │   └── tests/                         # Integration tests
+├── rust/                              # Rust implementation
+│   ├── README.md                      # Rust-specific documentation
+│   ├── Cargo.toml                     # Rust crate configuration
+│   ├── src/                           # Core library
+│   │   ├── lib.rs                     # Crate root and exports
+│   │   ├── core.rs                    # Schema canonicalization
+│   │   ├── crypto.rs                  # Cryptographic operations
+│   │   └── main.rs                    # CLI application
+│   ├── examples/                      # Usage examples
+│   └── tests/                         # Test suite
 ├── integration_demo/                  # Cross-language integration
 ├── server/                            # Production .well-known server
 └── scripts/                           # Build and deployment scripts

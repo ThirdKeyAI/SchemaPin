@@ -1,14 +1,12 @@
-//! Cryptographic operations for SchemaPin using RSA.
+//! Cryptographic operations for SchemaPin using ECDSA P-256.
 
 use base64::{engine::general_purpose, Engine as _};
-use rand::rngs::OsRng;
-use rsa::{
-    pkcs1::{DecodeRsaPrivateKey, DecodeRsaPublicKey},
-    pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey},
-    pss::{BlindedSigningKey, VerifyingKey},
-    signature::{RandomizedSigner, SignatureEncoding, Verifier},
-    RsaPrivateKey, RsaPublicKey,
+use p256::{
+    ecdsa::{SigningKey, VerifyingKey, Signature, signature::Signer, signature::Verifier},
+    pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, spki},
+    SecretKey, PublicKey,
 };
+use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 use std::error::Error as StdError;
 use std::fmt;
@@ -16,16 +14,16 @@ use std::fmt;
 /// Custom error type for cryptographic operations
 #[derive(Debug)]
 pub enum Error {
-    /// RSA key generation or operation error
-    Rsa(rsa::Error),
-    /// PKCS#1 encoding/decoding error
-    Pkcs1(rsa::pkcs1::Error),
+    /// ECDSA key generation or operation error
+    Ecdsa(String),
     /// PKCS#8 encoding/decoding error
-    Pkcs8(rsa::pkcs8::Error),
+    Pkcs8(p256::pkcs8::Error),
+    /// SPKI encoding/decoding error
+    Spki(spki::Error),
     /// Base64 encoding/decoding error
     Base64(base64::DecodeError),
     /// Signature verification error
-    Signature(rsa::signature::Error),
+    Signature(String),
     /// Invalid key format
     InvalidKeyFormat,
 }
@@ -33,9 +31,9 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Rsa(e) => write!(f, "RSA error: {}", e),
-            Error::Pkcs1(e) => write!(f, "PKCS#1 error: {}", e),
+            Error::Ecdsa(e) => write!(f, "ECDSA error: {}", e),
             Error::Pkcs8(e) => write!(f, "PKCS#8 error: {}", e),
+            Error::Spki(e) => write!(f, "SPKI error: {}", e),
             Error::Base64(e) => write!(f, "Base64 error: {}", e),
             Error::Signature(e) => write!(f, "Signature error: {}", e),
             Error::InvalidKeyFormat => write!(f, "Invalid key format"),
@@ -45,33 +43,21 @@ impl fmt::Display for Error {
 
 impl StdError for Error {}
 
-impl From<rsa::Error> for Error {
-    fn from(err: rsa::Error) -> Self {
-        Error::Rsa(err)
-    }
-}
-
-impl From<rsa::pkcs1::Error> for Error {
-    fn from(err: rsa::pkcs1::Error) -> Self {
-        Error::Pkcs1(err)
-    }
-}
-
-impl From<rsa::pkcs8::Error> for Error {
-    fn from(err: rsa::pkcs8::Error) -> Self {
+impl From<p256::pkcs8::Error> for Error {
+    fn from(err: p256::pkcs8::Error) -> Self {
         Error::Pkcs8(err)
+    }
+}
+
+impl From<spki::Error> for Error {
+    fn from(err: spki::Error) -> Self {
+        Error::Spki(err)
     }
 }
 
 impl From<base64::DecodeError> for Error {
     fn from(err: base64::DecodeError) -> Self {
         Error::Base64(err)
-    }
-}
-
-impl From<rsa::signature::Error> for Error {
-    fn from(err: rsa::signature::Error) -> Self {
-        Error::Signature(err)
     }
 }
 
@@ -82,7 +68,7 @@ pub struct KeyPair {
     pub public_key_pem: String,
 }
 
-/// Generate a new RSA key pair and return the private and public keys in PEM format.
+/// Generate a new ECDSA P-256 key pair and return the private and public keys in PEM format.
 ///
 /// # Returns
 ///
@@ -94,17 +80,15 @@ pub struct KeyPair {
 pub fn generate_key_pair() -> Result<KeyPair, Error> {
     let mut rng = OsRng;
     
-    // Generate a 2048-bit RSA key pair
-    let private_key = RsaPrivateKey::new(&mut rng, 2048)?;
-    let public_key = private_key.to_public_key();
-
+    // Generate a P-256 (secp256r1) ECDSA key pair
+    let secret_key = SecretKey::random(&mut rng);
+    let public_key = secret_key.public_key();
+    
     // Export to PEM format using PKCS#8
-    let private_key_pem = private_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)
-        .map_err(|_| Error::InvalidKeyFormat)?
+    let private_key_pem = secret_key.to_pkcs8_pem(p256::pkcs8::LineEnding::LF)?
         .to_string();
     
-    let public_key_pem = public_key.to_public_key_pem(rsa::pkcs8::LineEnding::LF)
-        .map_err(|_| Error::InvalidKeyFormat)?;
+    let public_key_pem = public_key.to_public_key_pem(p256::pkcs8::LineEnding::LF)?;
 
     Ok(KeyPair {
         private_key_pem,
@@ -127,19 +111,15 @@ pub fn generate_key_pair() -> Result<KeyPair, Error> {
 ///
 /// Returns an error if the private key is invalid or signing fails.
 pub fn sign_data(private_key_pem: &str, data: &[u8]) -> Result<String, Error> {
-    // Try PKCS#8 format first, then fall back to PKCS#1
-    let private_key = RsaPrivateKey::from_pkcs8_pem(private_key_pem)
-        .or_else(|_| RsaPrivateKey::from_pkcs1_pem(private_key_pem))
-        .map_err(|_| Error::InvalidKeyFormat)?;
-
-    let mut rng = OsRng;
-    let signing_key = BlindedSigningKey::<Sha256>::new(private_key);
+    // Load the private key from PEM
+    let secret_key = SecretKey::from_pkcs8_pem(private_key_pem)?;
+    let signing_key = SigningKey::from(secret_key);
     
-    // Sign the data using PSS with SHA-256
-    let signature = signing_key.sign_with_rng(&mut rng, data);
+    // Sign the data using ECDSA with SHA-256
+    let signature: p256::ecdsa::Signature = signing_key.sign(data);
     
     // Encode signature as base64
-    Ok(general_purpose::STANDARD.encode(signature.to_bytes()))
+    Ok(general_purpose::STANDARD.encode(signature.to_der()))
 }
 
 /// Verify the signature of the given data using the public key.
@@ -158,18 +138,15 @@ pub fn sign_data(private_key_pem: &str, data: &[u8]) -> Result<String, Error> {
 ///
 /// Returns an error if the public key is invalid or signature format is invalid.
 pub fn verify_signature(public_key_pem: &str, data: &[u8], signature: &str) -> Result<bool, Error> {
-    // Try PKCS#8 format first, then fall back to PKCS#1
-    let public_key = RsaPublicKey::from_public_key_pem(public_key_pem)
-        .or_else(|_| RsaPublicKey::from_pkcs1_pem(public_key_pem))
-        .map_err(|_| Error::InvalidKeyFormat)?;
-
-    let verifying_key = VerifyingKey::<Sha256>::new(public_key);
+    // Load the public key from PEM
+    let public_key = PublicKey::from_public_key_pem(public_key_pem)?;
+    let verifying_key = VerifyingKey::from(public_key);
     
     // Decode the base64 signature
     let signature_bytes = general_purpose::STANDARD.decode(signature)?;
     
-    // Create signature object
-    let signature_obj = rsa::pss::Signature::try_from(signature_bytes.as_slice())
+    // Create signature object from DER bytes
+    let signature_obj = Signature::from_der(&signature_bytes)
         .map_err(|_| Error::InvalidKeyFormat)?;
     
     // Verify the signature
@@ -187,27 +164,111 @@ pub fn verify_signature(public_key_pem: &str, data: &[u8], signature: &str) -> R
 ///
 /// # Returns
 ///
-/// SHA-256 hash of the public key as a hexadecimal string.
+/// SHA-256 hash of the public key as a hexadecimal string prefixed with "sha256:".
 ///
 /// # Errors
 ///
 /// Returns an error if the public key format is invalid.
 pub fn calculate_key_id(public_key_pem: &str) -> Result<String, Error> {
-    // Try PKCS#8 format first, then fall back to PKCS#1
-    let public_key = RsaPublicKey::from_public_key_pem(public_key_pem)
-        .or_else(|_| RsaPublicKey::from_pkcs1_pem(public_key_pem))
-        .map_err(|_| Error::InvalidKeyFormat)?;
-
+    // Load the public key from PEM
+    let public_key = PublicKey::from_public_key_pem(public_key_pem)?;
+    
     // Convert to DER format for consistent hashing
-    let der_bytes = public_key.to_public_key_der()
-        .map_err(|_| Error::InvalidKeyFormat)?;
+    let der_bytes = public_key.to_public_key_der()?;
     
     // Calculate SHA-256 hash
     let mut hasher = Sha256::new();
     hasher.update(der_bytes.as_bytes());
     let hash = hasher.finalize();
     
-    Ok(hex::encode(hash))
+    Ok(format!("sha256:{}", hex::encode(hash)))
+}
+
+/// Key manager for ECDSA P-256 operations (matches Python API)
+pub struct KeyManager;
+
+impl KeyManager {
+    /// Generate new ECDSA P-256 key pair.
+    pub fn generate_keypair() -> Result<(SecretKey, PublicKey), Error> {
+        let mut rng = OsRng;
+        let secret_key = SecretKey::random(&mut rng);
+        let public_key = secret_key.public_key();
+        Ok((secret_key, public_key))
+    }
+
+    /// Export private key to PEM format.
+    pub fn export_private_key_pem(private_key: &SecretKey) -> Result<String, Error> {
+        Ok(private_key.to_pkcs8_pem(p256::pkcs8::LineEnding::LF)?.to_string())
+    }
+
+    /// Export public key to PEM format.
+    pub fn export_public_key_pem(public_key: &PublicKey) -> Result<String, Error> {
+        Ok(public_key.to_public_key_pem(p256::pkcs8::LineEnding::LF)?)
+    }
+
+    /// Load private key from PEM format.
+    pub fn load_private_key_pem(pem_data: &str) -> Result<SecretKey, Error> {
+        Ok(SecretKey::from_pkcs8_pem(pem_data)?)
+    }
+
+    /// Load public key from PEM format.
+    pub fn load_public_key_pem(pem_data: &str) -> Result<PublicKey, Error> {
+        Ok(PublicKey::from_public_key_pem(pem_data)?)
+    }
+
+    /// Calculate SHA-256 fingerprint of public key.
+    pub fn calculate_key_fingerprint(public_key: &PublicKey) -> Result<String, Error> {
+        let der_bytes = public_key.to_public_key_der()?;
+        let mut hasher = Sha256::new();
+        hasher.update(der_bytes.as_bytes());
+        let hash = hasher.finalize();
+        Ok(format!("sha256:{}", hex::encode(hash)))
+    }
+
+    /// Calculate SHA-256 fingerprint from PEM-encoded public key.
+    pub fn calculate_key_fingerprint_from_pem(public_key_pem: &str) -> Result<String, Error> {
+        let public_key = Self::load_public_key_pem(public_key_pem)?;
+        Self::calculate_key_fingerprint(&public_key)
+    }
+}
+
+/// Signature manager for ECDSA operations (matches Python API)
+pub struct SignatureManager;
+
+impl SignatureManager {
+    /// Sign hash using ECDSA P-256 and return Base64-encoded signature.
+    pub fn sign_hash(hash_bytes: &[u8], private_key: &SecretKey) -> Result<String, Error> {
+        let signing_key = SigningKey::from(private_key.clone());
+        let signature: p256::ecdsa::Signature = signing_key.sign(hash_bytes);
+        Ok(general_purpose::STANDARD.encode(signature.to_der()))
+    }
+
+    /// Verify ECDSA signature against hash.
+    pub fn verify_signature(hash_bytes: &[u8], signature_b64: &str, public_key: &PublicKey) -> Result<bool, Error> {
+        let verifying_key = VerifyingKey::from(*public_key);
+        let signature_bytes = general_purpose::STANDARD.decode(signature_b64)?;
+        let signature_obj = Signature::from_der(&signature_bytes)
+            .map_err(|_| Error::InvalidKeyFormat)?;
+        
+        match verifying_key.verify(hash_bytes, &signature_obj) {
+            Ok(()) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Sign schema hash and return Base64 signature.
+    pub fn sign_schema_hash(schema_hash: &[u8], private_key: &SecretKey) -> Result<String, Error> {
+        Self::sign_hash(schema_hash, private_key)
+    }
+
+    /// Verify schema signature against hash.
+    pub fn verify_schema_signature(
+        schema_hash: &[u8],
+        signature_b64: &str,
+        public_key: &PublicKey
+    ) -> Result<bool, Error> {
+        Self::verify_signature(schema_hash, signature_b64, public_key)
+    }
 }
 
 #[cfg(test)]
@@ -242,11 +303,41 @@ mod tests {
         let key_pair = generate_key_pair().unwrap();
         let key_id = calculate_key_id(&key_pair.public_key_pem).unwrap();
         
-        // SHA-256 hash should be 64 characters long (32 bytes in hex)
-        assert_eq!(key_id.len(), 64);
+        // Should start with "sha256:" and be 71 characters total (7 + 64)
+        assert!(key_id.starts_with("sha256:"));
+        assert_eq!(key_id.len(), 71);
         
         // Should be deterministic
         let key_id2 = calculate_key_id(&key_pair.public_key_pem).unwrap();
         assert_eq!(key_id, key_id2);
+    }
+
+    #[test]
+    fn test_key_manager_api() {
+        let (private_key, public_key) = KeyManager::generate_keypair().unwrap();
+        let private_key_pem = KeyManager::export_private_key_pem(&private_key).unwrap();
+        let public_key_pem = KeyManager::export_public_key_pem(&public_key).unwrap();
+        
+        let loaded_private = KeyManager::load_private_key_pem(&private_key_pem).unwrap();
+        let loaded_public = KeyManager::load_public_key_pem(&public_key_pem).unwrap();
+        
+        // Keys should be equivalent
+        assert_eq!(private_key.to_bytes(), loaded_private.to_bytes());
+        // Test that the public keys can be used to verify the same signature
+        let test_data = b"test data";
+        let sig1 = SignatureManager::sign_hash(test_data, &private_key).unwrap();
+        assert!(SignatureManager::verify_signature(test_data, &sig1, &public_key).unwrap());
+        assert!(SignatureManager::verify_signature(test_data, &sig1, &loaded_public).unwrap());
+    }
+
+    #[test]
+    fn test_signature_manager_api() {
+        let (private_key, public_key) = KeyManager::generate_keypair().unwrap();
+        let data = b"Test data for signature";
+        
+        let signature = SignatureManager::sign_hash(data, &private_key).unwrap();
+        let is_valid = SignatureManager::verify_signature(data, &signature, &public_key).unwrap();
+        
+        assert!(is_valid);
     }
 }

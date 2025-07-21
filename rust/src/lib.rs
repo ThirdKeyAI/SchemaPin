@@ -3,16 +3,16 @@
 //! Cryptographic schema integrity verification for AI tools.
 //!
 //! SchemaPin provides a robust framework for verifying the integrity and authenticity
-//! of JSON schemas used by AI tools and services. It uses RSA cryptographic signatures
+//! of JSON schemas used by AI tools and services. It uses ECDSA P-256 cryptographic signatures
 //! to ensure that schemas haven't been tampered with and come from trusted sources.
 //!
 //! ## Features
 //!
-//! - **RSA Key Generation**: Generate 2048-bit RSA key pairs for signing and verification
-//! - **Digital Signatures**: Sign data using RSA-PSS with SHA-256
+//! - **ECDSA P-256 Key Generation**: Generate ECDSA P-256 key pairs for signing and verification
+//! - **Digital Signatures**: Sign data using ECDSA with SHA-256
 //! - **Signature Verification**: Verify signatures to ensure data integrity
 //! - **Key ID Calculation**: Generate SHA-256 fingerprints for key identification
-//! - **PEM Format Support**: Full support for PKCS#1 and PKCS#8 key formats
+//! - **PEM Format Support**: Full support for PKCS#8 key formats
 //!
 //! ## Quick Start
 //!
@@ -38,8 +38,8 @@
 //! ## Security
 //!
 //! This implementation uses:
-//! - RSA-PSS padding scheme with SHA-256 for signatures
-//! - 2048-bit RSA keys (minimum recommended size)
+//! - ECDSA with P-256 curve (secp256r1) for signatures
+//! - SHA-256 for hashing and signature algorithms
 //! - Secure random number generation
 //! - Constant-time operations where possible
 //!
