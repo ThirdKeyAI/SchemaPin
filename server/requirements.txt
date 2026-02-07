@@ -1,10 +1,10 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.0
-python-multipart==0.0.18
+python-multipart==0.0.22
 aiofiles==23.2.1
 python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
 python-dotenv==1.0.0
 requests==2.32.4
-cryptography==44.0.1
+cryptography==45.0.5
