@@ -513,14 +513,14 @@ func (k *KeyPinning) handleKeyChange(toolID, domain, currentKeyPEM, newKeyPEM, d
 		switch decision {
 		case interactive.UserDecisionAccept:
 			// Remove old key and pin new one
-			k.RemovePinnedKey(toolID)
+			_ = k.RemovePinnedKey(toolID)
 			return k.PinKey(toolID, newKeyPEM, domain, developerName) == nil, nil
 		case interactive.UserDecisionAlwaysTrust:
-			k.SetDomainPolicy(domain, PinningPolicyAlwaysTrust)
-			k.RemovePinnedKey(toolID)
+			_ = k.SetDomainPolicy(domain, PinningPolicyAlwaysTrust)
+			_ = k.RemovePinnedKey(toolID)
 			return k.PinKey(toolID, newKeyPEM, domain, developerName) == nil, nil
 		case interactive.UserDecisionNeverTrust:
-			k.SetDomainPolicy(domain, PinningPolicyNeverTrust)
+			_ = k.SetDomainPolicy(domain, PinningPolicyNeverTrust)
 			return false, nil
 		default:
 			return false, nil

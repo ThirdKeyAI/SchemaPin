@@ -132,9 +132,7 @@ jobs:
         }
         EOF
         
-        # Add dependency to Cargo.toml
-        echo "" >> Cargo.toml
-        echo "[dependencies]" >> Cargo.toml
+        # Add dependency to existing [dependencies] section
         echo "schemapin = { path = \"$EXTRACTED_DIR\" }" >> Cargo.toml
         
         # Run the test

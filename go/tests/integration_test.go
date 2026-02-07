@@ -334,8 +334,12 @@ func TestInteractivePinning(t *testing.T) {
 	}
 
 	// Test domain policies
-	keyPinning.SetDomainPolicy("trusted.example.com", pinning.PinningPolicyAlwaysTrust)
-	keyPinning.SetDomainPolicy("untrusted.example.com", pinning.PinningPolicyNeverTrust)
+	if err := keyPinning.SetDomainPolicy("trusted.example.com", pinning.PinningPolicyAlwaysTrust); err != nil {
+		t.Fatalf("Failed to set domain policy: %v", err)
+	}
+	if err := keyPinning.SetDomainPolicy("untrusted.example.com", pinning.PinningPolicyNeverTrust); err != nil {
+		t.Fatalf("Failed to set domain policy: %v", err)
+	}
 
 	// Verify policies are set (this would require additional methods in the pinning package)
 	t.Log("✅ Interactive pinning test passed")

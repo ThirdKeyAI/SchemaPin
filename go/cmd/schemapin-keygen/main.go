@@ -120,11 +120,10 @@ func runKeygen(cmd *cobra.Command, args []string) error {
 	}
 
 	// Determine file extensions
-	ext := ".pem"
 	if format == "der" {
-		ext = ".der"
 		return fmt.Errorf("DER format not yet implemented")
 	}
+	ext := ".pem"
 
 	privateKeyFile := filepath.Join(outputDir, fmt.Sprintf("%s_private%s", prefix, ext))
 	publicKeyFile := filepath.Join(outputDir, fmt.Sprintf("%s_public%s", prefix, ext))

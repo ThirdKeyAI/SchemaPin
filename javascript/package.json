@@ -1,6 +1,6 @@
 {
   "name": "schemapin",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "Cryptographic schema integrity verification for AI tools",
   "main": "src/index.js",
   "type": "module",

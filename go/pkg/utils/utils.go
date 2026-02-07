@@ -231,7 +231,7 @@ func (s *SchemaVerificationWorkflow) VerifySchema(ctx context.Context, schema ma
 
 	// Update verification timestamp if valid and pinned
 	if result.Valid && result.Pinned {
-		s.pinning.UpdateLastVerified(toolID)
+		_ = s.pinning.UpdateLastVerified(toolID)
 	}
 
 	// Add metadata
@@ -329,9 +329,7 @@ func FormatKeyFingerprint(fingerprint string) string {
 	}
 
 	// Remove "sha256:" prefix if present
-	if strings.HasPrefix(fingerprint, "sha256:") {
-		fingerprint = fingerprint[7:]
-	}
+	fingerprint = strings.TrimPrefix(fingerprint, "sha256:")
 
 	// Format as groups of 4 characters separated by colons
 	var formatted strings.Builder
