@@ -75,7 +75,7 @@ from stdin to create signed schemas with cryptographic signatures.`,
 
 	// Key options
 	rootCmd.Flags().StringVar(&keyFile, "key", "", "Private key file (PEM format)")
-	rootCmd.MarkFlagRequired("key")
+	_ = rootCmd.MarkFlagRequired("key")
 
 	// Output options
 	rootCmd.Flags().StringVar(&outputFile, "output", "", "Output file (default: stdout for single schema)")

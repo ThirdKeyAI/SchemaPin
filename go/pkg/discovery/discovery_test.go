@@ -215,7 +215,7 @@ func TestPublicKeyDiscoveryErrorHandling(t *testing.T) {
 	// Test server that returns invalid JSON
 	serverInvalidJSON := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("invalid json"))
+		_, _ = w.Write([]byte("invalid json"))
 	}))
 	defer serverInvalidJSON.Close()
 
