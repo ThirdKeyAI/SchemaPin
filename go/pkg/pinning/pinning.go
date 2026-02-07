@@ -76,7 +76,7 @@ func NewKeyPinning(dbPath string, mode PinningMode, handler interactive.Interact
 	}
 
 	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0750); err != nil {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
@@ -97,7 +97,7 @@ func NewKeyPinning(dbPath string, mode PinningMode, handler interactive.Interact
 		return nil
 	})
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 

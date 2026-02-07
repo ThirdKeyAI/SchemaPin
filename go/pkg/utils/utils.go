@@ -468,7 +468,7 @@ func RetryVerification(ctx context.Context, workflow *SchemaVerificationWorkflow
 
 		if attempt < maxRetries {
 			// Exponential backoff: 1s, 2s, 4s, 8s, etc.
-			backoff := time.Duration(1<<uint(attempt)) * time.Second
+			backoff := time.Duration(1<<min(uint(attempt), 30)) * time.Second // #nosec G115 -- attempt is bounded by maxRetries
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
