@@ -1,6 +1,6 @@
 [package]
 name = "schemapin"
-version = "1.1.5"
+version = "1.1.6"
 edition = "2021"
 rust-version = "1.70"
 description = "Cryptographic schema integrity verification for AI tools - Rust implementation"

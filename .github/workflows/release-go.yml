@@ -133,38 +133,45 @@ jobs:
           PRERELEASE="--prerelease"
         fi
         
-        gh release create ${{ github.ref_name }} \
-          --title "Release ${{ github.ref_name }}" \
-          --notes "## Go Package Release
+        if gh release view ${{ github.ref_name }} &>/dev/null; then
+          echo "GitHub Release ${{ github.ref_name }} already exists, uploading assets"
+          gh release upload ${{ github.ref_name }} \
+            go/dist/*.tar.gz go/dist/*.zip go/dist/checksums.txt \
+            --clobber
+        else
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --notes "## Go Package Release
 
-        SchemaPin Go implementation with CLI tools.
+          SchemaPin Go implementation with CLI tools.
 
-        ### Installation
+          ### Installation
 
-        #### Using Go Install
-        \`\`\`bash
-        go install github.com/ThirdKeyAi/schemapin/go/cmd/...@${{ github.ref_name }}
-        \`\`\`
+          #### Using Go Install
+          \`\`\`bash
+          go install github.com/ThirdKeyAi/schemapin/go/cmd/...@${{ github.ref_name }}
+          \`\`\`
 
-        #### Binary Downloads
-        Download pre-built binaries for your platform:
-        - Linux (amd64): [schemapin-go-linux-amd64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-linux-amd64.tar.gz)
-        - Linux (arm64): [schemapin-go-linux-arm64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-linux-arm64.tar.gz)
-        - macOS (amd64): [schemapin-go-darwin-amd64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-darwin-amd64.tar.gz)
-        - macOS (arm64): [schemapin-go-darwin-arm64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-darwin-arm64.tar.gz)
-        - Windows (amd64): [schemapin-go-windows-amd64.zip](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-windows-amd64.zip)
+          #### Binary Downloads
+          Download pre-built binaries for your platform:
+          - Linux (amd64): [schemapin-go-linux-amd64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-linux-amd64.tar.gz)
+          - Linux (arm64): [schemapin-go-linux-arm64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-linux-arm64.tar.gz)
+          - macOS (amd64): [schemapin-go-darwin-amd64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-darwin-amd64.tar.gz)
+          - macOS (arm64): [schemapin-go-darwin-arm64.tar.gz](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-darwin-arm64.tar.gz)
+          - Windows (amd64): [schemapin-go-windows-amd64.zip](https://github.com/thirdkey/schemapin/releases/download/${{ github.ref_name }}/schemapin-go-windows-amd64.zip)
 
-        ### CLI Tools
-        \`\`\`bash
-        schemapin-keygen --help
-        schemapin-sign --help
-        schemapin-verify --help
-        \`\`\`
+          ### CLI Tools
+          \`\`\`bash
+          schemapin-keygen --help
+          schemapin-sign --help
+          schemapin-verify --help
+          \`\`\`
 
-        ### Changes
-        See [CHANGELOG.md](./CHANGELOG.md) for details." \
-          go/dist/*.tar.gz go/dist/*.zip go/dist/checksums.txt \
-          $PRERELEASE
+          ### Changes
+          See [CHANGELOG.md](./CHANGELOG.md) for details." \
+            go/dist/*.tar.gz go/dist/*.zip go/dist/checksums.txt \
+            $PRERELEASE
+        fi
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

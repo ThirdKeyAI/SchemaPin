@@ -214,45 +214,49 @@ jobs:
           PRERELEASE="--prerelease"
         fi
         
-        gh release create ${{ github.ref_name }} \
-          --title "Release ${{ github.ref_name }}" \
-          --notes "## Rust Crate Release
-        
-        Published \`schemapin = \"${{ github.ref_name }}\"\` to crates.io.
-        
-        ### Installation
-        \`\`\`toml
-        [dependencies]
-        schemapin = \"${{ github.ref_name }}\"
-        \`\`\`
-        
-        ### Usage
-        \`\`\`rust
-        use schemapin::crypto::{generate_key_pair, sign_data, verify_signature, calculate_key_id};
-        
-        fn main() -> Result<(), Box<dyn std::error::Error>> {
-            // Generate a new key pair
-            let key_pair = generate_key_pair()?;
-            
-            // Sign some data
-            let data = b\"Hello, World!\";
-            let signature = sign_data(&key_pair.private_key_pem, data)?;
-            
-            // Verify the signature
-            let is_valid = verify_signature(&key_pair.public_key_pem, data, &signature)?;
-            assert!(is_valid);
-            
-            // Calculate key ID
-            let key_id = calculate_key_id(&key_pair.public_key_pem)?;
-            println!(\"Key ID: {}\", key_id);
-            
-            Ok(())
-        }
-        \`\`\`
-        
-        ### Changes
-        See [CHANGELOG.md](./CHANGELOG.md) for details." \
-          $PRERELEASE
+        if gh release view ${{ github.ref_name }} &>/dev/null; then
+          echo "GitHub Release ${{ github.ref_name }} already exists, skipping creation"
+        else
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --notes "## Rust Crate Release
+
+          Published \`schemapin = \"${{ github.ref_name }}\"\` to crates.io.
+
+          ### Installation
+          \`\`\`toml
+          [dependencies]
+          schemapin = \"${{ github.ref_name }}\"
+          \`\`\`
+
+          ### Usage
+          \`\`\`rust
+          use schemapin::crypto::{generate_key_pair, sign_data, verify_signature, calculate_key_id};
+
+          fn main() -> Result<(), Box<dyn std::error::Error>> {
+              // Generate a new key pair
+              let key_pair = generate_key_pair()?;
+
+              // Sign some data
+              let data = b\"Hello, World!\";
+              let signature = sign_data(&key_pair.private_key_pem, data)?;
+
+              // Verify the signature
+              let is_valid = verify_signature(&key_pair.public_key_pem, data, &signature)?;
+              assert!(is_valid);
+
+              // Calculate key ID
+              let key_id = calculate_key_id(&key_pair.public_key_pem)?;
+              println!(\"Key ID: {}\", key_id);
+
+              Ok(())
+          }
+          \`\`\`
+
+          ### Changes
+          See [CHANGELOG.md](./CHANGELOG.md) for details." \
+            $PRERELEASE
+        fi
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

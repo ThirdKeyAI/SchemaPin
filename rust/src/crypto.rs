@@ -2,9 +2,9 @@
 
 use base64::{engine::general_purpose, Engine as _};
 use p256::{
-    ecdsa::{SigningKey, VerifyingKey, Signature, signature::Signer, signature::Verifier},
-    pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, spki},
-    SecretKey, PublicKey,
+    ecdsa::{signature::Signer, signature::Verifier, Signature, SigningKey, VerifyingKey},
+    pkcs8::{spki, DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey},
+    PublicKey, SecretKey,
 };
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
@@ -79,15 +79,16 @@ pub struct KeyPair {
 /// Returns an error if key generation fails.
 pub fn generate_key_pair() -> Result<KeyPair, Error> {
     let mut rng = OsRng;
-    
+
     // Generate a P-256 (secp256r1) ECDSA key pair
     let secret_key = SecretKey::random(&mut rng);
     let public_key = secret_key.public_key();
-    
+
     // Export to PEM format using PKCS#8
-    let private_key_pem = secret_key.to_pkcs8_pem(p256::pkcs8::LineEnding::LF)?
+    let private_key_pem = secret_key
+        .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)?
         .to_string();
-    
+
     let public_key_pem = public_key.to_public_key_pem(p256::pkcs8::LineEnding::LF)?;
 
     Ok(KeyPair {
@@ -114,10 +115,10 @@ pub fn sign_data(private_key_pem: &str, data: &[u8]) -> Result<String, Error> {
     // Load the private key from PEM
     let secret_key = SecretKey::from_pkcs8_pem(private_key_pem)?;
     let signing_key = SigningKey::from(secret_key);
-    
+
     // Sign the data using ECDSA with SHA-256
     let signature: p256::ecdsa::Signature = signing_key.sign(data);
-    
+
     // Encode signature as base64
     Ok(general_purpose::STANDARD.encode(signature.to_der()))
 }
@@ -141,14 +142,14 @@ pub fn verify_signature(public_key_pem: &str, data: &[u8], signature: &str) -> R
     // Load the public key from PEM
     let public_key = PublicKey::from_public_key_pem(public_key_pem)?;
     let verifying_key = VerifyingKey::from(public_key);
-    
+
     // Decode the base64 signature
     let signature_bytes = general_purpose::STANDARD.decode(signature)?;
-    
+
     // Create signature object from DER bytes
-    let signature_obj = Signature::from_der(&signature_bytes)
-        .map_err(|_| Error::InvalidKeyFormat)?;
-    
+    let signature_obj =
+        Signature::from_der(&signature_bytes).map_err(|_| Error::InvalidKeyFormat)?;
+
     // Verify the signature
     match verifying_key.verify(data, &signature_obj) {
         Ok(()) => Ok(true),
@@ -172,15 +173,15 @@ pub fn verify_signature(public_key_pem: &str, data: &[u8], signature: &str) -> R
 pub fn calculate_key_id(public_key_pem: &str) -> Result<String, Error> {
     // Load the public key from PEM
     let public_key = PublicKey::from_public_key_pem(public_key_pem)?;
-    
+
     // Convert to DER format for consistent hashing
     let der_bytes = public_key.to_public_key_der()?;
-    
+
     // Calculate SHA-256 hash
     let mut hasher = Sha256::new();
     hasher.update(der_bytes.as_bytes());
     let hash = hasher.finalize();
-    
+
     Ok(format!("sha256:{}", hex::encode(hash)))
 }
 
@@ -198,7 +199,9 @@ impl KeyManager {
 
     /// Export private key to PEM format.
     pub fn export_private_key_pem(private_key: &SecretKey) -> Result<String, Error> {
-        Ok(private_key.to_pkcs8_pem(p256::pkcs8::LineEnding::LF)?.to_string())
+        Ok(private_key
+            .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)?
+            .to_string())
     }
 
     /// Export public key to PEM format.
@@ -244,12 +247,16 @@ impl SignatureManager {
     }
 
     /// Verify ECDSA signature against hash.
-    pub fn verify_signature(hash_bytes: &[u8], signature_b64: &str, public_key: &PublicKey) -> Result<bool, Error> {
+    pub fn verify_signature(
+        hash_bytes: &[u8],
+        signature_b64: &str,
+        public_key: &PublicKey,
+    ) -> Result<bool, Error> {
         let verifying_key = VerifyingKey::from(*public_key);
         let signature_bytes = general_purpose::STANDARD.decode(signature_b64)?;
-        let signature_obj = Signature::from_der(&signature_bytes)
-            .map_err(|_| Error::InvalidKeyFormat)?;
-        
+        let signature_obj =
+            Signature::from_der(&signature_bytes).map_err(|_| Error::InvalidKeyFormat)?;
+
         match verifying_key.verify(hash_bytes, &signature_obj) {
             Ok(()) => Ok(true),
             Err(_) => Ok(false),
@@ -265,7 +272,7 @@ impl SignatureManager {
     pub fn verify_schema_signature(
         schema_hash: &[u8],
         signature_b64: &str,
-        public_key: &PublicKey
+        public_key: &PublicKey,
     ) -> Result<bool, Error> {
         Self::verify_signature(schema_hash, signature_b64, public_key)
     }
@@ -278,23 +285,28 @@ mod tests {
     #[test]
     fn test_generate_key_pair() {
         let key_pair = generate_key_pair().unwrap();
-        assert!(key_pair.private_key_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
-        assert!(key_pair.public_key_pem.starts_with("-----BEGIN PUBLIC KEY-----"));
+        assert!(key_pair
+            .private_key_pem
+            .starts_with("-----BEGIN PRIVATE KEY-----"));
+        assert!(key_pair
+            .public_key_pem
+            .starts_with("-----BEGIN PUBLIC KEY-----"));
     }
 
     #[test]
     fn test_sign_and_verify() {
         let key_pair = generate_key_pair().unwrap();
         let data = b"Hello, World!";
-        
+
         let signature = sign_data(&key_pair.private_key_pem, data).unwrap();
         let is_valid = verify_signature(&key_pair.public_key_pem, data, &signature).unwrap();
-        
+
         assert!(is_valid);
-        
+
         // Test with wrong data
         let wrong_data = b"Wrong data";
-        let is_invalid = verify_signature(&key_pair.public_key_pem, wrong_data, &signature).unwrap();
+        let is_invalid =
+            verify_signature(&key_pair.public_key_pem, wrong_data, &signature).unwrap();
         assert!(!is_invalid);
     }
 
@@ -302,11 +314,11 @@ mod tests {
     fn test_calculate_key_id() {
         let key_pair = generate_key_pair().unwrap();
         let key_id = calculate_key_id(&key_pair.public_key_pem).unwrap();
-        
+
         // Should start with "sha256:" and be 71 characters total (7 + 64)
         assert!(key_id.starts_with("sha256:"));
         assert_eq!(key_id.len(), 71);
-        
+
         // Should be deterministic
         let key_id2 = calculate_key_id(&key_pair.public_key_pem).unwrap();
         assert_eq!(key_id, key_id2);
@@ -317,10 +329,10 @@ mod tests {
         let (private_key, public_key) = KeyManager::generate_keypair().unwrap();
         let private_key_pem = KeyManager::export_private_key_pem(&private_key).unwrap();
         let public_key_pem = KeyManager::export_public_key_pem(&public_key).unwrap();
-        
+
         let loaded_private = KeyManager::load_private_key_pem(&private_key_pem).unwrap();
         let loaded_public = KeyManager::load_public_key_pem(&public_key_pem).unwrap();
-        
+
         // Keys should be equivalent
         assert_eq!(private_key.to_bytes(), loaded_private.to_bytes());
         // Test that the public keys can be used to verify the same signature
@@ -334,10 +346,10 @@ mod tests {
     fn test_signature_manager_api() {
         let (private_key, public_key) = KeyManager::generate_keypair().unwrap();
         let data = b"Test data for signature";
-        
+
         let signature = SignatureManager::sign_hash(data, &private_key).unwrap();
         let is_valid = SignatureManager::verify_signature(data, &signature, &public_key).unwrap();
-        
+
         assert!(is_valid);
     }
 }

@@ -206,27 +206,31 @@ jobs:
           PRERELEASE="--prerelease"
         fi
         
-        gh release create ${{ github.ref_name }} \
-          --title "Release ${{ github.ref_name }}" \
-          --notes "## PyPI Package Release
-        
-        Published \`schemapin==${{ github.ref_name }}\` to PyPI.
-        
-        ### Installation
-        \`\`\`bash
-        pip install schemapin
-        \`\`\`
-        
-        ### CLI Tools
-        \`\`\`bash
-        schemapin-keygen --help
-        schemapin-sign --help
-        schemapin-verify --help
-        \`\`\`
-        
-        ### Changes
-        See [CHANGELOG.md](./CHANGELOG.md) for details." \
-          $PRERELEASE
+        if gh release view ${{ github.ref_name }} &>/dev/null; then
+          echo "GitHub Release ${{ github.ref_name }} already exists, skipping creation"
+        else
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --notes "## PyPI Package Release
+
+          Published \`schemapin==${{ github.ref_name }}\` to PyPI.
+
+          ### Installation
+          \`\`\`bash
+          pip install schemapin
+          \`\`\`
+
+          ### CLI Tools
+          \`\`\`bash
+          schemapin-keygen --help
+          schemapin-sign --help
+          schemapin-verify --help
+          \`\`\`
+
+          ### Changes
+          See [CHANGELOG.md](./CHANGELOG.md) for details." \
+            $PRERELEASE
+        fi
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

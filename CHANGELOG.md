@@ -5,7 +5,14 @@ All notable changes to the SchemaPin project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.5] - 2026-02-06
+## [1.1.6] - 2026-02-06
+
+### Fixed
+
+- **Go**: `NewSchemaVerificationWorkflow` now validates that pinning database path is not empty
+- **Rust**: Fixed `cargo fmt` formatting issues in core and crypto modules
+- **CI**: Fixed version consistency check in release-combined workflow (grep for `var Version` not `const Version`)
+- **CI**: Fixed GitHub Release race condition where parallel release workflows would fail trying to create duplicate releases
 
 ### Security
 

@@ -87,6 +87,9 @@ type VerificationResult struct {
 
 // NewSchemaVerificationWorkflow creates a new verification workflow
 func NewSchemaVerificationWorkflow(pinningDBPath string) (*SchemaVerificationWorkflow, error) {
+	if pinningDBPath == "" {
+		return nil, fmt.Errorf("pinning database path cannot be empty")
+	}
 	keyPinning, err := pinning.NewKeyPinning(pinningDBPath, pinning.PinningModeInteractive, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize key pinning: %w", err)

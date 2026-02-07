@@ -142,20 +142,24 @@ jobs:
           PRERELEASE="--prerelease"
         fi
         
-        gh release create ${{ github.ref_name }} \
-          --title "Release ${{ github.ref_name }}" \
-          --notes "## npm Package Release
+        if gh release view ${{ github.ref_name }} &>/dev/null; then
+          echo "GitHub Release ${{ github.ref_name }} already exists, skipping creation"
+        else
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --notes "## npm Package Release
 
-        Published \`schemapin@${{ github.ref_name }}\` to npm registry.
+          Published \`schemapin@${{ github.ref_name }}\` to npm registry.
 
-        ### Installation
-        \`\`\`bash
-        npm install schemapin
-        \`\`\`
+          ### Installation
+          \`\`\`bash
+          npm install schemapin
+          \`\`\`
 
-        ### Changes
-        See [CHANGELOG.md](./CHANGELOG.md) for details." \
-          $PRERELEASE
+          ### Changes
+          See [CHANGELOG.md](./CHANGELOG.md) for details." \
+            $PRERELEASE
+        fi
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

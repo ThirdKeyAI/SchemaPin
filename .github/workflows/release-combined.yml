@@ -87,7 +87,7 @@ jobs:
         cd ../python
         PY_VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
         cd ../go
-        GO_VERSION=$(grep '^const Version' internal/version/version.go | cut -d'"' -f2)
+        GO_VERSION=$(grep '^var Version' internal/version/version.go | cut -d'"' -f2)
         cd ../rust
         RUST_VERSION=$(grep '^version = ' Cargo.toml | cut -d'"' -f2)
         if [ "$JS_VERSION" != "$PY_VERSION" ] || [ "$JS_VERSION" != "$GO_VERSION" ] || [ "$JS_VERSION" != "$RUST_VERSION" ]; then
