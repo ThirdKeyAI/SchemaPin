@@ -5,6 +5,27 @@ All notable changes to the SchemaPin project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] - 2026-02-06
+
+### Security
+
+- **python-multipart**: Updated from 0.0.18 to 0.0.22 to fix HIGH severity CVE (dependabot alert #18)
+- **js-yaml transitive CVE**: Eliminated by migrating ESLint from v8 to v9 flat config, removing the vulnerable transitive dependency (dependabot alert #17, MEDIUM severity)
+- **brace-expansion**: Updated to fix low severity ReDoS vulnerability
+- **cryptography**: Updated from 44.0.1 to 45.0.5 in server requirements to align with main Python package
+
+### Changed
+
+- **ESLint 9 migration**: Replaced legacy `.eslintrc.cjs` with `eslint.config.js` (flat config format) in JavaScript package
+- **Version alignment**: Server and integration demo versions now aligned with core library versions
+
+### Dependencies
+
+- `python-multipart` 0.0.18 → 0.0.22 (server)
+- `cryptography` 44.0.1 → 45.0.5 (server)
+- `eslint` ^8.57.0 → ^9.0.0 (JavaScript devDependencies)
+- Added `@eslint/js` ^9.0.0 and `globals` ^16.0.0 (JavaScript devDependencies)
+
 ## [1.1.0] - 2025-01-07
 
 ### Added

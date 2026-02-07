@@ -207,7 +207,7 @@ key_manager = ServerKeyManager(Path(config.config["storage"]["keys_directory"]))
 app = FastAPI(
     title="SchemaPin .well-known Server",
     description="Production server for SchemaPin key discovery and management",
-    version="1.1.0",
+    version="1.1.5",
     debug=config.config["server"]["debug"]
 )
 
@@ -247,7 +247,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "1.1.0"
+        "version": "1.1.5"
     }
 
 
