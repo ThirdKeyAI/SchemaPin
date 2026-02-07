@@ -236,7 +236,7 @@ func TestSchemaVerificationWorkflow_VerifySchema_AutoPin(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/schemapin.json" {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(wellKnownResponse)
+			_ = json.NewEncoder(w).Encode(wellKnownResponse)
 		} else {
 			http.NotFound(w, r)
 		}
@@ -329,7 +329,7 @@ func TestSchemaVerificationWorkflow_VerifySchema_PinnedKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/schemapin.json" {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(wellKnownResponse)
+			_ = json.NewEncoder(w).Encode(wellKnownResponse)
 		} else {
 			http.NotFound(w, r)
 		}

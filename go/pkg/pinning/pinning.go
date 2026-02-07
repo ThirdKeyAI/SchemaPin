@@ -227,7 +227,7 @@ func (k *KeyPinning) SetDomainPolicy(domain string, policy PinningPolicy) error 
 func (k *KeyPinning) GetDomainPolicy(domain string) PinningPolicy {
 	var policy PinningPolicy = PinningPolicyDefault
 
-	k.db.View(func(tx *bbolt.Tx) error {
+	_ = k.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(domainPoliciesBucket)
 		data := bucket.Get([]byte(domain))
 		if data == nil {
@@ -349,7 +349,7 @@ func (k *KeyPinning) ImportPinnedKeys(jsonData string, overwrite bool) (int, err
 		}
 
 		if overwrite {
-			k.RemovePinnedKey(keyInfo.ToolID)
+			_ = k.RemovePinnedKey(keyInfo.ToolID)
 		}
 
 		if err := k.PinKey(keyInfo.ToolID, keyInfo.PublicKeyPEM, keyInfo.Domain, keyInfo.DeveloperName); err == nil {
@@ -385,7 +385,7 @@ func (k *KeyPinning) interactivePinKeyWithOptions(toolID, publicKeyPEM, domain, 
 	if existingKey != "" {
 		if existingKey == publicKeyPEM {
 			// Same key, just update verification time
-			k.UpdateLastVerified(toolID)
+			_ = k.UpdateLastVerified(toolID)
 			return true, nil
 		} else {
 			// Different key - handle key change
@@ -444,10 +444,10 @@ func (k *KeyPinning) handleFirstTimeKey(toolID, domain, publicKeyPEM, developerN
 		case interactive.UserDecisionAccept:
 			return k.PinKey(toolID, publicKeyPEM, domain, developerName) == nil, nil
 		case interactive.UserDecisionAlwaysTrust:
-			k.SetDomainPolicy(domain, PinningPolicyAlwaysTrust)
+			_ = k.SetDomainPolicy(domain, PinningPolicyAlwaysTrust)
 			return k.PinKey(toolID, publicKeyPEM, domain, developerName) == nil, nil
 		case interactive.UserDecisionNeverTrust:
-			k.SetDomainPolicy(domain, PinningPolicyNeverTrust)
+			_ = k.SetDomainPolicy(domain, PinningPolicyNeverTrust)
 			return false, nil
 		default:
 			return false, nil

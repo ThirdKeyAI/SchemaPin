@@ -490,7 +490,7 @@ func TestInteractivePinKeyWithMockServer(t *testing.T) {
 			RevokedKeys:   []string{}, // No revoked keys
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer server.Close()
 

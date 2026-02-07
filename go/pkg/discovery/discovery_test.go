@@ -155,7 +155,7 @@ func TestPublicKeyDiscoveryFetchWellKnown(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer server.Close()
 
@@ -225,7 +225,7 @@ func TestPublicKeyDiscoveryErrorHandling(t *testing.T) {
 			"invalid": "response",
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer serverInvalidResponse.Close()
 
@@ -308,7 +308,7 @@ func TestPublicKeyDiscoveryTimeout(t *testing.T) {
 			SchemaVersion: "1.1",
 			PublicKeyPEM:  "test-key",
 		}
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer server.Close()
 
@@ -336,7 +336,7 @@ func TestGetDeveloperInfo(t *testing.T) {
 			Contact:       "test@example.com",
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer server.Close()
 
@@ -348,7 +348,7 @@ func TestGetDeveloperInfo(t *testing.T) {
 			PublicKeyPEM: "test-key",
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		_ = json.NewEncoder(w).Encode(response)
 	}))
 	defer serverEmpty.Close()
 
