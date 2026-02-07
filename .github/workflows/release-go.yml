@@ -80,10 +80,10 @@ jobs:
         ./bin/schemapin-keygen --help
         
         # Test signing and verification
-        ./bin/schemapin-keygen --developer "Test Developer" --contact "test@example.com"
+        ./bin/schemapin-keygen --developer "Test Developer" --contact "test@example.com" --prefix test_key
         echo '{"name": "test", "type": "object"}' > test_schema.json
-        ./bin/schemapin-sign --key private_key.pem --schema test_schema.json --output signed_schema.json
-        ./bin/schemapin-verify --schema signed_schema.json --public-key public_key.pem
+        ./bin/schemapin-sign --key test_key_private.pem --schema test_schema.json --output signed_schema.json
+        ./bin/schemapin-verify --schema signed_schema.json --public-key test_key_public.pem
 
     - name: Cross-compile binaries
       run: |
