@@ -167,6 +167,7 @@ jobs:
 
     - name: Publish to npm
       if: ${{ github.event.inputs.dry_run != 'true' }}
+      continue-on-error: true
       run: |
         cd javascript
         npm publish --access public
@@ -215,6 +216,7 @@ jobs:
 
     - name: Publish to Test PyPI
       if: ${{ github.event.inputs.dry_run != 'true' }}
+      continue-on-error: true
       run: |
         cd python
         twine upload --repository testpypi dist/*
@@ -344,6 +346,7 @@ jobs:
 
     - name: Publish to crates.io
       if: ${{ github.event.inputs.dry_run != 'true' }}
+      continue-on-error: true
       run: |
         cd rust
         cargo publish --verbose
