@@ -285,9 +285,9 @@ func (s *SchemaVerificationWorkflow) RemovePinnedKey(toolID string) error {
 }
 
 // CreateWellKnownResponse creates a .well-known response structure
-func CreateWellKnownResponse(publicKeyPEM, developerName, contact string, revokedKeys []string, schemaVersion string) map[string]interface{} {
+func CreateWellKnownResponse(publicKeyPEM, developerName, contact string, revokedKeys []string, schemaVersion string, revocationEndpoint string) map[string]interface{} {
 	if schemaVersion == "" {
-		schemaVersion = "1.1"
+		schemaVersion = "1.2"
 	}
 
 	response := map[string]interface{}{
@@ -302,6 +302,10 @@ func CreateWellKnownResponse(publicKeyPEM, developerName, contact string, revoke
 
 	if len(revokedKeys) > 0 {
 		response["revoked_keys"] = revokedKeys
+	}
+
+	if revocationEndpoint != "" {
+		response["revocation_endpoint"] = revocationEndpoint
 	}
 
 	return response

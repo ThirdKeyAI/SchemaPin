@@ -15,11 +15,12 @@ import (
 
 // WellKnownResponse represents .well-known/schemapin.json structure
 type WellKnownResponse struct {
-	SchemaVersion string   `json:"schema_version"`
-	DeveloperName string   `json:"developer_name"`
-	PublicKeyPEM  string   `json:"public_key_pem"`
-	Contact       string   `json:"contact,omitempty"`
-	RevokedKeys   []string `json:"revoked_keys,omitempty"`
+	SchemaVersion      string   `json:"schema_version"`
+	DeveloperName      string   `json:"developer_name"`
+	PublicKeyPEM       string   `json:"public_key_pem"`
+	Contact            string   `json:"contact,omitempty"`
+	RevokedKeys        []string `json:"revoked_keys,omitempty"`
+	RevocationEndpoint string   `json:"revocation_endpoint,omitempty"`
 }
 
 // PublicKeyDiscovery handles .well-known endpoint discovery

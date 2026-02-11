@@ -242,7 +242,8 @@ func demoGenerateForOtherLanguages() {
 		"Go Cross-Language Test",
 		"test@example.com",
 		[]string{}, // No revoked keys
-		"1.1",
+		"1.2",
+		"",
 	)
 
 	fmt.Println("✓ .well-known response created")

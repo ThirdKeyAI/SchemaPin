@@ -22,4 +22,34 @@ export {
     InteractiveHandler
 } from './interactive.js';
 
-export const version = '1.1.0';
+// v1.2.0 new modules
+export {
+    RevocationReason,
+    buildRevocationDocument,
+    addRevokedKey,
+    checkRevocation,
+    checkRevocationCombined,
+    fetchRevocationDocument
+} from './revocation.js';
+export {
+    createTrustBundle,
+    createBundledDiscovery,
+    findDiscovery,
+    findRevocation,
+    parseTrustBundle
+} from './bundle.js';
+export {
+    SchemaResolver,
+    WellKnownResolver,
+    LocalFileResolver,
+    TrustBundleResolver,
+    ChainResolver
+} from './resolver.js';
+export {
+    ErrorCode,
+    KeyPinStore,
+    verifySchemaOffline,
+    verifySchemaWithResolver
+} from './verification.js';
+
+export const version = '1.2.0';

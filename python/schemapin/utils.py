@@ -156,7 +156,8 @@ def create_well_known_response(
     developer_name: str,
     contact: Optional[str] = None,
     revoked_keys: Optional[List[str]] = None,
-    schema_version: str = "1.1"
+    schema_version: str = "1.2",
+    revocation_endpoint: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create .well-known/schemapin.json response structure.
@@ -166,7 +167,8 @@ def create_well_known_response(
         developer_name: Developer or organization name
         contact: Optional contact information
         revoked_keys: Optional list of revoked key fingerprints
-        schema_version: Schema version (default: "1.1")
+        schema_version: Schema version (default: "1.2")
+        revocation_endpoint: Optional URL for standalone revocation document
 
     Returns:
         Dictionary suitable for .well-known response
@@ -182,5 +184,8 @@ def create_well_known_response(
 
     if revoked_keys:
         response['revoked_keys'] = revoked_keys
+
+    if revocation_endpoint:
+        response['revocation_endpoint'] = revocation_endpoint
 
     return response

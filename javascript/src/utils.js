@@ -153,10 +153,11 @@ export class SchemaVerificationWorkflow {
  * @param {string} developerName - Developer or organization name
  * @param {string|null} contact - Optional contact information
  * @param {Array<string>|null} revokedKeys - Optional array of revoked key fingerprints
- * @param {string} schemaVersion - Schema version (default: "1.1")
+ * @param {string} schemaVersion - Schema version (default: "1.2")
+ * @param {string|null} revocationEndpoint - Optional URL for standalone revocation document
  * @returns {Object} Object suitable for .well-known response
  */
-export function createWellKnownResponse(publicKeyPem, developerName, contact = null, revokedKeys = null, schemaVersion = '1.1') {
+export function createWellKnownResponse(publicKeyPem, developerName, contact = null, revokedKeys = null, schemaVersion = '1.2', revocationEndpoint = null) {
     const response = {
         schema_version: schemaVersion,
         developer_name: developerName,
@@ -169,6 +170,10 @@ export function createWellKnownResponse(publicKeyPem, developerName, contact = n
 
     if (revokedKeys && revokedKeys.length > 0) {
         response.revoked_keys = revokedKeys;
+    }
+
+    if (revocationEndpoint) {
+        response.revocation_endpoint = revocationEndpoint;
     }
 
     return response;

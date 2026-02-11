@@ -105,9 +105,9 @@ describe('Key Revocation', () => {
             publicKey,
             'Test Developer'
         );
-        
+
         // Verify response structure
-        assert.strictEqual(response.schema_version, '1.1');
+        assert.strictEqual(response.schema_version, '1.2');
         assert.strictEqual(response.developer_name, 'Test Developer');
         assert.strictEqual(response.public_key_pem, publicKey);
         assert.strictEqual(response.revoked_keys, undefined);
@@ -126,7 +126,7 @@ describe('Key Revocation', () => {
         );
         
         // Verify response structure (empty list should not be included)
-        assert.strictEqual(response.schema_version, '1.1');
+        assert.strictEqual(response.schema_version, '1.2');
         assert.strictEqual(response.developer_name, 'Test Developer');
         assert.strictEqual(response.public_key_pem, publicKey);
         assert.strictEqual(response.revoked_keys, undefined);

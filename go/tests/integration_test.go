@@ -239,7 +239,8 @@ func TestCLIToolsIntegration(t *testing.T) {
 		"CLI Test Developer",
 		"test@example.com",
 		[]string{},
-		"1.1",
+		"1.2",
+		"",
 	)
 
 	if wellKnown["public_key_pem"] != publicKeyPEM {
@@ -279,6 +280,7 @@ func TestKeyRevocation(t *testing.T) {
 		"test@example.com",
 		revokedKeys,
 		"1.1",
+		"",
 	)
 
 	// Check that revoked keys are included

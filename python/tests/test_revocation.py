@@ -126,7 +126,7 @@ class TestKeyRevocation:
         )
 
         # Verify response structure
-        assert response['schema_version'] == '1.1'
+        assert response['schema_version'] == '1.2'
         assert response['developer_name'] == 'Test Developer'
         assert response['public_key_pem'] == public_key_pem
         assert 'revoked_keys' not in response
@@ -145,7 +145,7 @@ class TestKeyRevocation:
         )
 
         # Verify response structure (empty list should not be included)
-        assert response['schema_version'] == '1.1'
+        assert response['schema_version'] == '1.2'
         assert response['developer_name'] == 'Test Developer'
         assert response['public_key_pem'] == public_key_pem
         assert 'revoked_keys' not in response

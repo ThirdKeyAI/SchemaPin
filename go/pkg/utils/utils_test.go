@@ -363,7 +363,7 @@ func TestCreateWellKnownResponse(t *testing.T) {
 	revokedKeys := []string{"sha256:abcd1234"}
 	schemaVersion := "1.1"
 
-	response := CreateWellKnownResponse(publicKeyPEM, developerName, contact, revokedKeys, schemaVersion)
+	response := CreateWellKnownResponse(publicKeyPEM, developerName, contact, revokedKeys, schemaVersion, "")
 
 	if response["schema_version"] != schemaVersion {
 		t.Errorf("Expected schema version %s, got %v", schemaVersion, response["schema_version"])
@@ -385,15 +385,15 @@ func TestCreateWellKnownResponse(t *testing.T) {
 }
 
 func TestCreateWellKnownResponse_DefaultVersion(t *testing.T) {
-	response := CreateWellKnownResponse("test-key", "Test Developer", "", nil, "")
+	response := CreateWellKnownResponse("test-key", "Test Developer", "", nil, "", "")
 
-	if response["schema_version"] != "1.1" {
-		t.Errorf("Expected default schema version 1.1, got %v", response["schema_version"])
+	if response["schema_version"] != "1.2" {
+		t.Errorf("Expected default schema version 1.2, got %v", response["schema_version"])
 	}
 }
 
 func TestCreateWellKnownResponse_NoOptionalFields(t *testing.T) {
-	response := CreateWellKnownResponse("test-key", "Test Developer", "", nil, "1.1")
+	response := CreateWellKnownResponse("test-key", "Test Developer", "", nil, "1.1", "")
 
 	if _, exists := response["contact"]; exists {
 		t.Error("Expected no contact field when empty")

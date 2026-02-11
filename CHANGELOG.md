@@ -23,6 +23,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`resolver.rs`**: `SchemaResolver` trait with 4 implementations: `WellKnownResolver` (fetch-gated), `LocalFileResolver`, `TrustBundleResolver`, `ChainResolver`. `AsyncSchemaResolver` trait (fetch-gated).
 - **`verification.rs`**: `VerificationResult` struct. Functions: `verify_schema_offline()` (7-step flow), `verify_schema_with_resolver()`, and fetch-gated `verify_schema()`.
 
+#### Python: Offline Verification, Trust Bundles, Resolver Abstraction
+
+- **`revocation.py`**: `RevocationReason` enum, `RevokedKey`/`RevocationDocument` dataclasses. Functions: `build_revocation_document()`, `add_revoked_key()`, `check_revocation()`, `check_revocation_combined()`, `fetch_revocation_document()`.
+- **`bundle.py`**: `SchemaPinTrustBundle` dataclass with `find_discovery()`, `find_revocation()`. Flattened `BundledDiscovery` format via dict merging.
+- **`resolver.py`**: `SchemaResolver` ABC with 4 implementations: `WellKnownResolver`, `LocalFileResolver`, `TrustBundleResolver`, `ChainResolver`.
+- **`verification.py`**: `ErrorCode` enum (8 codes), `KeyPinStore` in-memory pin store, `VerificationResult` dataclass. Functions: `verify_schema_offline()` (7-step flow), `verify_schema_with_resolver()`.
+- **`utils.py`**: `create_well_known_response()` now accepts `revocation_endpoint` parameter, default `schema_version` changed to `"1.2"`.
+
+#### JavaScript: Offline Verification, Trust Bundles, Resolver Abstraction
+
+- **`revocation.js`**: `RevocationReason` constants. Functions: `buildRevocationDocument()`, `addRevokedKey()`, `checkRevocation()`, `checkRevocationCombined()`, `fetchRevocationDocument()`.
+- **`bundle.js`**: Functions: `createTrustBundle()`, `createBundledDiscovery()`, `findDiscovery()`, `findRevocation()`, `parseTrustBundle()`. Flattened format via object spread.
+- **`resolver.js`**: `SchemaResolver` base class with 4 implementations: `WellKnownResolver`, `LocalFileResolver`, `TrustBundleResolver`, `ChainResolver`.
+- **`verification.js`**: `ErrorCode` constants, `KeyPinStore` class. Functions: `verifySchemaOffline()` (7-step flow), `verifySchemaWithResolver()`.
+- **`utils.js`**: `createWellKnownResponse()` now accepts `revocationEndpoint` parameter, default `schemaVersion` changed to `"1.2"`.
+
+#### Go: Offline Verification, Trust Bundles, Resolver Abstraction
+
+- **`pkg/revocation/`**: `RevocationReason` type with constants, `RevokedKey`/`RevocationDocument` structs. Functions: `BuildRevocationDocument()`, `AddRevokedKey()`, `CheckRevocation()`, `CheckRevocationCombined()`, `FetchRevocationDocument()`.
+- **`pkg/bundle/`**: `SchemaPinTrustBundle` struct with `FindDiscovery()`, `FindRevocation()`. `BundledDiscovery` with custom `MarshalJSON`/`UnmarshalJSON` for flattened format.
+- **`pkg/resolver/`**: `SchemaResolver` interface with 4 implementations: `WellKnownResolver`, `LocalFileResolver`, `TrustBundleResolver`, `ChainResolver`.
+- **`pkg/verification/`**: `ErrorCode` type (8 codes), `KeyPinStore` struct, `VerificationResult` struct. Functions: `VerifySchemaOffline()` (7-step flow), `VerifySchemaWithResolver()`.
+- **`pkg/discovery/`**: Added `RevocationEndpoint` field to `WellKnownResponse`.
+- **`pkg/utils/`**: `CreateWellKnownResponse()` now accepts `revocationEndpoint` parameter, default `schemaVersion` changed to `"1.2"`.
+
 #### Specification Updates (v1.2)
 
 - **Section 6**: Added `revocation_endpoint` and `contact` optional fields to `.well-known` response.
@@ -40,12 +65,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Rust**: Added `serde_json`, `thiserror`, `chrono` dependencies
 - **Rust**: Added feature-gated `reqwest`, `tokio`, `async-trait` dependencies under `fetch` feature
 - **Rust**: Added `tempfile` dev-dependency
+- **Python**: Version bumped from 1.1.7 to 1.2.0
+- **JavaScript**: Version bumped from 1.1.7 to 1.2.0
+- **Go**: Version bumped from 1.1.7 to 1.2.0
+- **All languages**: Default `schema_version` in `create_well_known_response()` changed from `"1.1"` to `"1.2"`
 
 ### Notes
 
-- **Backward Compatible**: `core.rs` and `crypto.rs` are untouched — no breaking changes
-- **Feature Flags**: `default = []` (everything except HTTP). `fetch` enables HTTP-based discovery.
-- 66 tests pass across all modules
+- **Backward Compatible**: Existing core/crypto modules are untouched — no breaking changes in any language
+- **No new dependencies**: Python uses stdlib `dataclasses`/`json`/`abc`, JS uses Node builtins, Go uses stdlib
+- **Feature Flags** (Rust only): `default = []` (everything except HTTP). `fetch` enables HTTP-based discovery.
+- 109 Python tests, 96 JavaScript tests, and all Go tests pass
 
 ## [1.1.7] - 2026-02-06
 
