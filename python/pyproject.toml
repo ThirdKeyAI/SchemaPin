@@ -46,7 +46,7 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 dependencies = [
-    "cryptography==45.0.5",
+    "cryptography==46.0.5",
     "requests==2.32.4"
 ]
 
