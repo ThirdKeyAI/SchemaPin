@@ -13,6 +13,17 @@
 //! - **Signature Verification**: Verify signatures to ensure data integrity
 //! - **Key ID Calculation**: Generate SHA-256 fingerprints for key identification
 //! - **PEM Format Support**: Full support for PKCS#8 key formats
+//! - **Schema Canonicalization**: Deterministic JSON serialization for consistent hashing
+//! - **Trust Bundles**: Offline verification with pre-shared discovery documents
+//! - **Resolver Abstraction**: Pluggable discovery via local files, trust bundles, or HTTP
+//! - **TOFU Key Pinning**: Trust-on-first-use key pinning per tool+domain
+//! - **Revocation Checking**: Combined simple list and standalone document revocation
+//!
+//! ## Feature Flags
+//!
+//! - `fetch` — Enables HTTP-based discovery (`WellKnownResolver`, `AsyncSchemaResolver`,
+//!   `fetch_well_known`, `fetch_revocation_document`, `verify_schema`). Brings in
+//!   `reqwest`, `tokio`, and `async-trait`.
 //!
 //! ## Quick Start
 //!
@@ -47,6 +58,18 @@
 //!
 //! All cryptographic operations return `Result<T, Error>` types for proper error handling.
 //! The [`crypto::Error`] enum provides detailed error information for debugging.
+//! The [`error::Error`] enum provides a unified error type for the full verification workflow.
 
+// Preserved modules (backward compatible)
 pub mod core;
 pub mod crypto;
+
+// New modules (v1.2.0)
+pub mod canonicalize;
+pub mod discovery;
+pub mod error;
+pub mod pinning;
+pub mod resolver;
+pub mod revocation;
+pub mod types;
+pub mod verification;

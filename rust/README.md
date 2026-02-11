@@ -18,6 +18,11 @@ This implementation is fully compatible with the Python, JavaScript, and Go impl
 - **Signature Verification**: Verify signatures to ensure data integrity
 - **Key ID Calculation**: Generate SHA-256 fingerprints for key identification
 - **PEM Format Support**: Full support for PKCS#8 key formats
+- **Schema Canonicalization**: Deterministic JSON serialization for consistent hashing
+- **Trust Bundles**: Offline verification with pre-shared discovery documents
+- **Resolver Abstraction**: Pluggable discovery via local files, trust bundles, or HTTP
+- **TOFU Key Pinning**: Trust-on-first-use key pinning per tool+domain
+- **Revocation Checking**: Combined simple list and standalone document revocation
 - **Cross-Language Compatibility**: Compatible with Python, JavaScript, and Go implementations
 
 ## Installation
@@ -26,16 +31,26 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-schemapin = "1.1.4"
+schemapin = "1.2.0"
 ```
 
-Or install from git:
+To enable HTTP-based discovery (requires async runtime):
 
-```bash
-cargo add --git https://github.com/thirdkey/schemapin schemapin
+```toml
+[dependencies]
+schemapin = { version = "1.2.0", features = ["fetch"] }
 ```
+
+## Feature Flags
+
+| Feature | Description |
+|---------|-------------|
+| `default` | Everything except HTTP (all types, canonicalize, pinning, resolvers, offline verification) |
+| `fetch` | Adds `WellKnownResolver`, `AsyncSchemaResolver`, `fetch_well_known()`, `verify_schema()`. Brings in `reqwest`, `tokio`, `async-trait`. |
 
 ## Quick Start
+
+### Signing and Verifying Raw Data
 
 ```rust
 use schemapin::crypto::{generate_key_pair, sign_data, verify_signature, calculate_key_id};
@@ -56,39 +71,74 @@ let key_id = calculate_key_id(&key_pair.public_key_pem).unwrap();
 println!("Key ID: {}", key_id);
 ```
 
-## Advanced Usage
+### Offline Schema Verification
 
-### Using the High-Level API
+```rust,no_run
+use schemapin::canonicalize::canonicalize_and_hash;
+use schemapin::crypto::{generate_key_pair, sign_data};
+use schemapin::discovery::build_well_known_response;
+use schemapin::pinning::KeyPinStore;
+use schemapin::verification::verify_schema_offline;
+use serde_json::json;
 
-```rust
-use schemapin::crypto::{KeyManager, SignatureManager};
+// Developer: sign a schema
+let key_pair = generate_key_pair().unwrap();
+let schema = json!({"name": "my_tool", "description": "A useful tool"});
+let hash = canonicalize_and_hash(&schema);
+let signature = sign_data(&key_pair.private_key_pem, &hash).unwrap();
 
-// Generate keys using the manager
-let (private_key, public_key) = KeyManager::generate_keypair().unwrap();
-let private_key_pem = KeyManager::export_private_key_pem(&private_key).unwrap();
-let public_key_pem = KeyManager::export_public_key_pem(&public_key).unwrap();
+// Build discovery response
+let discovery = build_well_known_response(
+    &key_pair.public_key_pem, Some("My Corp"), vec![], "1.2",
+);
 
-// Sign and verify using the manager
-let data = b"Schema data to sign";
-let signature = SignatureManager::sign_hash(data, &private_key).unwrap();
-let is_valid = SignatureManager::verify_signature(data, &signature, &public_key).unwrap();
-assert!(is_valid);
+// Client: verify the schema offline
+let mut pin_store = KeyPinStore::new();
+let result = verify_schema_offline(
+    &schema, &signature, "example.com", "my_tool",
+    &discovery, None, &mut pin_store,
+);
+assert!(result.valid);
+```
+
+### Using Trust Bundles
+
+```rust,no_run
+use schemapin::resolver::TrustBundleResolver;
+use schemapin::verification::verify_schema_with_resolver;
+use schemapin::pinning::KeyPinStore;
+
+// Load a trust bundle from JSON
+let bundle_json = std::fs::read_to_string("trust-bundle.json").unwrap();
+let resolver = TrustBundleResolver::from_json(&bundle_json).unwrap();
+
+// Verify using the resolver
+let mut pin_store = KeyPinStore::new();
+let schema = serde_json::json!({"name": "my_tool"});
+let result = verify_schema_with_resolver(
+    &schema, "base64-signature", "example.com", "my_tool",
+    &resolver, &mut pin_store,
+);
 ```
 
 ## Building and Testing
 
 ```bash
-# Build the project
+# Build (no HTTP dependencies)
 cargo build
+
+# Build with HTTP support
+cargo build --features fetch
 
 # Run tests
 cargo test
 
-# Run with optimizations
-cargo build --release
+# Run tests with all features
+cargo test --all-features
 
 # Check code quality
 cargo clippy
+cargo clippy --all-features
 
 # Format code
 cargo fmt
@@ -115,13 +165,10 @@ This Rust implementation is designed to be fully compatible with other SchemaPin
 
 ## Error Handling
 
-All cryptographic operations return `Result<T, Error>` types for proper error handling. The `Error` enum provides detailed error information:
+The crate provides two error types:
 
-- `Ecdsa`: ECDSA key generation or operation errors
-- `Pkcs8`: PKCS#8 encoding/decoding errors
-- `Base64`: Base64 encoding/decoding errors
-- `Signature`: Signature verification errors
-- `InvalidKeyFormat`: Invalid key format errors
+- **`crypto::Error`**: Low-level cryptographic errors (`Ecdsa`, `Pkcs8`, `Base64`, `Signature`, `InvalidKeyFormat`)
+- **`error::Error`**: Unified error type for the full verification workflow, wrapping `crypto::Error` and adding `Discovery`, `Revocation`, `Verification`, `Json`, `Io`, and feature-gated `Http` variants
 
 ## Dependencies
 
@@ -130,7 +177,12 @@ All cryptographic operations return `Result<T, Error>` types for proper error ha
 - `sha2`: SHA-256 hashing
 - `base64`: Base64 encoding/decoding
 - `hex`: Hexadecimal encoding
-- `serde`: Serialization support
+- `serde`, `serde_json`: Serialization support
+- `thiserror`: Error derive macros
+- `chrono`: Timestamp handling
+- `reqwest` (optional, `fetch`): HTTP client
+- `tokio` (optional, `fetch`): Async runtime
+- `async-trait` (optional, `fetch`): Async trait support
 
 ## License
 

@@ -5,6 +5,48 @@ All notable changes to the SchemaPin project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-02-11
+
+### Added
+
+#### Rust Crate: Offline Verification, Trust Bundles, Resolver Abstraction
+
+- **`error.rs`**: Unified `Error` type using `thiserror`, wrapping `crypto::Error` via `From`. Feature-gated `Http` variant. `ErrorCode` enum for structured verification results.
+- **`types/discovery.rs`**: `WellKnownResponse` with optional `contact` and `revocation_endpoint` fields.
+- **`types/revocation.rs`**: `RevocationDocument`, `RevokedKey`, `RevocationReason` enum (`KeyCompromise`, `Superseded`, `CessationOfOperation`, `PrivilegeWithdrawn`).
+- **`types/pinning.rs`**: `PinnedTool`, `PinnedKey`, `TrustLevel` enum (`Tofu`, `Verified`, `Pinned`).
+- **`types/bundle.rs`**: `SchemaPinTrustBundle`, `BundledDiscovery` with `find_discovery()` and `find_revocation()` methods.
+- **`canonicalize.rs`**: JSON canonicalization with recursive key sorting and SHA-256 hashing. Functions: `canonicalize_schema()`, `hash_canonical()`, `canonicalize_and_hash()`.
+- **`discovery.rs`**: URL construction, validation, builder. Functions: `construct_well_known_url()`, `validate_well_known_response()`, `build_well_known_response()`, `check_key_revocation()`, and fetch-gated `fetch_well_known()`.
+- **`revocation.rs`**: Standalone revocation documents. Functions: `build_revocation_document()`, `add_revoked_key()`, `check_revocation()`, `check_revocation_combined()`, and fetch-gated `fetch_revocation_document()`.
+- **`pinning.rs`**: TOFU key pinning keyed by `tool_id@domain`. `KeyPinStore` with `check_and_pin()`, `add_key()`, `get_tool()`, JSON serialization. `PinningResult` enum and `check_pinning()` wrapper.
+- **`resolver.rs`**: `SchemaResolver` trait with 4 implementations: `WellKnownResolver` (fetch-gated), `LocalFileResolver`, `TrustBundleResolver`, `ChainResolver`. `AsyncSchemaResolver` trait (fetch-gated).
+- **`verification.rs`**: `VerificationResult` struct. Functions: `verify_schema_offline()` (7-step flow), `verify_schema_with_resolver()`, and fetch-gated `verify_schema()`.
+
+#### Specification Updates (v1.2)
+
+- **Section 6**: Added `revocation_endpoint` and `contact` optional fields to `.well-known` response.
+- **Section 8.5**: Standalone Revocation Document format.
+- **Section 8.6**: Revocation Reasons (`key_compromise`, `superseded`, `cessation_of_operation`, `privilege_withdrawn`).
+- **Section 8.7**: Combined Revocation Checking (simple list + standalone document).
+- **Section 13**: Trust Bundles — format, use cases, `SchemaPinTrustBundle` structure.
+- **Section 14**: Discovery Resolver — `SchemaResolver` abstraction, four implementations, `fetch` feature gate.
+- **Section 15**: Offline Verification — `verify_schema_offline()` as core primitive, 7-step flow.
+- **Section 12**: Updated backward compatibility note for v1.2.
+
+### Changed
+
+- **Rust**: Version bumped from 1.1.7 to 1.2.0
+- **Rust**: Added `serde_json`, `thiserror`, `chrono` dependencies
+- **Rust**: Added feature-gated `reqwest`, `tokio`, `async-trait` dependencies under `fetch` feature
+- **Rust**: Added `tempfile` dev-dependency
+
+### Notes
+
+- **Backward Compatible**: `core.rs` and `crypto.rs` are untouched — no breaking changes
+- **Feature Flags**: `default = []` (everything except HTTP). `fetch` enables HTTP-based discovery.
+- 66 tests pass across all modules
+
 ## [1.1.7] - 2026-02-06
 
 ### Fixed

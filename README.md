@@ -208,7 +208,7 @@ npm install -g schemapin
 ```bash
 # Add to your Cargo.toml
 [dependencies]
-schemapin = "1.1.4"
+schemapin = "1.2.0"
 
 # Or install from git for latest development version
 cargo add --git https://github.com/thirdkey/schemapin schemapin
