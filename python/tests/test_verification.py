@@ -1,12 +1,10 @@
 """Tests for offline and resolver-based verification."""
 
-import json
 
-import pytest
 
 from schemapin.bundle import SchemaPinTrustBundle, create_bundled_discovery
-from schemapin.crypto import KeyManager, SignatureManager
 from schemapin.core import SchemaPinCore
+from schemapin.crypto import KeyManager, SignatureManager
 from schemapin.resolver import TrustBundleResolver
 from schemapin.revocation import (
     RevocationReason,
@@ -16,7 +14,6 @@ from schemapin.revocation import (
 from schemapin.verification import (
     ErrorCode,
     KeyPinStore,
-    VerificationResult,
     verify_schema_offline,
     verify_schema_with_resolver,
 )

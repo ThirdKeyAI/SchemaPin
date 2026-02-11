@@ -70,7 +70,7 @@ class LocalFileResolver(SchemaResolver):
         """Read {domain}.json from the discovery directory."""
         path = os.path.join(self._discovery_dir, f"{domain}.json")
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 return json.load(f)
         except (OSError, json.JSONDecodeError):
             return None
@@ -85,7 +85,7 @@ class LocalFileResolver(SchemaResolver):
             self._revocation_dir, f"{domain}.revocations.json"
         )
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 data = json.load(f)
                 return RevocationDocument.from_dict(data)
         except (OSError, json.JSONDecodeError):

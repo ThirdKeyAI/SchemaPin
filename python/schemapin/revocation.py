@@ -1,6 +1,5 @@
 """Standalone revocation documents for SchemaPin v1.2."""
 
-import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
