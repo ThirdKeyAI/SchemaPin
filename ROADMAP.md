@@ -1,7 +1,7 @@
 # SchemaPin Roadmap
 
 ![Version](https://img.shields.io/badge/current-v1.2.0-brightgreen)
-![Next](https://img.shields.io/badge/next-v1.3.0-blue)
+![Next](https://img.shields.io/badge/next-v1.3.0_(active)-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 **Cryptographic schema integrity verification for AI tool ecosystems — the trust anchor of the ThirdKey trust stack.**
@@ -15,8 +15,9 @@
 | **1.0.0** | 2026-01 | Core verification, TOFU pinning, 4-language support | Shipped |
 | **1.1.0** | 2026-01 | Revocation documents, standalone revocation endpoint | Shipped |
 | **1.2.0** | 2026-02 | Offline verification, trust bundles, resolver abstraction | Shipped |
-| **1.3.0** | Q2-Q3 2026 | Cross-agent tool trust for A2A networks | Planning |
-| **1.4.0** | Q4 2026 | Advanced revocation and key lifecycle | Planning |
+| **1.3.0** | Q1 2026 | AgentSkills security — skill folder signing | **Active** |
+| **1.4.0** | Q2-Q3 2026 | Cross-agent tool trust for A2A networks | Planning |
+| **1.5.0** | Q4 2026 | Advanced revocation and key lifecycle | Planning |
 
 ---
 
@@ -28,9 +29,72 @@ See release notes for full details.
 
 ---
 
-## v1.3.0 — Cross-Agent Tool Trust for A2A (Q2-Q3 2026)
+## v1.3.0 — AgentSkills Security: Skill Signing (Q1 2026)
 
-When agents collaborate via A2A (Agent-to-Agent), tool schemas cross trust boundaries. SchemaPin v1.3.0 ensures that tool integrity verification extends seamlessly into A2A networks — every tool invoked through an A2A bridge is verified against its provider's signed schema.
+The AgentSkills specification (SKILL.md) has become the universal format for AI coding agent skills across Claude Code, Codex, Cursor, Copilot, and OpenClaw — but ships with zero cryptographic security. The ClawHavoc attack (January 2026, 341 malicious skills on ClawHub delivering AMOS infostealer) demonstrated the urgent need for a trust layer.
+
+SchemaPin v1.3.0 extends the existing ECDSA P-256 signing infrastructure to sign and verify file-based skill folders. Same keys, same `.well-known` discovery, new target format.
+
+### SkillSigner Module
+
+New module alongside existing schema signing. The cryptographic primitives are identical — what changes is the canonicalization target: a folder of files instead of a JSON object.
+
+| Item | Details |
+|------|---------|
+| `SkillSigner` class/struct | Sign and verify AgentSkills-compatible skill folders |
+| Merkle tree canonicalization | Walk directory in sorted order → SHA-256 per file (`relative_path + file_bytes`) → SHA-256 root hash of concatenated per-file hashes |
+| `.schemapin.sig` file format | Signature file placed alongside SKILL.md with `schemapin_version`, `skill_hash`, `signature`, `domain`, `signer_kid`, `file_manifest` |
+| Per-file tamper detection | The file manifest enables reporting which specific file was modified |
+
+### `.schemapin.sig` Format
+
+```json
+{
+  "schemapin_version": "1.3",
+  "skill_name": "example-skill",
+  "skill_hash": "sha256:a1b2c3d4e5...",
+  "signature": "MEUCIQD...",
+  "signed_at": "2026-02-14T12:00:00Z",
+  "domain": "thirdkey.ai",
+  "signer_kid": "thirdkey-2026-01",
+  "file_manifest": {
+    "SKILL.md": "sha256:d4e5f6...",
+    "scripts/setup.sh": "sha256:g7h8i9...",
+    "references/api-docs.md": "sha256:j0k1l2..."
+  }
+}
+```
+
+### CLI Extensions
+
+| Command | Description |
+|---------|-------------|
+| `schemapin-sign --skill ./skill-dir/ --key private.pem --domain thirdkey.ai` | Sign a skill folder |
+| `schemapin-verify --skill ./skill-dir/ --domain thirdkey.ai` | Verify a skill folder |
+| `schemapin-verify --skill ./skill-dir/ --domain thirdkey.ai --auto-pin` | Verify with TOFU auto-pin |
+
+### Cross-Language Support
+
+All four language implementations receive matching SkillSigner implementations:
+
+| Language | Priority | Notes |
+|----------|----------|-------|
+| Python | First (fastest iteration, most skill authors) | `schemapin/skill.py` |
+| Rust | Second (blocks Symbiont runtime integration) | `src/skill.rs` |
+| JavaScript | Third (Node.js ecosystem, ClawHub tooling) | `src/skill.ts` |
+| Go | Fourth (CLI distribution) | `skill.go` |
+
+Cross-language interop tests ensure a Python-signed skill verifies in Rust/JS/Go.
+
+### What Does NOT Change
+
+The existing `.well-known/schemapin.json` discovery, TOFU key pinning database, revocation endpoints, key rotation, and tool schema signing are all unaffected. Skill signing is purely additive.
+
+---
+
+## v1.4.0 — Cross-Agent Tool Trust for A2A (Q2-Q3 2026)
+
+When agents collaborate via A2A (Agent-to-Agent), tool schemas cross trust boundaries. SchemaPin v1.4.0 ensures that tool integrity verification extends seamlessly into A2A networks — every tool invoked through an A2A bridge is verified against its provider's signed schema.
 
 ### A2A Context for Schema Verification
 
@@ -75,7 +139,7 @@ All four language implementations (Rust, JavaScript, Python, Go) receive matchin
 
 ---
 
-## v1.4.0 — Advanced Revocation & Key Lifecycle (Q4 2026)
+## v1.5.0 — Advanced Revocation & Key Lifecycle (Q4 2026)
 
 | Item | Details |
 |------|---------|
@@ -107,4 +171,4 @@ We welcome input on roadmap priorities:
 
 ---
 
-*Last updated: 2026-02-12*
+*Last updated: 2026-02-14*
