@@ -35,6 +35,7 @@ from .revocation import (
     check_revocation_combined,
     fetch_revocation_document,
 )
+from .skill import SIGNATURE_FILENAME, SkillSigner
 from .utils import (
     SchemaSigningWorkflow,
     SchemaVerificationWorkflow,
@@ -49,7 +50,7 @@ from .verification import (
     verify_schema_with_resolver,
 )
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __all__ = [
     "SchemaPinCore",
     "KeyManager",
@@ -91,4 +92,7 @@ __all__ = [
     "VerificationResult",
     "verify_schema_offline",
     "verify_schema_with_resolver",
+    # v1.3.0
+    "SkillSigner",
+    "SIGNATURE_FILENAME",
 ]

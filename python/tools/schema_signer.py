@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from schemapin.crypto import KeyManager
+from schemapin.skill import SkillSigner
 from schemapin.utils import SchemaSigningWorkflow
 
 
@@ -124,6 +125,11 @@ Examples:
         action='store_true',
         help='Read schema from stdin'
     )
+    input_group.add_argument(
+        '--skill',
+        type=Path,
+        help='Skill directory to sign'
+    )
 
     # Key options
     parser.add_argument(
@@ -166,6 +172,17 @@ Examples:
         '--metadata',
         type=Path,
         help='JSON file containing additional metadata'
+    )
+
+    # Skill signing options
+    parser.add_argument(
+        '--domain',
+        help='Signing domain for skill signing (required with --skill)'
+    )
+
+    parser.add_argument(
+        '--kid',
+        help='Key ID (fingerprint) override for skill signing'
     )
 
     # Processing options
@@ -280,6 +297,29 @@ Examples:
                 'output': str(output_path) if output_path else 'stdout',
                 'status': 'success'
             })
+
+        elif args.skill:
+            # Process skill directory
+            if not args.domain:
+                parser.error("--domain is required for skill signing")
+
+            sig_doc = SkillSigner.sign_skill(
+                args.skill,
+                KeyManager.export_private_key_pem(private_key),
+                args.domain,
+                signer_kid=args.kid,
+                skill_name=metadata.get('developer') if metadata else None,
+            )
+
+            results.append({
+                'input': str(args.skill),
+                'output': str(args.skill / '.schemapin.sig'),
+                'status': 'success',
+                'skill_name': sig_doc['skill_name'],
+            })
+
+            if not args.quiet and not args.json:
+                print(f"Signed skill: {sig_doc['skill_name']} -> {args.skill / '.schemapin.sig'}")
 
         elif args.batch:
             # Process batch

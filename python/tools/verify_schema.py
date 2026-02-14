@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from schemapin.core import SchemaPinCore
 from schemapin.crypto import KeyManager, SignatureManager
 from schemapin.discovery import PublicKeyDiscovery
+from schemapin.skill import SkillSigner
 from schemapin.utils import SchemaVerificationWorkflow
 
 
@@ -221,6 +222,11 @@ Examples:
         action='store_true',
         help='Read signed schema from stdin'
     )
+    input_group.add_argument(
+        '--skill',
+        type=Path,
+        help='Skill directory to verify'
+    )
 
     # Verification method options
     method_group = parser.add_mutually_exclusive_group(required=True)
@@ -324,6 +330,45 @@ Examples:
 
             result['metadata'] = signed_schema.get('metadata', {})
             result['signed_at'] = signed_schema.get('signed_at')
+            results.append(result)
+
+        elif args.skill:
+            # Verify skill directory
+            if args.public_key:
+                # Direct key verification
+                root_hash, _manifest = SkillSigner.canonicalize_skill(args.skill)
+                public_key = load_public_key(args.public_key)
+                sig_data = SkillSigner.load_signature(args.skill)
+                is_valid = SignatureManager.verify_signature(
+                    root_hash, sig_data.get("signature", ""), public_key
+                )
+                fingerprint = KeyManager.calculate_key_fingerprint(public_key)
+                result = {
+                    'valid': is_valid,
+                    'verification_method': 'public_key',
+                    'key_fingerprint': fingerprint,
+                    'key_source': str(args.public_key),
+                    'skill_name': sig_data.get('skill_name', ''),
+                }
+            elif args.domain:
+                # Resolver-based verification
+                from schemapin.resolver import WellKnownResolver
+                from schemapin.verification import KeyPinStore
+
+                pin_store = KeyPinStore()
+                resolver = WellKnownResolver()
+                vr = SkillSigner.verify_skill_with_resolver(
+                    args.skill,
+                    args.domain,
+                    resolver=resolver,
+                    pin_store=pin_store,
+                    tool_id=args.tool_id,
+                )
+                result = vr.to_dict()
+                result['verification_method'] = 'discovery'
+            else:
+                raise ValueError("--public-key or --domain is required for --skill")
+
             results.append(result)
 
         elif args.schema:
