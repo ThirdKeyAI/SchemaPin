@@ -5,6 +5,26 @@ All notable changes to the SchemaPin project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-02-14
+
+### Added
+
+#### SkillSigner — File-Based Skill Folder Signing & Verification (All Languages)
+
+- **`skill` module (Rust, Python, JavaScript, Go)**: Deterministic directory canonicalization and cryptographic signing for AgentSkills (SKILL.md) folders.
+- **`canonicalize_skill()`**: Recursively walks skill directory in sorted order, hashes each file as `SHA256(relative_path + content)`, produces deterministic root hash and file manifest. Skips `.schemapin.sig` and symlinks.
+- **`parse_skill_name()`**: Extracts skill name from SKILL.md YAML frontmatter `name:` field, falls back to directory basename.
+- **`sign_skill()`**: Signs a skill folder with an ECDSA P-256 private key. Writes `.schemapin.sig` JSON containing root hash, per-file manifest, signature, domain, signer KID, and timestamp.
+- **`verify_skill_offline()`**: 7-step offline verification: load signature, validate discovery, extract key, check revocation, TOFU pin, canonicalize and compare, verify ECDSA signature.
+- **`verify_skill_with_resolver()`**: Resolves discovery and revocation documents via `SchemaResolver` trait, then delegates to offline verification.
+- **`load_signature()`**: Loads and parses `.schemapin.sig` JSON from a skill directory.
+- **`detect_tampered_files()`**: Compares current file manifest against signed manifest, reports modified, added, and removed files.
+- **`SkillSignature` struct**: Serializable signature document with `schemapin_version`, `skill_name`, `skill_hash`, `signature`, `signed_at`, `domain`, `signer_kid`, and `file_manifest`.
+
+### Security
+
+- Bumped `cryptography` dependency from 44.0.1/45.0.5 to 46.0.5 in Python and server packages.
+
 ## [1.2.0] - 2026-02-11
 
 ### Added
