@@ -1,7 +1,7 @@
 # SchemaPin Roadmap
 
-![Version](https://img.shields.io/badge/current-v1.2.0-brightgreen)
-![Next](https://img.shields.io/badge/next-v1.3.0_(active)-blue)
+![Version](https://img.shields.io/badge/current-v1.3.0-brightgreen)
+![Next](https://img.shields.io/badge/next-v1.4.0_(planning)-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 **Cryptographic schema integrity verification for AI tool ecosystems — the trust anchor of the ThirdKey trust stack.**
@@ -15,7 +15,7 @@
 | **1.0.0** | 2026-01 | Core verification, TOFU pinning, 4-language support | Shipped |
 | **1.1.0** | 2026-01 | Revocation documents, standalone revocation endpoint | Shipped |
 | **1.2.0** | 2026-02 | Offline verification, trust bundles, resolver abstraction | Shipped |
-| **1.3.0** | Q1 2026 | AgentSkills security — skill folder signing | **Active** |
+| **1.3.0** | 2026-02 | AgentSkills security — skill folder signing | **Shipped** |
 | **1.4.0** | Q2-Q3 2026 | Cross-agent tool trust for A2A networks | Planning |
 | **1.5.0** | Q4 2026 | Advanced revocation and key lifecycle | Planning |
 
@@ -81,8 +81,8 @@ All four language implementations receive matching SkillSigner implementations:
 |----------|----------|--------|-------|
 | Python | First (fastest iteration, most skill authors) | **Shipped** | `schemapin/skill.py` — `SkillSigner` class |
 | Rust | Second (blocks Symbiont runtime integration) | **Shipped** | `src/skill.rs` — module-level functions, 22 tests |
-| JavaScript | Third (Node.js ecosystem, ClawHub tooling) | Pending | `src/skill.ts` |
-| Go | Fourth (CLI distribution) | Pending | `skill.go` |
+| JavaScript | Third (Node.js ecosystem, ClawHub tooling) | **Shipped** | `src/skill.js` — module-level functions, 22 tests |
+| Go | Fourth (CLI distribution) | **Shipped** | `pkg/skill/skill.go` — package-level functions, 22+ tests |
 
 Cross-language interop tests ensure a Python-signed skill verifies in Rust/JS/Go.
 

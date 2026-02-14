@@ -52,4 +52,16 @@ export {
     verifySchemaWithResolver
 } from './verification.js';
 
-export const version = '1.2.0';
+// v1.3.0 new module
+export {
+    SIGNATURE_FILENAME,
+    canonicalizeSkill,
+    parseSkillName,
+    loadSignature,
+    signSkill,
+    verifySkillOffline,
+    verifySkillWithResolver,
+    detectTamperedFiles
+} from './skill.js';
+
+export const version = '1.3.0';

@@ -36,6 +36,29 @@ SchemaPin v1.3.0 extends ECDSA P-256 signing to file-based skill folders (AgentS
   - `SkillSignature` and `TamperedFiles` serde types.
 - 22 inline tests covering canonicalization, signing, verification, tamper detection, revocation, pinning, and resolver integration.
 
+#### JavaScript: SkillSigner Module
+
+- **`skill.js`**: Module-level functions for skill folder signing and verification.
+  - `canonicalizeSkill()` — Recursive sorted directory walk via `readdirSync`, per-file SHA-256 hashing (`relative_path + file_bytes`), root hash from sorted concatenated digests.
+  - `parseSkillName()` — String-based frontmatter parsing, fallback to directory basename.
+  - `signSkill()` — Canonicalize, sign root hash, write `.schemapin.sig` JSON file.
+  - `verifySkillOffline()` — 7-step verification flow mirroring `verifySchemaOffline()`.
+  - `verifySkillWithResolver()` — Resolver-based discovery then delegation.
+  - `detectTamperedFiles()` — Manifest diff reporting modified/added/removed files.
+- 22 tests using `node:test` covering canonicalization, signing, verification, tamper detection, revocation, pinning, and resolver integration.
+
+#### Go: SkillSigner Package
+
+- **`pkg/skill/skill.go`**: Package-level functions matching Go idiom.
+  - `CanonicalizeSkill()` — Recursive sorted `os.ReadDir` walk, skip `.schemapin.sig`/symlinks, forward-slash paths, per-file SHA-256 hashing, root hash computation.
+  - `ParseSkillName()` — String-based frontmatter parsing, quote handling, dirname fallback.
+  - `LoadSignature()` / `SignSkill()` — Read/write `.schemapin.sig` JSON.
+  - `VerifySkillOffline()` — 7-step flow reusing existing `crypto`, `discovery`, `revocation`, `verification` packages.
+  - `VerifySkillWithResolver()` — Resolver-based discovery then delegation.
+  - `DetectTamperedFiles()` — Manifest diff for modified/added/removed files.
+  - `SkillSignature` and `TamperedFiles` types with JSON tags.
+- 22+ tests using `testing` package covering canonicalization, signing, verification, tamper detection, revocation, pinning, and resolver integration.
+
 #### Specification Updates (v1.3)
 
 - **Section 16**: Skill Folder Signing — canonicalization algorithm, `.schemapin.sig` format, 7-step verification flow.
@@ -46,12 +69,14 @@ SchemaPin v1.3.0 extends ECDSA P-256 signing to file-based skill folders (AgentS
 - **Rust**: Version bumped from 1.2.0 to 1.3.0
 - **Rust**: Made `VerificationResult::success()` and `VerificationResult::failure()` constructors public for cross-module use
 - **Python**: Version bumped from 1.2.0 to 1.3.0
+- **JavaScript**: Version bumped from 1.2.0 to 1.3.0
+- **Go**: Version bumped from 1.2.0 to 1.3.0
 
 ### Notes
 
 - **Backward Compatible**: Existing schema signing, key pinning, trust bundles, and resolver infrastructure are all unaffected. Skill signing is purely additive.
 - **No new dependencies**: Uses existing `sha2`, `hex`, `chrono`, `serde_json` in Rust; stdlib `hashlib`, `os`, `json` in Python.
-- **Cross-language interop**: Python-signed skills verify in Rust and vice versa (same canonicalization algorithm, same `.schemapin.sig` format).
+- **Cross-language interop**: Skills signed in any language verify in all others (same canonicalization algorithm, same `.schemapin.sig` format).
 
 ## [1.2.0] - 2026-02-11
 
