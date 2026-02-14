@@ -71,5 +71,6 @@ pub mod error;
 pub mod pinning;
 pub mod resolver;
 pub mod revocation;
+pub mod skill;
 pub mod types;
 pub mod verification;

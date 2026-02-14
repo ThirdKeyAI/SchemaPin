@@ -37,7 +37,11 @@ pub struct KeyPinningStatus {
 }
 
 impl VerificationResult {
-    fn success(domain: &str, developer_name: Option<&str>, pin_status: KeyPinningStatus) -> Self {
+    pub fn success(
+        domain: &str,
+        developer_name: Option<&str>,
+        pin_status: KeyPinningStatus,
+    ) -> Self {
         Self {
             valid: true,
             domain: Some(domain.to_string()),
@@ -49,7 +53,7 @@ impl VerificationResult {
         }
     }
 
-    fn failure(code: ErrorCode, message: &str) -> Self {
+    pub fn failure(code: ErrorCode, message: &str) -> Self {
         Self {
             valid: false,
             domain: None,
