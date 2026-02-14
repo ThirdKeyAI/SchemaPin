@@ -1,6 +1,6 @@
 # SchemaPin: A Technical Specification
 
-Version 1.1
+Version 1.3
 
 Status: Draft
 
@@ -70,17 +70,21 @@ https://[tool_domain]/.well-known/schemapin.json
 
 The contents of this file should be a JSON object specifying the public key:
 
-```
+```json
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "developer_name": "Example Corp Tools",
   "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...etc...\n-----END PUBLIC KEY-----",
   "revoked_keys": [
     "sha256:abc123def456789abcdef0123456789abcdef0123456789abcdef0123456789ab",
     "sha256:def456789abc123def456789abc123def456789abc123def456789abc123def4"
-  ]
+  ],
+  "contact": "security@example.com",
+  "revocation_endpoint": "https://example.com/.well-known/schemapin-revocations.json"
 }
 ```
+
+The `contact` and `revocation_endpoint` fields are OPTIONAL. The `revocation_endpoint` field, when present, specifies a URL where a standalone revocation document (see Section 8.5) can be fetched.
 
 ### **7. The SchemaPin Workflow**
 
@@ -89,15 +93,15 @@ The contents of this file should be a JSON object specifying the public key:
 1. **Generate Key Pair:** Generate a new ECDSA P-256 key pair. Keep the private key secure.
 2. **Publish Public Key:** Host the public key at the `.well-known` URI.
 3. **Sign Schema:** For each tool release:
-    
+
     a. Generate the tool's JSON schema.
-    
+
     b. Canonicalize the schema according to Section 4.
-    
+
     c. Hash the canonical string using SHA-256.
-    
+
     d. Sign the resulting hash with the private key.
-    
+
     e. Encode the signature in Base64.
 
 4. **Publish Tool:** Distribute the tool's schema along with its detached Base64 signature.
@@ -108,16 +112,16 @@ The contents of this file should be a JSON object specifying the public key:
 2. **Discover Public Key:**
     a. Check for a locally "pinned" public key for this tool/developer.
     b. If no key is pinned, construct the .well-known URI based on the tool's domain and fetch the public key.
-    
+
     c. Pin the Key: Upon successful first fetch, store the public key locally and associate it with the tool's identifier. This is the "pinning" step. The user should be prompted for confirmation before trusting a new key.
-    
+
 3. Verify:
     a. Canonicalize the fetched schema using the exact rules in Section 4.
     b. Hash the canonical string with SHA-256.
     c. Using the pinned public key, verify the signature against the hash.
-    
+
 4. **Execute or Reject:**
-    
+
     - If the signature is **valid**, the client can proceed to use the tool schema.
     - If the signature is **invalid**, the client **MUST** refuse to use the tool and should alert the user of a potential security risk.
 
@@ -131,7 +135,7 @@ The `.well-known/schemapin.json` file MAY include an optional `revoked_keys` arr
 
 ```json
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "developer_name": "Example Corp Tools",
   "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...current_key...\n-----END PUBLIC KEY-----",
   "revoked_keys": [
@@ -160,6 +164,43 @@ Clients MUST check if a public key is revoked before using it for signature veri
 - Schema version 1.0 endpoints without `revoked_keys` are still valid
 - Clients MUST gracefully handle missing `revoked_keys` fields
 - Empty `revoked_keys` arrays indicate no keys are currently revoked
+
+#### **8.5. Standalone Revocation Document**
+
+SchemaPin v1.2 introduces a standalone revocation document that can be hosted separately from the discovery endpoint. When a `revocation_endpoint` URL is present in the `.well-known` response, clients SHOULD fetch and check this document in addition to the simple `revoked_keys` list.
+
+The revocation document format:
+
+```json
+{
+  "schemapin_version": "1.2",
+  "domain": "example.com",
+  "updated_at": "2026-02-11T00:00:00Z",
+  "revoked_keys": [
+    {
+      "fingerprint": "sha256:abc123def456789abcdef0123456789abcdef0123456789abcdef0123456789ab",
+      "revoked_at": "2026-02-10T00:00:00Z",
+      "reason": "key_compromise"
+    }
+  ]
+}
+```
+
+#### **8.6. Revocation Reasons**
+
+Each revoked key entry in a standalone revocation document MUST include a `reason` field with one of the following values:
+
+- `key_compromise` — The private key has been compromised or is suspected to be compromised.
+- `superseded` — The key has been replaced by a newer key.
+- `cessation_of_operation` — The key is no longer in use because the associated tool or service has been discontinued.
+- `privilege_withdrawn` — The key holder's authorization to sign schemas has been revoked.
+
+#### **8.7. Combined Revocation Checking**
+
+Clients MUST check both revocation sources when available:
+1. Check the simple `revoked_keys` array in the `.well-known` response
+2. If a `revocation_endpoint` is present, fetch the standalone revocation document and check its `revoked_keys` list
+3. If the key fingerprint appears in either source, reject the schema
 
 ### **9. Security Considerations**
 
@@ -191,7 +232,161 @@ Implementations MUST handle the following error conditions gracefully:
 
 ### **12. Version Compatibility**
 
-- **Schema Version:** This specification is version 1.1. The `schema_version` field in `.well-known` files indicates compatibility.
-- **Backward Compatibility:** Version 1.1 clients MUST support version 1.0 endpoints for backward compatibility.
+- **Schema Version:** This specification is version 1.3. The `schema_version` field in `.well-known` files indicates compatibility.
+- **Backward Compatibility:** Version 1.3 clients MUST support version 1.0, 1.1, and 1.2 endpoints for backward compatibility. The `revocation_endpoint`, `contact`, standalone revocation document, and skill signing features are all optional and additive.
 - **Future Versions:** Clients SHOULD gracefully handle unknown schema versions by falling back to the highest supported version.
 - **Deprecation Policy:** Any breaking changes will be introduced in new major versions with appropriate migration guidance.
+
+### **13. Trust Bundles**
+
+SchemaPin v1.2 introduces trust bundles for offline and air-gapped verification scenarios.
+
+A trust bundle is a pre-shared collection of discovery documents and revocation documents. This allows verification in environments where the standard `.well-known` HTTP discovery is unavailable (air-gapped networks, CI pipelines, enterprise-internal tools, etc.).
+
+#### **13.1. Trust Bundle Format**
+
+```json
+{
+  "schemapin_bundle_version": "1.2",
+  "created_at": "2026-02-11T00:00:00Z",
+  "documents": [
+    {
+      "domain": "example.com",
+      "schema_version": "1.2",
+      "developer_name": "Example Corp",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----",
+      "revoked_keys": []
+    }
+  ],
+  "revocations": [
+    {
+      "schemapin_version": "1.2",
+      "domain": "example.com",
+      "updated_at": "2026-02-11T00:00:00Z",
+      "revoked_keys": []
+    }
+  ]
+}
+```
+
+#### **13.2. Use Cases**
+
+- **Air-gapped environments:** Systems without internet access can verify schemas using a locally distributed trust bundle.
+- **CI/CD pipelines:** Build systems can include a trust bundle to verify tool schemas during automated builds.
+- **Enterprise deployment:** Organizations can distribute approved trust bundles containing vetted developer keys.
+- **Testing:** Developers can create trust bundles for deterministic testing of verification workflows.
+
+### **14. Discovery Resolver**
+
+SchemaPin v1.2 introduces a resolver abstraction that decouples verification logic from the discovery mechanism.
+
+#### **14.1. SchemaResolver Trait**
+
+Implementations SHOULD provide a `SchemaResolver` interface with two methods:
+
+- `resolve_discovery(domain)` — Returns the well-known response for a domain.
+- `resolve_revocation(domain, discovery)` — Returns the revocation document for a domain, if available. Defaults to returning nothing.
+
+#### **14.2. Standard Implementations**
+
+Four resolver implementations are defined:
+
+1. **WellKnownResolver** — Fetches documents from the standard `.well-known` HTTPS endpoint. Requires HTTP capabilities (feature-gated in Rust as `fetch`).
+2. **LocalFileResolver** — Reads `{domain}.json` and `{domain}.revocations.json` from a local filesystem directory.
+3. **TrustBundleResolver** — Resolves documents from an in-memory trust bundle (see Section 13).
+4. **ChainResolver** — Tries a sequence of resolvers in order until one succeeds (first-wins fallthrough).
+
+#### **14.3. Feature Gating**
+
+In the Rust implementation, HTTP-based resolvers and async variants are gated behind the `fetch` feature flag. All other resolvers (LocalFile, TrustBundle, Chain) are always available.
+
+### **15. Offline Verification**
+
+SchemaPin v1.2 defines `verify_schema_offline()` as the core verification primitive. All other verification functions delegate to it.
+
+#### **15.1. Seven-Step Verification Flow**
+
+1. **Validate discovery document** — Check that the well-known response is structurally valid (non-empty PEM key, valid schema version).
+2. **Extract public key and compute fingerprint** — Parse the PEM public key and calculate its SHA-256 fingerprint.
+3. **Check revocation** — Check both the simple `revoked_keys` list and any standalone revocation document.
+4. **TOFU key pinning** — Check the key fingerprint against the pin store. On first use, pin the key. On match, continue. On change, reject.
+5. **Canonicalize schema** — Apply the canonicalization rules from Section 4 and compute the SHA-256 hash.
+6. **Verify ECDSA signature** — Verify the Base64-encoded signature against the schema hash using the public key.
+7. **Return result** — Return a structured `VerificationResult` with the domain, developer name, key pinning status, and any errors or warnings.
+
+### **16. Skill Folder Signing**
+
+SchemaPin v1.3 extends ECDSA P-256 signing from JSON schemas to file-based skill folders. This addresses the security gap in the AgentSkills specification (SKILL.md format) used by AI coding agents.
+
+The same cryptographic keys, `.well-known` discovery, TOFU key pinning, revocation checking, and trust bundles apply. What changes is the canonicalization target: a directory of files instead of a JSON object.
+
+#### **16.1. Skill Canonicalization Algorithm**
+
+The skill canonicalization algorithm produces a deterministic root hash from a directory of files:
+
+1. **Recursive sorted walk** — Read directory entries, sort by filename, recurse into subdirectories in sorted order.
+2. **Skip `.schemapin.sig` and symlinks** — The signature file itself and symbolic links are excluded from the manifest.
+3. **Forward-slash path normalization** — All relative paths use forward slashes (`/`) regardless of operating system.
+4. **Per-file hash** — For each file, compute `SHA-256(relative_path_utf8_bytes + file_bytes)`. Format as `"sha256:<hex_digest>"`.
+5. **Root hash** — Sort manifest entries by relative path key, extract hex digests, concatenate them (no separator), compute `SHA-256(concatenated_digests_utf8)`. The result is raw bytes (32 bytes), not hex.
+6. **Empty directory** — A directory containing no files (after filtering) MUST produce an error, not a valid hash.
+
+#### **16.2. `.schemapin.sig` File Format**
+
+The signature file is written as indented JSON with a trailing newline, placed at the root of the skill directory:
+
+```json
+{
+  "schemapin_version": "1.3",
+  "skill_name": "example-skill",
+  "skill_hash": "sha256:<64_hex_chars>",
+  "signature": "<base64_encoded_ecdsa_signature>",
+  "signed_at": "2026-02-14T12:00:00Z",
+  "domain": "example.com",
+  "signer_kid": "sha256:<64_hex_chars>",
+  "file_manifest": {
+    "SKILL.md": "sha256:<64_hex_chars>",
+    "lib/util.py": "sha256:<64_hex_chars>"
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `schemapin_version` | Protocol version (`"1.3"`) |
+| `skill_name` | Extracted from SKILL.md frontmatter `name:` field, or directory basename as fallback |
+| `skill_hash` | Root hash in `sha256:<hex>` format (hash of the root hash bytes, not the root hash itself) |
+| `signature` | Base64-encoded ECDSA P-256 signature over the raw root hash bytes |
+| `signed_at` | ISO 8601 UTC timestamp |
+| `domain` | Signing domain (e.g., `"thirdkey.ai"`) |
+| `signer_kid` | Key fingerprint in `sha256:<hex>` format |
+| `file_manifest` | Map of relative file paths to their per-file `sha256:<hex>` hashes |
+
+#### **16.3. Skill Name Extraction**
+
+The skill name is extracted from SKILL.md YAML frontmatter using string-based parsing (no YAML library required):
+
+1. Find `---\n` at the start of the file.
+2. Find the next `\n---` to close the frontmatter block.
+3. Scan lines for `name:` prefix.
+4. Strip surrounding single or double quotes from the value.
+5. If SKILL.md is missing or has no `name:` field, fall back to the directory basename.
+
+#### **16.4. Skill Verification Flow**
+
+Skill verification follows the same 7-step flow as schema verification (Section 15.1), with two differences:
+
+- **Step 1**: Load signature data from `.schemapin.sig` instead of a detached Base64 signature.
+- **Step 5**: Canonicalize the skill directory (Section 16.1) instead of canonicalizing a JSON schema (Section 4).
+
+All other steps (validate discovery, extract key, check revocation, TOFU pinning, verify ECDSA signature, return result) are identical.
+
+#### **16.5. Tamper Detection**
+
+The file manifest enables per-file tamper detection by comparing the current manifest against the signed manifest:
+
+- **Modified files** — Files present in both manifests with different hashes.
+- **Added files** — Files present in the current manifest but not the signed manifest.
+- **Removed files** — Files present in the signed manifest but not the current manifest.
+
+Any difference causes the root hash to change, which invalidates the ECDSA signature.

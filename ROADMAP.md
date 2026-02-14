@@ -77,12 +77,12 @@ New module alongside existing schema signing. The cryptographic primitives are i
 
 All four language implementations receive matching SkillSigner implementations:
 
-| Language | Priority | Notes |
-|----------|----------|-------|
-| Python | First (fastest iteration, most skill authors) | `schemapin/skill.py` |
-| Rust | Second (blocks Symbiont runtime integration) | `src/skill.rs` |
-| JavaScript | Third (Node.js ecosystem, ClawHub tooling) | `src/skill.ts` |
-| Go | Fourth (CLI distribution) | `skill.go` |
+| Language | Priority | Status | Notes |
+|----------|----------|--------|-------|
+| Python | First (fastest iteration, most skill authors) | **Shipped** | `schemapin/skill.py` — `SkillSigner` class |
+| Rust | Second (blocks Symbiont runtime integration) | **Shipped** | `src/skill.rs` — module-level functions, 22 tests |
+| JavaScript | Third (Node.js ecosystem, ClawHub tooling) | Pending | `src/skill.ts` |
+| Go | Fourth (CLI distribution) | Pending | `skill.go` |
 
 Cross-language interop tests ensure a Python-signed skill verifies in Rust/JS/Go.
 
