@@ -89,7 +89,7 @@ func FetchRevocationDocument(ctx context.Context, url string) (*RevocationDocume
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- URL is from discovery document's revocation_endpoint
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch revocation document: %w", err)
 	}

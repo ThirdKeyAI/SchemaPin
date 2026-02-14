@@ -87,7 +87,7 @@ func (p *PublicKeyDiscovery) FetchWellKnown(ctx context.Context, domain string) 
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := p.client.Do(req)
+	resp, err := p.client.Do(req) // #nosec G704 -- URL constructed from ConstructWellKnownURL with domain validation
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch .well-known file: %w", err)
 	}

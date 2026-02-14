@@ -65,7 +65,7 @@ func NewLocalFileResolver(discoveryDir, revocationDir string) *LocalFileResolver
 // ResolveDiscovery reads {domain}.json from the discovery directory.
 func (r *LocalFileResolver) ResolveDiscovery(domain string) (*discovery.WellKnownResponse, error) {
 	path := filepath.Join(r.discoveryDir, domain+".json")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path constructed from trusted config directory + domain
 	if err != nil {
 		return nil, fmt.Errorf("failed to read discovery file: %w", err)
 	}
@@ -85,7 +85,7 @@ func (r *LocalFileResolver) ResolveRevocation(domain string, disc *discovery.Wel
 	}
 
 	path := filepath.Join(r.revocationDir, domain+".revocations.json")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path constructed from trusted config directory + domain
 	if err != nil {
 		return nil, nil // Missing file is not an error
 	}

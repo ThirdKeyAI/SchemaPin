@@ -92,7 +92,7 @@ func walkSorted(dir, baseDir string, manifest map[string]string) error {
 		// Normalize to forward slashes
 		relStr := filepath.ToSlash(relPath)
 
-		fileBytes, err := os.ReadFile(fullPath)
+		fileBytes, err := os.ReadFile(fullPath) // #nosec G304 -- path constructed from trusted directory walk
 		if err != nil {
 			return fmt.Errorf("failed to read file %s: %w", fullPath, err)
 		}
@@ -169,7 +169,7 @@ func ParseSkillName(skillDir string) string {
 	}
 
 	skillMD := filepath.Join(absDir, "SKILL.md")
-	data, err := os.ReadFile(skillMD)
+	data, err := os.ReadFile(skillMD) // #nosec G304 -- path constructed from user-provided skill directory
 	if err != nil {
 		return filepath.Base(absDir)
 	}
@@ -198,7 +198,7 @@ func ParseSkillName(skillDir string) string {
 // LoadSignature reads and parses the .schemapin.sig file from a skill directory.
 func LoadSignature(skillDir string) (*SkillSignature, error) {
 	sigPath := filepath.Join(skillDir, SignatureFilename)
-	data, err := os.ReadFile(sigPath)
+	data, err := os.ReadFile(sigPath) // #nosec G304 -- path constructed from user-provided skill directory
 	if err != nil {
 		return nil, fmt.Errorf("failed to read signature file: %w", err)
 	}
@@ -267,7 +267,7 @@ func SignSkill(skillDir, privateKeyPEM, domain string, signerKid, skillName stri
 	}
 
 	sigPath := filepath.Join(skillDir, SignatureFilename)
-	if err := os.WriteFile(sigPath, append(sigJSON, '\n'), 0644); err != nil {
+	if err := os.WriteFile(sigPath, append(sigJSON, '\n'), 0600); err != nil { // #nosec G306
 		return nil, fmt.Errorf("failed to write signature file: %w", err)
 	}
 
