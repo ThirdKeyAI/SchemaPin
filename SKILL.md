@@ -60,13 +60,13 @@ const isValid = await SignatureManager.verifySignature(publicKey, canonical, sig
 ### Go
 
 ```bash
-go get github.com/anthropics/schemapin/go@v1.2.0
+go get github.com/ThirdKeyAi/schemapin/go@v1.3.0
 ```
 
 ```go
 import (
-    "github.com/anthropics/schemapin/go/pkg/core"
-    "github.com/anthropics/schemapin/go/pkg/crypto"
+    "github.com/ThirdKeyAi/schemapin/go/pkg/core"
+    "github.com/ThirdKeyAi/schemapin/go/pkg/crypto"
 )
 
 // Generate keys
@@ -86,7 +86,7 @@ valid, _ := crypto.NewSignatureManager().VerifySignature(pubKey, canonical, sig)
 
 ```toml
 [dependencies]
-schemapin = "1.2"
+schemapin = "1.3"
 ```
 
 ```rust
@@ -210,6 +210,78 @@ result = verify_schema_with_resolver(
 
 ---
 
+## v1.3.0 Features
+
+### SkillSigner — File-Based Skill Folder Signing
+
+Sign entire skill directories (e.g., a folder containing `SKILL.md`) with ECDSA P-256. Produces a `.schemapin.sig` manifest alongside the files, proving no file has been tampered with.
+
+**Python:**
+```python
+from schemapin.skill import sign_skill, verify_skill_offline
+
+# Sign a skill directory
+sig = sign_skill("./my-skill/", private_key_pem, "example.com")
+# Writes .schemapin.sig into ./my-skill/
+
+# Verify offline
+from schemapin.verification import KeyPinStore
+result = verify_skill_offline("./my-skill/", discovery_data, sig, revocation_doc, KeyPinStore())
+```
+
+**JavaScript:**
+```javascript
+import { signSkill, verifySkillOffline } from 'schemapin/skill';
+
+const sig = await signSkill('./my-skill/', privateKeyPem, 'example.com');
+const result = verifySkillOffline('./my-skill/', discoveryData, sig, revDoc, pinStore);
+```
+
+**Go:**
+```go
+import "github.com/ThirdKeyAi/schemapin/go/pkg/skill"
+
+sig, err := skill.SignSkill("./my-skill/", privateKeyPEM, "example.com", "", "")
+result := skill.VerifySkillOffline("./my-skill/", disc, sig, rev, pinStore, "")
+```
+
+**Rust:**
+```rust
+use schemapin::skill::{sign_skill, verify_skill_offline};
+
+let sig = sign_skill("./my-skill/", &private_key_pem, "example.com", None, None)?;
+let result = verify_skill_offline("./my-skill/", &disc, Some(&sig), rev.as_ref(), Some(&pin_store), None);
+```
+
+### `.schemapin.sig` Format
+
+```json
+{
+  "schemapin_version": "1.3",
+  "skill_name": "my-skill",
+  "skill_hash": "sha256:<root_hash>",
+  "signature": "<base64_ecdsa_signature>",
+  "signed_at": "2026-02-14T00:00:00Z",
+  "domain": "example.com",
+  "signer_kid": "sha256:<key_fingerprint>",
+  "file_manifest": {
+    "SKILL.md": "sha256:<file_hash>"
+  }
+}
+```
+
+### Tamper Detection
+
+```python
+from schemapin.skill import detect_tampered_files, canonicalize_skill
+
+_, current_manifest = canonicalize_skill("./my-skill/")
+tampered = detect_tampered_files(current_manifest, sig.file_manifest)
+# tampered.modified, tampered.added, tampered.removed
+```
+
+---
+
 ## Server-Side Setup
 
 ### Publishing `.well-known` Endpoints
@@ -227,7 +299,7 @@ schemapin-sign --key ./keys/private.pem --schema schema.json
 schemapin-verify --key ./keys/public.pem --schema schema.json --signature sig.b64
 ```
 
-Go CLI equivalents are also available (`go install github.com/anthropics/schemapin/go/cmd/...@v1.2.0`).
+Go CLI equivalents are also available (`go install github.com/ThirdKeyAi/schemapin/go/cmd/...@v1.3.0`).
 
 ---
 
@@ -259,6 +331,9 @@ Developer                          Client (AI Platform)
 | Discover key | `PublicKeyDiscovery.fetch_well_known()` | `PublicKeyDiscovery.fetchWellKnown()` | `FetchWellKnown()` | `WellKnownResolver` (fetch feature) |
 | Offline verify | `verify_schema_offline()` | `verifySchemaOffline()` | `VerifySchemaOffline()` | `verify_schema_offline()` |
 | Resolver verify | `verify_schema_with_resolver()` | `verifySchemaWithResolver()` | `VerifySchemaWithResolver()` | `verify_schema_with_resolver()` |
+| Sign skill folder | `sign_skill()` | `signSkill()` | `skill.SignSkill()` | `sign_skill()` |
+| Verify skill | `verify_skill_offline()` | `verifySkillOffline()` | `skill.VerifySkillOffline()` | `verify_skill_offline()` |
+| Detect tampering | `detect_tampered_files()` | `detectTamperedFiles()` | `skill.DetectTamperedFiles()` | `detect_tampered_files()` |
 
 ---
 
@@ -289,3 +364,5 @@ cd rust && cargo test
 5. **TOFU pinning** means the first key seen for a domain is trusted — warn users on key changes
 6. **All languages use the same crypto** — ECDSA P-256 + SHA-256, so cross-language verification works
 7. **Revocation checking** should always be performed — both simple lists and standalone documents
+8. **SkillSigner** signs entire directories — ideal for SKILL.md folders uploaded to registries like ClaWHub
+9. **`.schemapin.sig`** is auto-excluded from hashing — you can re-sign a directory without removing the old signature first
