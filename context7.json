@@ -1,4 +1,43 @@
 {
+  "$schema": "https://context7.com/schema/context7.json",
   "url": "https://context7.com/thirdkeyai/schemapin",
-  "public_key": "pk_Ehy7QXQTu2Keb0e5BNeyx"
+  "public_key": "pk_Ehy7QXQTu2Keb0e5BNeyx",
+  "projectTitle": "SchemaPin",
+  "description": "Cryptographic tool schema verification to prevent MCP Rug Pull attacks — ECDSA P-256 signing, SHA-256 hashing, TOFU key pinning, and .well-known discovery. Implementations in Python, JavaScript, Rust, and Go. Part of the ThirdKey trust stack.",
+  "folders": [
+    "SKILL.md",
+    "README.md",
+    "CHANGELOG.md",
+    "TECHNICAL_SPECIFICATION.md",
+    "python/schemapin",
+    "javascript/src",
+    "rust/src",
+    "go/pkg",
+    "go/internal",
+    "server"
+  ],
+  "excludeFolders": [
+    "**/node_modules",
+    "**/dist",
+    "**/__pycache__",
+    "**/*.egg-info",
+    "**/target",
+    "**/build",
+    "**/coverage"
+  ],
+  "excludeFiles": [
+    "**/*.pem",
+    "**/*_signed.json"
+  ],
+  "rules": [
+    "SchemaPin uses ECDSA P-256 (secp256r1) for signing and SHA-256 for hashing — no other algorithms accepted",
+    "Schema canonicalization is required before signing: deterministic JSON with sorted keys, no whitespace, UTF-8 encoding",
+    "TOFU key pinning: on first schema verification for a developer, their public key is pinned — subsequent verifications reject different keys for the same developer domain",
+    "Public key discovery uses RFC 8615 .well-known endpoints: /.well-known/schemapin.json contains developer public keys",
+    "Four language implementations with identical verification guarantees: Python (schemapin), JavaScript (schemapin), Rust (schemapin), Go (schemapin)",
+    "Core classes: KeyManager (key generation/serialization), SignatureManager (sign/verify), SchemaPinCore (canonicalization), PinningManager (TOFU store)",
+    "Verification flow: canonicalize schema → fetch/resolve public key → verify ECDSA signature → check TOFU pin → return result",
+    "Never hardcode or embed private keys — use KeyManager to generate and PEM files for storage",
+    "SchemaPin protects MCP tool schemas from tampering — sign on publish, verify on load"
+  ]
 }
