@@ -2,7 +2,7 @@
 
 **Purpose**: This guide helps AI assistants quickly integrate SchemaPin into applications for cryptographic tool schema verification.
 
-**For Full Documentation**: See the [README](README.md), [Technical Specification](TECHNICAL_SPECIFICATION.md), and language-specific READMEs in each subdirectory.
+**For Full Documentation**: See the [README](https://github.com/ThirdKeyAI/SchemaPin/blob/main/README.md), [Technical Specification](https://github.com/ThirdKeyAI/SchemaPin/blob/main/TECHNICAL_SPECIFICATION.md), and language-specific READMEs in each subdirectory.
 
 ## What SchemaPin Does
 
