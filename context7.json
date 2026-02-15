@@ -7,14 +7,11 @@
   "folders": [
     "SKILL.md",
     "README.md",
-    "CHANGELOG.md",
     "TECHNICAL_SPECIFICATION.md",
-    "python/schemapin",
-    "javascript/src",
-    "rust/src",
-    "go/pkg",
-    "go/internal",
-    "server"
+    "python/README.md",
+    "javascript/README.md",
+    "rust/README.md",
+    "go/README.md"
   ],
   "excludeFolders": [
     "**/node_modules",
@@ -23,11 +20,37 @@
     "**/*.egg-info",
     "**/target",
     "**/build",
-    "**/coverage"
+    "**/coverage",
+    "**/tests",
+    "**/examples",
+    "**/src",
+    "server",
+    "scripts",
+    "integration_demo",
+    "python/schemapin",
+    "python/tools",
+    "javascript/src",
+    "rust/src",
+    "go/pkg",
+    "go/internal",
+    "go/cmd"
   ],
   "excludeFiles": [
     "**/*.pem",
-    "**/*_signed.json"
+    "**/*_signed.json",
+    "**/*.rs",
+    "**/*.py",
+    "**/*.ts",
+    "**/*.js",
+    "**/*.go",
+    "**/*.lock",
+    "**/*.toml",
+    "**/*.cfg",
+    "CHANGELOG.md",
+    "ROADMAP.md",
+    "SECURITY.md",
+    "CODE_OF_CONDUCT.md",
+    "schemapin_mcp_demo.ipynb"
   ],
   "rules": [
     "SchemaPin uses ECDSA P-256 (secp256r1) for signing and SHA-256 for hashing — no other algorithms accepted",
