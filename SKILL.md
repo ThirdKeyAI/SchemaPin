@@ -1,3 +1,9 @@
+---
+title: SchemaPin
+description: Cryptographic tool schema verification to prevent MCP Rug Pull attacks — ECDSA P-256 signing, SHA-256 hashing, TOFU key pinning, and .well-known discovery
+version: 0.3.0
+---
+
 # SchemaPin Development Skills Guide
 
 **Purpose**: This guide helps AI assistants quickly integrate SchemaPin into applications for cryptographic tool schema verification.
