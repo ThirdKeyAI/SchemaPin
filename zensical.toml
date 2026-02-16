@@ -1,6 +1,6 @@
 [project]
 site_name = "SchemaPin Documentation"
-site_url = "https://thirdkeyai.github.io/SchemaPin/"
+site_url = "https://docs.schemapin.org/"
 site_description = "Cryptographic tool schema verification to prevent MCP Rug Pull attacks"
 
 [project.repository]
