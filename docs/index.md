@@ -1,6 +1,6 @@
 # SchemaPin
 
-**Cryptographic tool schema verification to prevent MCP Rug Pull attacks.**
+**Cryptographic integrity for AI tool schemas and skill directories — signing, verification, TOFU pinning, and trust bundles.**
 
 SchemaPin is the tool integrity layer of the [ThirdKey](https://thirdkey.ai) trust stack: **SchemaPin** (tool integrity) → [AgentPin](https://agentpin.org) (agent identity) → [Symbiont](https://symbiont.dev) (runtime).
 
@@ -8,15 +8,17 @@ SchemaPin is the tool integrity layer of the [ThirdKey](https://thirdkey.ai) tru
 
 ## What SchemaPin Does
 
-SchemaPin enables developers to cryptographically sign tool schemas (ECDSA P-256 + SHA-256) and clients to verify schemas haven't been tampered with. It uses Trust-On-First-Use (TOFU) key pinning and `.well-known` endpoints for public key discovery.
+SchemaPin enables developers to cryptographically sign tool schemas and skill directories (ECDSA P-256 + SHA-256) and clients to verify they haven't been tampered with. It uses Trust-On-First-Use (TOFU) key pinning and `.well-known` endpoints for public key discovery.
 
-- **Schema Signing** — ECDSA P-256 signatures over canonicalized JSON schemas
+- **Schema Signing** — ECDSA P-256 signatures over canonicalized JSON tool schemas
+- **Skill Directory Signing** — Sign entire skill directories, producing a `.schemapin.sig` manifest that covers every file
 - **Verification** — Signature verification with public key discovery and TOFU pinning
-- **Skill Signing** — Sign entire skill directories with `.schemapin.sig` manifests (v1.3)
-- **Trust Bundles** — Offline verification with pluggable discovery resolvers (v1.2)
+- **Trust Bundles** — Offline verification with pluggable discovery resolvers
 - **Revocation** — Key and schema revocation with standalone documents
 
-## Quick Example
+## Quick Examples
+
+### Sign a Tool Schema
 
 ```python
 from schemapin.crypto import KeyManager, SignatureManager
@@ -38,6 +40,21 @@ signature = SignatureManager.sign_schema(private_key, canonical)
 # Verify
 is_valid = SignatureManager.verify_signature(public_key, canonical, signature)
 print(f"Valid: {is_valid}")
+```
+
+### Sign a Skill Directory
+
+```python
+from schemapin.skill import sign_skill, verify_skill_offline
+from schemapin.verification import KeyPinStore
+
+# Sign all files in a skill directory (writes .schemapin.sig)
+sig = sign_skill("./my-skill/", private_key_pem, "example.com")
+print(f"Signed {len(sig.file_manifest)} files, root hash: {sig.skill_hash}")
+
+# Verify the skill hasn't been tampered with
+result = verify_skill_offline("./my-skill/", discovery_doc, sig, None, KeyPinStore())
+print(f"Verified: {result.valid}")
 ```
 
 ## Implementations
