@@ -1,0 +1,18 @@
+[project]
+site_name = "SchemaPin Documentation"
+site_url = "https://thirdkeyai.github.io/SchemaPin/"
+site_description = "Cryptographic tool schema verification to prevent MCP Rug Pull attacks"
+
+[project.repository]
+url = "https://github.com/ThirdKeyAI/SchemaPin"
+
+[project.nav]
+items = [
+  { title = "Home", path = "index.md" },
+  { title = "Getting Started", path = "getting-started.md" },
+  { title = "API Reference", path = "api-reference.md" },
+  { title = "Skill Signing", path = "skill-signing.md" },
+  { title = "Trust Bundles", path = "trust-bundles.md" },
+  { title = "Deployment", path = "deployment.md" },
+  { title = "Troubleshooting", path = "troubleshooting.md" },
+]

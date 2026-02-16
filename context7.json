@@ -11,7 +11,14 @@
     "python/README.md",
     "javascript/README.md",
     "rust/README.md",
-    "go/README.md"
+    "go/README.md",
+    "docs/index.md",
+    "docs/getting-started.md",
+    "docs/api-reference.md",
+    "docs/skill-signing.md",
+    "docs/trust-bundles.md",
+    "docs/deployment.md",
+    "docs/troubleshooting.md"
   ],
   "excludeFolders": [
     "**/node_modules",
