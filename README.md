@@ -59,7 +59,7 @@ go install github.com/ThirdKeyAi/schemapin/go/cmd/...@latest
 
 ```toml
 [dependencies]
-schemapin = "1.2.0"
+schemapin = "1.3.0"
 ```
 
 ## Documentation
