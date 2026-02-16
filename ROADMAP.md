@@ -16,8 +16,8 @@
 | **1.1.0** | 2026-01 | Revocation documents, standalone revocation endpoint | Shipped |
 | **1.2.0** | 2026-02 | Offline verification, trust bundles, resolver abstraction | Shipped |
 | **1.3.0** | 2026-02 | AgentSkills security — skill folder signing | **Shipped** |
-| **1.4.0** | Q2-Q3 2026 | Cross-agent tool trust for A2A networks | Planning |
-| **1.5.0** | Q4 2026 | Advanced revocation and key lifecycle | Planning |
+| **1.4.0** | Q2-Q3 2026 | Signature lifecycle, version binding, A2A trust | Planning |
+| **1.5.0** | Q4 2026 | Multi-key endorsement, permissions, advanced revocation | Planning |
 
 ---
 
@@ -92,11 +92,71 @@ The existing `.well-known/schemapin.json` discovery, TOFU key pinning database, 
 
 ---
 
-## v1.4.0 — Cross-Agent Tool Trust for A2A (Q2-Q3 2026)
+## v1.4.0 — Signature Lifecycle, Version Binding & A2A Trust (Q2-Q3 2026)
 
-When agents collaborate via A2A (Agent-to-Agent), tool schemas cross trust boundaries. SchemaPin v1.4.0 ensures that tool integrity verification extends seamlessly into A2A networks — every tool invoked through an A2A bridge is verified against its provider's signed schema.
+All v1.4 additions are optional fields — fully backward compatible with v1.3 clients.
+
+### Signature Expiration / TTL
+
+Right now, a signature is valid forever once created. There's a `signed_at` timestamp but no `expires_at`. A signature from 2 years ago on an abandoned tool is just as "valid" as one from yesterday — there's no forcing function for developers to re-sign after security reviews, and clients can't distinguish "actively maintained" from "signed once and forgotten."
+
+| Item | Details |
+|------|---------|
+| `expires_at` field | Optional ISO 8601 timestamp in both schema signatures and `.schemapin.sig` |
+| Degraded vs. failed | Expired signatures are treated as degraded (lower confidence), not hard failures — avoids breaking tools when a dev misses a renewal |
+| Confidence scoring | Pairs with a confidence model: recently signed > old but valid > expired > unsigned |
+
+**Format addition to `.schemapin.sig`:**
+
+```json
+{
+  "signed_at": "2026-02-14T12:00:00Z",
+  "expires_at": "2026-08-14T12:00:00Z"
+}
+```
+
+### Schema Version Binding
+
+SchemaPin signs a schema at a point in time, but there's no concept of "this is version 3.2 of this tool's schema, superseding version 3.1." If a developer legitimately updates their tool, clients with the old schema pinned have no way to know whether the new schema is an authorized upgrade or a rug pull.
+
+| Item | Details |
+|------|---------|
+| `schema_version` field | Optional version string in signature metadata |
+| `previous_hash` field | SHA-256 hash of the prior signed version, creating a hash chain |
+| Lineage verification | Clients verify that a schema update is part of an authorized chain rather than an out-of-band substitution |
+
+No new crypto required — just metadata. The hash chain is lightweight and elegant.
+
+### DNS TXT Cross-Verification
+
+AgentPin already uses `_agentpin.{domain}` TXT records, but SchemaPin doesn't leverage DNS yet. Adding a `_schemapin.{domain}` TXT record containing the key fingerprint gives multi-channel verification without requiring a GitHub repo. DNS is controlled through a completely different credential chain than HTTPS hosting, so compromising one doesn't compromise the other.
+
+| Item | Details |
+|------|---------|
+| `_schemapin.{domain}` TXT record | Contains key fingerprint (JWK thumbprint) |
+| Cross-check | Clients verify that the key from `.well-known` matches what DNS says |
+| Optional | Enhances confidence when present, does not block verification when absent |
+
+**Example TXT record:**
+
+```
+_schemapin.example.com. IN TXT "v=schemapin1; kid=acme-2026-01; fp=sha256:a1b2c3d4..."
+```
+
+### Canonicalization Algorithm Identifier
+
+The current spec hardcodes the canonicalization algorithm (sorted keys, no whitespace, UTF-8). If the algorithm ever needs to change (and JSON canonicalization is notoriously tricky across languages), there's no way to signal which algorithm was used.
+
+| Item | Details |
+|------|---------|
+| `canonicalization` field | Algorithm identifier in signature metadata, e.g. `"schemapin-v1"` |
+| Forward compatibility | New algorithms can be introduced without breaking existing signatures |
+
+Trivial to add now, saves a painful migration later.
 
 ### A2A Context for Schema Verification
+
+When agents collaborate via A2A (Agent-to-Agent), tool schemas cross trust boundaries. SchemaPin v1.4.0 ensures that tool integrity verification extends seamlessly into A2A networks — every tool invoked through an A2A bridge is verified against its provider's signed schema.
 
 | Item | Details |
 |------|---------|
@@ -104,8 +164,6 @@ When agents collaborate via A2A (Agent-to-Agent), tool schemas cross trust bound
 | `verify_schema_for_a2a()` | Extends `verify_schema_offline()` with A2A context validation |
 | Domain scoping | Accept optional trusted domains list (from AgentPin `allowed_domains` constraints) |
 | Intersection check | Scope verification to intersection of caller's allowed domains and tool provider's domain |
-
-**Touchpoints:** new `src/a2a.rs`, extend `src/verification.rs`
 
 ### Trust Bundle Distribution for A2A Networks
 
@@ -116,8 +174,6 @@ When agents collaborate via A2A (Agent-to-Agent), tool schemas cross trust bound
 | TOFU for bundles | TOFU pinning for bundle authority keys |
 | JSON-RPC method | `schemapin/trustBundle` for A2A bundle exchange |
 
-**Touchpoints:** extend `src/types/bundle.rs`, new `src/bundle_exchange.rs`
-
 ### Cross-Agent Tool Schema Caching
 
 | Item | Details |
@@ -126,20 +182,74 @@ When agents collaborate via A2A (Agent-to-Agent), tool schemas cross trust bound
 | Storage | In-memory with configurable TTL and max entries |
 | Shared cache | Optional shared cache across agents in same runtime |
 
-**Touchpoints:** new `src/cache.rs`
-
 ### Cross-Language Support
 
-All four language implementations (Rust, JavaScript, Python, Go) receive matching implementations of:
-
-- `A2aVerificationContext` and `verify_schema_for_a2a()`
-- Trust bundle signing and `merge_trust_bundles()`
-- Schema caching with TTL
-- `schemapin/trustBundle` JSON-RPC helpers
+All four language implementations (Rust, JavaScript, Python, Go) receive matching implementations of all v1.4 features.
 
 ---
 
-## v1.5.0 — Advanced Revocation & Key Lifecycle (Q4 2026)
+## v1.5.0 — Multi-Key Endorsement, Permissions & Advanced Revocation (Q4 2026)
+
+### Multi-Key / Organizational Endorsement
+
+The `.well-known/schemapin.json` should support an array of public keys with roles rather than a single `public_key_pem`. This is the enterprise compliance differentiator — organizations can enforce policies like "require both a developer and a reviewer signature."
+
+**Discovery document format:**
+
+```json
+{
+  "schema_version": "1.5",
+  "developer_name": "Acme Corp",
+  "public_keys": [
+    {
+      "kid": "acme-dev-2026-01",
+      "public_key_pem": "...",
+      "role": "developer",
+      "name": "Alice (Engineering)"
+    },
+    {
+      "kid": "acme-security-2026-01",
+      "public_key_pem": "...",
+      "role": "reviewer",
+      "name": "Security Team"
+    }
+  ]
+}
+```
+
+| Item | Details |
+|------|---------|
+| `public_keys` array | Replaces single `public_key_pem` (single-key remains valid as shorthand) |
+| Key roles | `developer`, `reviewer`, `auditor` — extensible |
+| `signatures` array in `.schemapin.sig` | Replaces single `signature` field for countersigning |
+| Policy enforcement | Clients can require signatures from specific roles |
+
+Sequential countersigning approach — minimal protocol disruption, maximum enterprise value.
+
+### Scope / Permission Declarations
+
+SchemaPin verifies that a schema hasn't been *tampered with*, but says nothing about what the schema *claims to do*. A signed schema that says "I need filesystem access, network access, and the ability to execute arbitrary commands" is cryptographically valid but potentially terrifying.
+
+| Item | Details |
+|------|---------|
+| `declared_permissions` field | Optional array in signature metadata enumerating claimed capabilities |
+| Attestation record | Auditable record of what the developer attested their tool requires at signing time |
+| Tamper detection | If the schema later changes to request more permissions without a new signature, verification fails |
+| Policy bridge | Doesn't enforce at SchemaPin layer (that's Symbiont's job), but feeds into policy enforcement |
+
+This bridges SchemaPin into the Symbiont policy enforcement story naturally.
+
+### Source Repository Verification
+
+Cross-reference signed schemas against their source repository to boost verification confidence.
+
+| Item | Details |
+|------|---------|
+| `source_repo` field | Optional repository URL in signature metadata |
+| Commit binding | Optional `source_commit` hash linking signature to a specific commit |
+| Confidence boost | Verification that the signed artifact matches what's in the public repo |
+
+### Advanced Revocation & Key Lifecycle
 
 | Item | Details |
 |------|---------|
@@ -154,10 +264,27 @@ All four language implementations (Rust, JavaScript, Python, Go) receive matchin
 
 | Feature | Description |
 |---------|-------------|
+| Verification Telemetry | Optional `reporting_endpoint` in `.well-known/schemapin.json` for anonymized verification reports (tool_id, success/failure, error_code, timestamp). Opt-in on both sides. Feeds into transparency log. |
 | Hardware-Backed Signing | HSM and TPM support for schema signing keys |
-| Schema Evolution Tracking | Track schema changes over time with backward compatibility checks |
 | Federated Trust Registries | Shared registries for cross-organization schema trust |
 | Transparency Log | Append-only log of all schema signatures for auditability |
+
+---
+
+## Priority Stack
+
+Sequenced for maximum impact with minimum effort. All items are backward compatible — every one is an optional field addition. Existing v1.3 clients ignore what they don't understand.
+
+| Priority | Feature | Target | Effort | Impact |
+|----------|---------|--------|--------|--------|
+| 1 | Signature expiration | v1.4 | Small | Closes the "stale signature" gap every enterprise buyer will ask about |
+| 2 | Multi-key endorsement | v1.5 | Medium | The enterprise compliance differentiator |
+| 3 | DNS TXT cross-verification | v1.4 | Small | Strongest anti-compromise signal for lowest cost |
+| 4 | Schema version binding | v1.4 | Small | Hash chain prevents upgrade-path attacks |
+| 5 | Source repo verification | v1.5 | Medium | Strong confidence boost via cross-referencing |
+| 6 | Declared permissions | v1.5 | Small | Bridges into Symbiont policy story |
+| 7 | Canonicalization identifier | v1.4 | Trivial | Future-proofing while it's free |
+| 8 | Reporting endpoint | Beyond | Medium | Important but requires ecosystem scale |
 
 ---
 
@@ -165,10 +292,10 @@ All four language implementations (Rust, JavaScript, Python, Go) receive matchin
 
 We welcome input on roadmap priorities:
 
-- **GitHub Discussions** — Open a discussion in the [SchemaPin repository](https://github.com/nicholascross/SchemaPin/discussions)
+- **GitHub Discussions** — Open a discussion in the [SchemaPin repository](https://github.com/ThirdKeyAI/SchemaPin/discussions)
 - **Contributing Guide** — See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup
 - **Security** — For security-sensitive feedback, see SECURITY.md
 
 ---
 
-*Last updated: 2026-02-14*
+*Last updated: 2026-02-15*
