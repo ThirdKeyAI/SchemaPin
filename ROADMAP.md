@@ -174,6 +174,30 @@ When agents collaborate via A2A (Agent-to-Agent), tool schemas cross trust bound
 | TOFU for bundles | TOFU pinning for bundle authority keys |
 | JSON-RPC method | `schemapin/trustBundle` for A2A bundle exchange |
 
+### Scan-Aware Signatures
+
+Right now scanning and signing are somewhat independent in the Symbiont/SchemaPin workflow. Making the scan result part of the signature metadata closes this gap — a skill signed with `scan_passed: true` at signing time, with the scanner version and ruleset hash recorded, tells verifiers not just that the content is authentic but that it passed security review at a specific rule version.
+
+| Item | Details |
+|------|---------|
+| `scan_passed` field | Optional boolean in `.schemapin.sig` recording whether the skill passed ClawHavoc scanning at signing time |
+| `scanner_version` field | Version of ClawHavoc scanner used (e.g., `"clawhavoc-1.5.0"`) |
+| `ruleset_hash` field | SHA-256 hash of the ruleset applied, enabling verifiers to assess rule currency |
+| Verifier semantics | Verifiers can require `scan_passed: true` as a policy condition, and warn when `ruleset_hash` is outdated |
+| Scan cache integration | Symbiont can cache scan results keyed on SchemaPin Merkle root — verified skills with matching hash skip re-scanning entirely |
+
+**Format addition to `.schemapin.sig`:**
+
+```json
+{
+  "scan_passed": true,
+  "scanner_version": "clawhavoc-1.5.0",
+  "ruleset_hash": "sha256:e4f5a6b7..."
+}
+```
+
+This is fully optional and backward compatible — v1.3 verifiers ignore the new fields.
+
 ### Cross-Agent Tool Schema Caching
 
 | Item | Details |
@@ -298,4 +322,4 @@ We welcome input on roadmap priorities:
 
 ---
 
-*Last updated: 2026-02-15*
+*Last updated: 2026-02-16*
