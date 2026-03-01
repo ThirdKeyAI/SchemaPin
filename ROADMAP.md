@@ -162,7 +162,7 @@ When agents collaborate via A2A (Agent-to-Agent), tool schemas cross trust bound
 |------|---------|
 | `A2aVerificationContext` | New type wrapping `VerificationResult` with A2A caller identity, delegation depth, originating domain |
 | `verify_schema_for_a2a()` | Extends `verify_schema_offline()` with A2A context validation |
-| Domain scoping | Accept optional trusted domains list (from AgentPin `allowed_domains` constraints) |
+| Domain scoping | Accept optional trusted domains as `Vec<String>`, matching the `AllowedDomains` type exported by AgentPin v0.3.0 (extracted from `AgentDeclaration.constraints`). Empty list means no domain restriction. |
 | Intersection check | Scope verification to intersection of caller's allowed domains and tool provider's domain |
 
 ### Trust Bundle Distribution for A2A Networks
@@ -322,4 +322,4 @@ We welcome input on roadmap priorities:
 
 ---
 
-*Last updated: 2026-02-16*
+*Last updated: 2026-03-01 (cross-repo alignment with AgentPin v0.3.0 AllowedDomains type)*
