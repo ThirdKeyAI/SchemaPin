@@ -2,6 +2,8 @@
 site_name = "SchemaPin Documentation"
 site_url = "https://docs.schemapin.org/"
 site_description = "Cryptographic tool schema verification to prevent MCP Rug Pull attacks"
+repo_url = "https://github.com/ThirdKeyAI/SchemaPin"
+repo_name = "ThirdKeyAI/SchemaPin"
 nav = [
   {"Home" = "index.md"},
   {"Getting Started" = "getting-started.md"},
@@ -12,9 +14,6 @@ nav = [
   {"Troubleshooting" = "troubleshooting.md"},
   {"schemapin.org" = "https://schemapin.org"},
 ]
-
-[project.repository]
-url = "https://github.com/ThirdKeyAI/SchemaPin"
 
 [[project.theme.palette]]
 scheme = "default"
