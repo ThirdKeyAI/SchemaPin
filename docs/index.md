@@ -14,7 +14,7 @@ SchemaPin enables developers to cryptographically sign tool schemas and skill di
 - **Skill Directory Signing** — Sign entire skill directories, producing a `.schemapin.sig` manifest that covers every file
 - **Verification** — Signature verification with public key discovery and TOFU pinning
 - **Trust Bundles** — Offline verification with pluggable discovery resolvers
-- **Revocation** — Key and schema revocation with standalone documents
+- **Key Revocation** — Inline `revoked_keys` plus standalone signed revocation documents with structured reasons. See [Revocation](revocation.md).
 
 ## Quick Examples
 
@@ -76,6 +76,7 @@ All four implementations use identical crypto (ECDSA P-256 + SHA-256) — cross-
 | [API Reference](api-reference.md) | Complete API with function signatures and examples |
 | [Skill Signing](skill-signing.md) | Sign and verify skill directories (v1.3) |
 | [Trust Bundles](trust-bundles.md) | Offline verification and pluggable resolvers |
+| [Revocation](revocation.md) | Rotate keys, publish revocation documents, fail closed |
 | [Deployment](deployment.md) | Serve `.well-known` endpoints in production |
 | [Troubleshooting](troubleshooting.md) | Common issues and solutions |
 

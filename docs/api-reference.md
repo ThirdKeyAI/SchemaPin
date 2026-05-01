@@ -358,6 +358,8 @@ result = verify_schema_with_resolver(
 
 ## Revocation
 
+For the rotation playbook, structured reason semantics, and combined inline + standalone checking in production, see the dedicated [Revocation guide](revocation.md). The reference below documents the API surface in each language.
+
 ### Build Revocation Document
 
 #### Python

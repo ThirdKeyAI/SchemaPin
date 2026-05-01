@@ -242,36 +242,41 @@ Access-Control-Allow-Methods: GET
 
 ## Key Rotation
 
+> The full rotation playbook — including the standalone signed revocation document format, structured reasons (`key_compromise` / `superseded` / `cessation_of_operation` / `privilege_withdrawn`), and combined inline + standalone semantics — lives in the [Revocation guide](revocation.md). The steps below cover the deployment-side mechanics.
+
 When rotating keys:
 
 1. Generate a new key pair
 2. Update the discovery document with the new public key
-3. Add the old key's SHA-256 fingerprint to `revoked_keys`
+3. Add the old key's SHA-256 fingerprint to `revoked_keys` (and/or to your standalone revocation document at `revocation_endpoint`)
 4. Reduce cache TTL temporarily
 5. Re-sign all published schemas with the new key
 6. Sign skill directories with the new key
 
 ```python
 from schemapin.crypto import KeyManager
+import json
 
 # 1. Generate new key
 new_private, new_public = KeyManager.generate_keypair()
 new_pem = KeyManager.export_public_key_pem(new_public)
 
 # 2. Update discovery document
-import json
 doc = json.load(open(".well-known/schemapin.json"))
+old_pem = doc.get("public_key_pem", "")
 doc["public_key_pem"] = new_pem
 
-# 3. Revoke old key (add fingerprint to revoked_keys)
-import hashlib
-old_pem = doc.get("_previous_key_pem", "")
+# 3. Revoke old key — fingerprint is sha256(DER SubjectPublicKeyInfo),
+#    not sha256 of the PEM text. Use the helper to get it right.
 if old_pem:
-    fingerprint = "sha256:" + hashlib.sha256(old_pem.encode()).hexdigest()
-    doc["revoked_keys"].append(fingerprint)
+    fingerprint = KeyManager.calculate_key_fingerprint(old_pem)  # "sha256:<hex>"
+    doc.setdefault("revoked_keys", []).append(fingerprint)
 
 with open(".well-known/schemapin.json", "w") as f:
     json.dump(doc, f, indent=2)
+
+# 4. (Recommended) Also append the old fingerprint to your standalone
+#    revocation document with a structured reason — see docs/revocation.md.
 ```
 
 ---

@@ -126,7 +126,7 @@ result = verify_skill_offline(
     skill_dir="./my-skill/",
     discovery_data=discovery_doc,
     signature=sig,
-    revocation_doc=None,
+    revocation_doc=None,        # pass a parsed revocation doc to fail closed on revoked keys
     pin_store=KeyPinStore(),
 )
 
@@ -135,6 +135,8 @@ if result.valid:
 else:
     print(f"Verification failed: {result.error}")
 ```
+
+**Pass a `revocation_doc`** to fail closed when a publisher has rotated keys. Skill verification honours the same combined inline + standalone revocation rules as schema verification — see the [Revocation guide](revocation.md) for fetching, parsing, and operational guidance.
 
 #### JavaScript
 

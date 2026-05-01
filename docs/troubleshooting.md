@@ -144,6 +144,21 @@ store.remove_pin("example.com")
 # revoked_keys list, the rotation is expected
 ```
 
+### `KEY_REVOKED` error after a fresh fetch
+
+**Problem:** Verification fails with `KEY_REVOKED` even though the discovery document fetched fine and the signature is intact.
+
+**Cause:** The pinned key fingerprint matches an entry in either the discovery document's `revoked_keys` array OR a standalone revocation document at `revocation_endpoint`. SchemaPin fails closed before signature verification — a revoked key never reaches the crypto check.
+
+**Resolution:**
+
+1. **Verify the rotation is legitimate.** Check the publisher's status page, security advisory, or GitHub releases. A `key_compromise` reason on the revocation entry means any artifact signed with that key should be treated as suspect.
+2. **Fetch the new discovery doc.** `.well-known/schemapin.json` will now publish a different `public_key_pem`.
+3. **Remove the old pin** as shown above and re-verify — TOFU re-pins the new key.
+4. **Rebuild any trust bundles** that contained the old discovery — see [Trust bundles](trust-bundles.md#bundle-freshness).
+
+For deeper background on rotation playbooks, structured revocation reasons, and combined inline + standalone checking, see the dedicated [Revocation guide](revocation.md).
+
 ### Lost Pin Store
 
 **Problem:** Pin store file was deleted or corrupted.

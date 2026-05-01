@@ -1,8 +1,9 @@
 ---
 name: schemapin
 title: SchemaPin
-description: Cryptographic tool schema verification to prevent MCP Rug Pull attacks — ECDSA P-256 signing, SHA-256 hashing, TOFU key pinning, and .well-known discovery
-version: 1.3.0
+description: Cryptographic tool schema verification to prevent MCP Rug Pull attacks — ECDSA P-256 signing, SHA-256 hashing, TOFU key pinning, .well-known discovery, signed revocation documents, and (v1.4-alpha, Rust) signature expiration plus DNS TXT cross-verification
+version: 1.4.0-alpha.1
+stable_version: 1.3.0
 ---
 
 # SchemaPin Development Skills Guide
@@ -164,15 +165,24 @@ result = verify_schema_offline(
 
 ### Standalone Revocation Documents
 
+Full guide with operational playbook, all four languages, and combined inline+standalone semantics: **[docs/revocation.md](docs/revocation.md)**.
+
 ```python
 from schemapin.revocation import (
     build_revocation_document, add_revoked_key,
-    check_revocation, RevocationReason
+    check_revocation, check_revocation_combined, RevocationReason
 )
 
 doc = build_revocation_document("example.com")
 add_revoked_key(doc, fingerprint, RevocationReason.KEY_COMPROMISE)
 check_revocation(doc, some_fingerprint)  # raises if revoked
+
+# In production, always use combined check (inline list + standalone doc):
+check_revocation_combined(
+    revoked_keys_list=discovery.revoked_keys,
+    revocation_doc=doc,
+    fingerprint=some_fingerprint,
+)
 ```
 
 ### Trust Bundles (Offline / Air-Gapped)
@@ -286,6 +296,64 @@ _, current_manifest = canonicalize_skill("./my-skill/")
 tampered = detect_tampered_files(current_manifest, sig.file_manifest)
 # tampered.modified, tampered.added, tampered.removed
 ```
+
+---
+
+## v1.4.0-alpha.1 Features (Rust only — preview)
+
+Both features are **additive optional fields/records**: v1.3 verifiers ignore them, and v1.4 signatures without these fields behave identically to v1.3. Python, JavaScript, and Go ports follow in subsequent alphas before the v1.4.0 release.
+
+### Signature Expiration (`expires_at`)
+
+Optional ISO 8601 / RFC 3339 timestamp on `.schemapin.sig`. Verifiers past the timestamp degrade the result (warning) instead of failing — `valid` stays `true`, `expired` becomes `true`, and a `signature_expired` warning is appended.
+
+```rust
+use schemapin::skill::{sign_skill_with_options, SignOptions, verify_skill_offline};
+
+// Sign with a 180-day TTL — writes expires_at into .schemapin.sig
+let opts = SignOptions::new().with_expires_in(chrono::Duration::days(180));
+let sig = sign_skill_with_options(dir, &priv_pem, "example.com", opts)?;
+
+// Verify — past expires_at returns valid=true with expired=true and a
+// "signature_expired" warning, never a hard failure
+let result = verify_skill_offline(dir, &discovery, None, None, None, Some("tool"));
+if result.expired {
+    log::warn!("signature past {}", result.expires_at.unwrap_or_default());
+}
+```
+
+`SignOptions` is a builder; the legacy `sign_skill(...)` function is preserved for v1.3 callers and writes signatures without `expires_at` (still advertised as `schemapin_version: "1.3"`).
+
+### DNS TXT Cross-Verification (`_schemapin.{domain}`)
+
+Tool providers MAY publish a TXT record alongside `.well-known/schemapin.json`:
+
+```
+_schemapin.example.com.  IN TXT  "v=schemapin1; kid=acme-2026-04; fp=sha256:a1b2c3..."
+```
+
+Cross-checking the TXT against the discovery key gives a *second-channel* verification — the DNS credential chain is independent of the HTTPS hosting one. Mismatch is a hard failure (`DOMAIN_MISMATCH`); absent record is a no-op.
+
+```rust
+use schemapin::dns::{parse_txt_record, fetch_dns_txt};
+use schemapin::skill::verify_skill_offline_with_dns;
+
+// Parser/matcher are always available
+let txt = parse_txt_record("v=schemapin1; fp=sha256:a1b2c3...")?;
+
+// Async fetch lives behind the `dns` Cargo feature (hickory-resolver)
+#[cfg(feature = "dns")]
+let txt = fetch_dns_txt("example.com").await?;
+
+let result = verify_skill_offline_with_dns(
+    dir, &discovery, None, None, None, Some("tool"), txt.as_ref(),
+);
+```
+
+| Cargo feature | Default | Brings in |
+|---------------|---------|-----------|
+| `fetch` | off | `reqwest`, `tokio`, `async-trait` |
+| `dns` *(NEW)* | off | `hickory-resolver`, `tokio`, `async-trait` |
 
 ---
 
