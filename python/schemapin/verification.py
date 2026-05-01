@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -43,6 +44,13 @@ class VerificationResult:
     error_code: Optional[ErrorCode] = None
     error_message: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
+    # v1.4: signature expiration metadata.
+    #
+    # ``expired`` is True only when the signature carried an ``expires_at``
+    # that has already passed. ``valid`` remains True (degraded, not failed)
+    # so callers can use this flag for confidence scoring or policy gating.
+    expired: bool = False
+    expires_at: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary."""
@@ -63,7 +71,60 @@ class VerificationResult:
             d["error_message"] = self.error_message
         if self.warnings:
             d["warnings"] = self.warnings
+        if self.expired:
+            d["expired"] = True
+        if self.expires_at is not None:
+            d["expires_at"] = self.expires_at
         return d
+
+    def with_expiration_check(
+        self, expires_at: Optional[str]
+    ) -> "VerificationResult":
+        """Apply a signature ``expires_at`` check to this result.
+
+        Semantics (mirrors the Rust ``VerificationResult::with_expiration_check``):
+
+        - If ``expires_at`` is ``None``, the result is returned unchanged.
+        - If parseable (RFC 3339) and in the past, sets ``expired = True``,
+          copies ``expires_at``, and appends a ``signature_expired`` warning.
+          ``valid`` is left intact (degraded, not failed).
+        - If parseable and in the future, just records ``expires_at``.
+        - If unparseable, appends ``signature_expires_at_unparseable`` and
+          does not mark the result expired (fail-open on parse).
+
+        Returns ``self`` for chaining.
+        """
+        if expires_at is None:
+            return self
+        ts = _parse_rfc3339(expires_at)
+        if ts is None:
+            self.warnings.append("signature_expires_at_unparseable")
+            return self
+        self.expires_at = expires_at
+        if datetime.now(timezone.utc) > ts:
+            self.expired = True
+            self.warnings.append("signature_expired")
+        return self
+
+
+def _parse_rfc3339(value: str) -> Optional[datetime]:
+    """Parse an RFC 3339 timestamp.
+
+    Accepts both ``...Z`` and ``...+HH:MM`` forms. Returns ``None`` on any
+    parse failure so callers can branch on success.
+    """
+    try:
+        # Python 3.11+ accepts trailing Z; for 3.8-3.10 normalize manually.
+        normalized = value.strip()
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        ts = datetime.fromisoformat(normalized)
+    except (TypeError, ValueError):
+        return None
+    if ts.tzinfo is None:
+        # RFC 3339 requires a TZ offset; treat naive timestamps as malformed.
+        return None
+    return ts.astimezone(timezone.utc)
 
 
 class KeyPinStore:

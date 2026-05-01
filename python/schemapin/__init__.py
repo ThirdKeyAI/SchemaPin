@@ -7,6 +7,13 @@ from .bundle import (
 from .core import SchemaPinCore
 from .crypto import KeyManager, SignatureManager
 from .discovery import PublicKeyDiscovery
+from .dns import (
+    DnsTxtRecord,
+    fetch_dns_txt,
+    parse_txt_record,
+    txt_record_name,
+    verify_dns_match,
+)
 from .interactive import (
     CallbackInteractiveHandler,
     ConsoleInteractiveHandler,
@@ -35,7 +42,12 @@ from .revocation import (
     check_revocation_combined,
     fetch_revocation_document,
 )
-from .skill import SIGNATURE_FILENAME, SkillSigner
+from .skill import (
+    SCHEMAPIN_VERSION_V1_4,
+    SIGNATURE_FILENAME,
+    SignOptions,
+    SkillSigner,
+)
 from .utils import (
     SchemaSigningWorkflow,
     SchemaVerificationWorkflow,
@@ -50,7 +62,7 @@ from .verification import (
     verify_schema_with_resolver,
 )
 
-__version__ = "1.3.0"
+__version__ = "1.4.0a1"
 __all__ = [
     "SchemaPinCore",
     "KeyManager",
@@ -95,4 +107,12 @@ __all__ = [
     # v1.3.0
     "SkillSigner",
     "SIGNATURE_FILENAME",
+    # v1.4.0
+    "SCHEMAPIN_VERSION_V1_4",
+    "SignOptions",
+    "DnsTxtRecord",
+    "parse_txt_record",
+    "verify_dns_match",
+    "txt_record_name",
+    "fetch_dns_txt",
 ]
