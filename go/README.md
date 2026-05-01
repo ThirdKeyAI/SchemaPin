@@ -1,10 +1,64 @@
 # SchemaPin Go Implementation
 
+**Version:** v1.4.0-alpha.1 (additive: signature expiration + DNS TXT cross-verification)
+
 A Go implementation of the SchemaPin cryptographic protocol for ensuring the integrity and authenticity of tool schemas used by AI agents.
 
 ## Overview
 
 SchemaPin prevents "MCP Rug Pull" attacks through digital signatures and Trust-On-First-Use (TOFU) key pinning. This Go implementation provides 100% protocol compatibility with the Python and JavaScript versions while following idiomatic Go patterns.
+
+## v1.4-alpha additions
+
+Two additive features land in `v1.4.0-alpha.1`. Both are optional and v1.3 verifiers ignore them.
+
+### Signature expiration
+
+Skill signatures may carry an optional RFC 3339 `expires_at` field. Verifiers
+treat past-expiration signatures as **degraded** (warning emitted) rather than
+failing — see [the canonical guide](https://docs.schemapin.org/signature-expiration/).
+
+```go
+import "time"
+
+// Sign with a 30-day TTL.
+opts := skill.SignOptions{ExpiresIn: 30 * 24 * time.Hour}
+sig, err := skill.SignSkillWithOptions(dir, privPEM, "example.com", opts)
+
+// Verifiers see Expired/ExpiresAt fields populated when relevant.
+result := skill.VerifySkillOffline(dir, disc, sig, nil, nil, "")
+if result.Expired {
+    // Degraded: still Valid, but past expires_at — apply local policy.
+}
+```
+
+The legacy `skill.SignSkill(...)` signature is preserved as a thin wrapper
+over `SignSkillWithOptions` for v1.3 callers.
+
+### DNS TXT cross-verification
+
+A tool provider may publish a TXT record at `_schemapin.{domain}` containing
+the public-key fingerprint advertised in `.well-known/schemapin.json`. When
+present, clients use it as a second-channel check — see
+[the canonical guide](https://docs.schemapin.org/dns-txt/).
+
+```go
+import (
+    "context"
+
+    "github.com/ThirdKeyAi/schemapin/go/pkg/dns"
+    "github.com/ThirdKeyAi/schemapin/go/pkg/skill"
+)
+
+ctx := context.Background()
+txt, err := dns.FetchDnsTxt(ctx, "example.com") // (nil, nil) when no record
+result := skill.VerifySkillOfflineWithDNS(dir, disc, sig, nil, nil, "", txt)
+```
+
+DNS lookup uses the Go stdlib `net.Resolver` — no new dependencies.
+
+TXT format: `v=schemapin1; kid=acme-2026-01; fp=sha256:<hex>` —
+whitespace-tolerant, case-insensitive `fp`, unknown fields ignored.
 
 ## Features
 

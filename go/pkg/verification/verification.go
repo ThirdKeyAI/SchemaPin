@@ -5,12 +5,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ThirdKeyAi/schemapin/go/pkg/core"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/crypto"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/discovery"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/resolver"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/revocation"
+)
+
+// Warning constants for v1.4 signature expiration semantics.
+const (
+	// WarningSignatureExpired is appended to VerificationResult.Warnings when
+	// a signature carried an expires_at field that has passed. The result
+	// remains Valid (degraded, not failed).
+	WarningSignatureExpired = "signature_expired"
+	// WarningSignatureExpiresAtUnparseable is appended when a signature's
+	// expires_at field could not be parsed as RFC 3339. The result remains
+	// Valid (fail-open) and is not marked Expired.
+	WarningSignatureExpiresAtUnparseable = "signature_expires_at_unparseable"
 )
 
 // ErrorCode represents structured error codes for verification results.
@@ -34,6 +47,11 @@ type KeyPinningStatus struct {
 }
 
 // VerificationResult is the structured result from schema verification.
+//
+// The Expired and ExpiresAt fields are v1.4 additions for the optional
+// signature expiration feature. Expired signals that a signature carried an
+// expires_at timestamp that has passed; Valid is left untouched (degraded,
+// not failed) so callers can apply policy decisions independently.
 type VerificationResult struct {
 	Valid         bool              `json:"valid"`
 	Domain        string            `json:"domain,omitempty"`
@@ -42,6 +60,41 @@ type VerificationResult struct {
 	ErrorCode     ErrorCode         `json:"error_code,omitempty"`
 	ErrorMessage  string            `json:"error_message,omitempty"`
 	Warnings      []string          `json:"warnings,omitempty"`
+	// Expired is true when the signature carried an expires_at value that
+	// is in the past at verification time. Valid remains true (degraded).
+	Expired bool `json:"expired,omitempty"`
+	// ExpiresAt mirrors the signature's expires_at value when present.
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+// WithExpirationCheck applies a v1.4 signature expiration check to a
+// successful VerificationResult and returns the (possibly mutated) receiver.
+//
+// Semantics mirror the Rust reference implementation:
+//   - expiresAt == "" returns the receiver unchanged.
+//   - Parseable RFC 3339 timestamp in the past sets Expired = true, copies
+//     ExpiresAt, and appends a "signature_expired" warning. Valid is left
+//     intact (degraded, not failed).
+//   - Parseable timestamp in the future just records ExpiresAt.
+//   - Unparseable input appends a "signature_expires_at_unparseable" warning
+//     and does not mark the result as expired (fail-open).
+//
+// The receiver may be nil; in that case it is returned unchanged.
+func (r *VerificationResult) WithExpirationCheck(expiresAt string) *VerificationResult {
+	if r == nil || expiresAt == "" {
+		return r
+	}
+	ts, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		r.Warnings = append(r.Warnings, WarningSignatureExpiresAtUnparseable)
+		return r
+	}
+	r.ExpiresAt = expiresAt
+	if time.Now().UTC().After(ts.UTC()) {
+		r.Expired = true
+		r.Warnings = append(r.Warnings, WarningSignatureExpired)
+	}
+	return r
 }
 
 // PinResult represents the result of a pin check.
