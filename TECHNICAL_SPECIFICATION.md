@@ -232,8 +232,8 @@ Implementations MUST handle the following error conditions gracefully:
 
 ### **12. Version Compatibility**
 
-- **Schema Version:** This specification is version 1.2. The `schema_version` field in `.well-known` files indicates compatibility.
-- **Backward Compatibility:** Version 1.2 clients MUST support version 1.0 and 1.1 endpoints for backward compatibility. The `revocation_endpoint`, `contact`, and standalone revocation document fields are all optional and additive.
+- **Schema Version:** This specification is version 1.4. The `schema_version` field in `.well-known` files indicates compatibility.
+- **Backward Compatibility:** Version 1.4 clients MUST support version 1.0–1.3 endpoints for backward compatibility. The `revocation_endpoint`, `contact`, standalone revocation document, `expires_at`, and `_schemapin.{domain}` TXT record are all optional and additive.
 - **Future Versions:** Clients SHOULD gracefully handle unknown schema versions by falling back to the highest supported version.
 - **Deprecation Policy:** Any breaking changes will be introduced in new major versions with appropriate migration guidance.
 
@@ -313,3 +313,95 @@ SchemaPin v1.2 defines `verify_schema_offline()` as the core verification primit
 5. **Canonicalize schema** — Apply the canonicalization rules from Section 4 and compute the SHA-256 hash.
 6. **Verify ECDSA signature** — Verify the Base64-encoded signature against the schema hash using the public key.
 7. **Return result** — Return a structured `VerificationResult` with the domain, developer name, key pinning status, and any errors or warnings.
+
+### **16. Signature Expiration (v1.4)**
+
+SchemaPin v1.4 introduces an OPTIONAL `expires_at` field on signature documents (both schema signatures and `.schemapin.sig` for skills).
+
+#### **16.1. Format**
+
+The `expires_at` field is an ISO 8601 / RFC 3339 timestamp in UTC:
+
+```json
+{
+  "schemapin_version": "1.4",
+  "skill_name": "example-skill",
+  "skill_hash": "sha256:...",
+  "signature": "MEUCIQ...",
+  "signed_at": "2026-04-30T12:00:00Z",
+  "expires_at": "2026-10-30T12:00:00Z",
+  "domain": "thirdkey.ai",
+  "signer_kid": "thirdkey-2026-04",
+  "file_manifest": { /* ... */ }
+}
+```
+
+A signature document with `expires_at` MUST set `schemapin_version` to `"1.4"` or higher; documents without `expires_at` MAY retain the v1.3 version string.
+
+#### **16.2. Verifier Semantics**
+
+When the current time is past `expires_at`, verifiers MUST treat the result as **degraded**, not failed:
+
+- `valid` remains `true` (the cryptographic signature is intact)
+- An `expired: true` flag is set on the result
+- A `signature_expired` warning is appended
+- The `expires_at` value is mirrored on the result for confidence scoring
+
+A degraded result is intended to feed policy decisions: clients MAY refuse to load expired skills, or downgrade them to a lower trust tier, while preserving the ability to inspect signed metadata.
+
+If `expires_at` cannot be parsed as RFC 3339, verifiers MUST emit a `signature_expires_at_unparseable` warning and MUST NOT treat the signature as expired (fail-open on parse, not fail-closed — malformed metadata should not silently invalidate otherwise-valid signatures).
+
+#### **16.3. Backward Compatibility**
+
+- v1.3 verifiers ignore the `expires_at` field entirely; signatures continue to verify.
+- v1.4 signatures without `expires_at` behave identically to v1.3 signatures.
+
+### **17. DNS TXT Cross-Verification (v1.4)**
+
+SchemaPin v1.4 adds an OPTIONAL second-channel verification mechanism via DNS TXT records. The DNS credential chain is independent of the HTTPS hosting credential chain, so an attacker compromising one does not automatically gain control of the other.
+
+#### **17.1. TXT Record Format**
+
+A tool provider MAY publish a TXT record at `_schemapin.{domain}` containing the public-key fingerprint advertised in `.well-known/schemapin.json`:
+
+```
+_schemapin.example.com. IN TXT "v=schemapin1; kid=acme-2026-04; fp=sha256:a1b2c3d4..."
+```
+
+Fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `v` | yes | Version tag, currently `schemapin1` |
+| `fp` | yes | Key fingerprint as `sha256:<hex>` (lowercase hex) |
+| `kid` | no | Optional key id, useful for multi-key endpoints (v1.5+) |
+
+Whitespace around `;` and `=` SHOULD be tolerated by parsers. Field order is not significant. Unknown fields MUST be ignored for forward compatibility.
+
+If multiple TXT records exist at the same name, parsers MUST select the first record containing `v=schemapin1`. Multiple TXT chunks within a single record MUST be concatenated in emit order per RFC 1464.
+
+#### **17.2. Verifier Semantics**
+
+| State | Effect |
+|-------|--------|
+| **Absent** | No effect — DNS TXT cross-verification is optional |
+| **Present and matching** | Verification succeeds; absence of mismatch is the trust signal |
+| **Present and mismatching** | Hard failure with `DOMAIN_MISMATCH` error code |
+| **Present and malformed** | Hard failure with `DISCOVERY_INVALID` error code |
+
+The mismatch case is fail-closed because a publishing party that *intentionally* publishes a TXT record has signaled that DNS is part of their trust chain — a divergence between DNS and `.well-known` indicates compromise of one channel.
+
+#### **17.3. Backward Compatibility**
+
+- Verifiers MAY skip DNS TXT lookups entirely (the feature is additive).
+- Tool providers MAY publish or omit the TXT record without affecting v1.3 verifiers.
+- Implementations SHOULD gate DNS resolution behind a feature flag (e.g., the `dns` Cargo feature in Rust) to keep the core library DNS-free.
+
+#### **17.4. Lookup Name Construction**
+
+Implementations MUST strip a single trailing dot from the input domain before constructing the lookup name:
+
+```
+input "example.com"  → "_schemapin.example.com"
+input "example.com." → "_schemapin.example.com"
+```

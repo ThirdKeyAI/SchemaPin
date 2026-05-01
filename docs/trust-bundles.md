@@ -302,7 +302,7 @@ let result = verify_schema_with_resolver(
 
 ## Standalone Revocation Documents
 
-SchemaPin v1.2 also supports standalone revocation documents:
+SchemaPin v1.2 also supports standalone revocation documents. The snippets below cover the bundle-relevant primitives; the full operational guide (rotation playbook, structured reasons, combined inline + standalone semantics, all four languages) lives in **[Revocation](revocation.md)**.
 
 ### Python
 

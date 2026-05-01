@@ -24,6 +24,9 @@
 //! - `fetch` — Enables HTTP-based discovery (`WellKnownResolver`, `AsyncSchemaResolver`,
 //!   `fetch_well_known`, `fetch_revocation_document`, `verify_schema`). Brings in
 //!   `reqwest`, `tokio`, and `async-trait`.
+//! - `dns` — Enables DNS TXT cross-verification (`dns::fetch_dns_txt`). Brings in
+//!   `hickory-resolver`, `tokio`, and `async-trait`. The DNS parser and matcher
+//!   (`dns::parse_txt_record`, `dns::verify_dns_match`) are always available.
 //!
 //! ## Quick Start
 //!
@@ -74,3 +77,6 @@ pub mod revocation;
 pub mod skill;
 pub mod types;
 pub mod verification;
+
+// New module (v1.4.0): DNS TXT cross-verification
+pub mod dns;

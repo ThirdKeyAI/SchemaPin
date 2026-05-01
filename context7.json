@@ -3,7 +3,7 @@
   "url": "https://context7.com/thirdkeyai/schemapin",
   "public_key": "pk_Ehy7QXQTu2Keb0e5BNeyx",
   "projectTitle": "SchemaPin",
-  "description": "Cryptographic tool schema verification to prevent MCP Rug Pull attacks — ECDSA P-256 signing, SHA-256 hashing, TOFU key pinning, and .well-known discovery. Implementations in Python, JavaScript, Rust, and Go. Part of the ThirdKey trust stack.",
+  "description": "Cryptographic tool schema verification to prevent MCP Rug Pull attacks — ECDSA P-256 signing, SHA-256 hashing, TOFU key pinning, .well-known discovery, signed key revocation documents, and (v1.4-alpha, Rust) optional signature expiration plus DNS TXT cross-verification. Stable implementations in Python, JavaScript, Rust, and Go. Part of the ThirdKey trust stack: SchemaPin (tool integrity) → AgentPin (agent identity) → Symbiont (runtime).",
   "folders": [
     "SKILL.md",
     "README.md",
@@ -17,6 +17,9 @@
     "docs/api-reference.md",
     "docs/skill-signing.md",
     "docs/trust-bundles.md",
+    "docs/revocation.md",
+    "docs/signature-expiration.md",
+    "docs/dns-txt.md",
     "docs/deployment.md",
     "docs/troubleshooting.md"
   ],
@@ -66,8 +69,12 @@
     "Public key discovery uses RFC 8615 .well-known endpoints: /.well-known/schemapin.json contains developer public keys",
     "Four language implementations with identical verification guarantees: Python (schemapin), JavaScript (schemapin), Rust (schemapin), Go (schemapin)",
     "Core classes: KeyManager (key generation/serialization), SignatureManager (sign/verify), SchemaPinCore (canonicalization), PinningManager (TOFU store)",
-    "Verification flow: canonicalize schema → fetch/resolve public key → verify ECDSA signature → check TOFU pin → return result",
+    "Verification flow: canonicalize schema → fetch/resolve public key → check revocation (inline + standalone) → verify ECDSA signature → TOFU pin → return result",
+    "Revocation: clients MUST honour both the inline `revoked_keys` array on .well-known/schemapin.json AND any standalone signed revocation document at `revocation_endpoint`. Use check_revocation_combined() (or its language equivalent) for production verification — a fingerprint is revoked if it appears in either list. See docs/revocation.md.",
+    "Revocation reasons: `key_compromise` (private key leaked — treat all artifacts as suspect), `superseded` (planned rotation — old artifacts may still be authentic), `cessation_of_operation` (signer no longer operating), `privilege_withdrawn` (signer no longer authorized).",
+    "Key fingerprints are SHA-256 of the DER-encoded SubjectPublicKeyInfo, formatted as `sha256:<lowercase-hex>`. The `sha256:` prefix is required.",
     "Never hardcode or embed private keys — use KeyManager to generate and PEM files for storage",
-    "SchemaPin protects MCP tool schemas from tampering — sign on publish, verify on load"
+    "SchemaPin protects MCP tool schemas from tampering — sign on publish, verify on load",
+    "v1.4.0-alpha.1 (Rust only — preview): optional `expires_at` field on .schemapin.sig (degraded-not-failed semantics — `valid` stays true, `expired` becomes true, `signature_expired` warning appended), and optional `_schemapin.{domain}` DNS TXT record (`v=schemapin1; kid=...; fp=sha256:...`) for second-channel cross-verification (mismatch is hard DOMAIN_MISMATCH; absent is no-op). Both are additive optional fields/records — v1.3 verifiers ignore them. Python, JavaScript, and Go ports follow in subsequent alphas."
   ]
 }

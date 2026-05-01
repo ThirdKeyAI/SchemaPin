@@ -5,6 +5,41 @@ All notable changes to the SchemaPin project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0-alpha.1] - 2026-04-30
+
+### Added
+
+#### Signature Expiration (`expires_at`) — Rust
+
+- **`SkillSignature::expires_at`**: Optional ISO 8601 / RFC 3339 timestamp on `.schemapin.sig` documents. v1.3 verifiers ignore the field; v1.4 verifiers degrade expired signatures to a warning rather than failing.
+- **`SignOptions` builder** (`SignOptions::new().with_expires_in(Duration::days(N))`): Optional sign-time configuration. Wraps the existing `sign_skill` parameters and adds `expires_in`. The legacy `sign_skill` function delegates to `sign_skill_with_options` for backward compatibility.
+- **`VerificationResult::expired`** + **`VerificationResult::expires_at`**: Surface expiration state on the result. `valid` remains `true` for expired signatures (degraded, not failed), and a `signature_expired` warning is appended.
+- **`VerificationResult::with_expiration_check`**: Helper applied automatically by `verify_skill_offline` after a successful signature check. Unparseable timestamps emit a `signature_expires_at_unparseable` warning rather than failing closed.
+- Documents written by `sign_skill_with_options` with `expires_in` set advertise `schemapin_version: "1.4"`; documents without `expires_at` retain `"1.3"`.
+
+#### DNS TXT Cross-Verification — Rust
+
+- **New `dns` module** with `DnsTxtRecord`, `parse_txt_record`, `verify_dns_match`, and `txt_record_name`. Always available; the parser/matcher have no DNS dependencies.
+- **`fetch_dns_txt(domain)`**: Async lookup behind the new `dns` Cargo feature. Brings in `hickory-resolver`, `tokio`, and `async-trait`.
+- **`verify_skill_offline_with_dns(...)`**: Variant of `verify_skill_offline` that accepts an optional `&DnsTxtRecord`. A mismatching record converts the result into a hard `DOMAIN_MISMATCH` failure; an absent record is a no-op (DNS TXT is additive).
+- **TXT record format**: `_schemapin.{domain}` IN TXT `"v=schemapin1; kid=...; fp=sha256:..."`. Whitespace-tolerant parser, case-insensitive on `fp`, ignores unknown fields for forward compatibility.
+
+#### Specification Updates (v1.4)
+
+- **Section 16**: Signature Expiration — `expires_at` field, degraded-vs-failed semantics, backward compatibility.
+- **Section 17**: DNS TXT Cross-Verification — `_schemapin.{domain}` TXT record format, verifier semantics, lookup name construction.
+- **Section 12**: Updated version compatibility note for v1.4.
+
+### Changed
+
+- Rust crate version: `1.3.0` → `1.4.0-alpha.1`.
+- `sign_skill` now formats `signed_at` with second-level precision and a `Z` UTC suffix (RFC 3339 `SecondsFormat::Secs`). Existing v1.3 signatures continue to verify; the change only affects newly minted signatures.
+
+### Notes
+
+- This is the first v1.4 alpha. Python, JavaScript, and Go implementations follow in subsequent alphas before the v1.4.0 release.
+- Both new features are additive optional fields/records — v1.3 clients are unaffected.
+
 ## [1.3.0] - 2026-02-14
 
 ### Added

@@ -259,6 +259,8 @@ with open(".well-known/schemapin.json", "w") as f:
 }
 ```
 
+The `revoked_keys` array and the `revocation_endpoint` field together let you retire compromised or superseded keys safely. When you rotate, add the old key fingerprint to `revoked_keys` (or to a standalone signed revocation document) — verifiers will fail closed on any pin matching that fingerprint, before they ever attempt signature verification. See the [Revocation guide](revocation.md) for the full operational playbook in all four languages.
+
 ---
 
 ## Step 5: Full Verification Workflow
@@ -358,5 +360,8 @@ const result = verifySkillOffline('./my-skill/', discoveryData, sig, null, pinSt
 - [API Reference](api-reference.md) — Complete API across all 4 languages
 - [Skill Signing](skill-signing.md) — SkillSigner deep dive
 - [Trust Bundles](trust-bundles.md) — Offline and air-gapped verification
+- [Revocation](revocation.md) — Rotate keys and serve signed revocation documents
+- [Signature Expiration](signature-expiration.md) — v1.4-alpha (Rust): `expires_at` and degraded-not-failed verification
+- [DNS TXT Cross-Verification](dns-txt.md) — v1.4-alpha (Rust): second-channel `_schemapin.{domain}` lookups
 - [Deployment](deployment.md) — Serve `.well-known` endpoints in production
 - [Troubleshooting](troubleshooting.md) — Common issues and solutions
