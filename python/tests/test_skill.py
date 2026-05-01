@@ -1,6 +1,7 @@
 """Tests for skill folder signing and verification."""
 
 import json
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -12,7 +13,7 @@ from schemapin.revocation import (
     add_revoked_key,
     build_revocation_document,
 )
-from schemapin.skill import SIGNATURE_FILENAME, SkillSigner
+from schemapin.skill import SIGNATURE_FILENAME, SignOptions, SkillSigner
 from schemapin.verification import ErrorCode, KeyPinStore
 
 # ---------------------------------------------------------------------------
@@ -574,3 +575,125 @@ class TestSkillCLI:
         # TypeError at the Python level.
         with pytest.raises(TypeError):
             SkillSigner.sign_skill(skill, priv_pem)  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# TestSignatureExpiration (v1.4)
+# ---------------------------------------------------------------------------
+
+
+class TestSignatureExpiration:
+    """Tests for the v1.4 ``expires_at`` additive field."""
+
+    def test_sign_with_ttl_writes_expires_at(self, tmp_path: Path) -> None:
+        """``SignOptions.expires_in`` writes ``expires_at`` and bumps the version."""
+        priv_pem, _pub_pem = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "skill",
+            {"SKILL.md": "---\nname: ttl\n---\n# hi"},
+        )
+        opts = SignOptions(expires_in=timedelta(days=30))
+        sig = SkillSigner.sign_with_options(
+            skill, priv_pem, "example.com", opts
+        )
+        assert "expires_at" in sig
+        assert sig["expires_at"].endswith("Z")
+        assert sig["schemapin_version"] == "1.4"
+        # Round-trip through disk to ensure the JSON contains the field.
+        on_disk = SkillSigner.load_signature(skill)
+        assert on_disk["expires_at"] == sig["expires_at"]
+
+    def test_sign_without_ttl_omits_expires_at(self, tmp_path: Path) -> None:
+        """Default ``sign_skill`` keeps the v1.3 wire format unchanged."""
+        priv_pem, _pub_pem = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "skill",
+            {"SKILL.md": "---\nname: no-ttl\n---\n# hi"},
+        )
+        sig = SkillSigner.sign_skill(skill, priv_pem, "example.com")
+        assert "expires_at" not in sig
+        assert sig["schemapin_version"] == "1.3"
+        raw = (skill / SIGNATURE_FILENAME).read_text(encoding="utf-8")
+        assert "expires_at" not in raw
+
+    def test_verify_with_future_ttl_passes_no_warning(self, tmp_path: Path) -> None:
+        """Future-dated expiration verifies cleanly with no warning."""
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "skill",
+            {"SKILL.md": "---\nname: future\n---\n# hi"},
+        )
+        opts = SignOptions(expires_in=timedelta(days=30))
+        SkillSigner.sign_with_options(skill, priv_pem, "example.com", opts)
+        result = SkillSigner.verify_skill_offline(
+            skill, _discovery(pub_pem), tool_id="future"
+        )
+        assert result.valid is True
+        assert result.expired is False
+        assert result.expires_at is not None
+        assert "signature_expired" not in result.warnings
+
+    def test_verify_with_past_ttl_passes_with_expired_warning(
+        self, tmp_path: Path
+    ) -> None:
+        """Past expiration degrades the result (warning) but stays valid."""
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "skill",
+            {"SKILL.md": "---\nname: past\n---\n# hi"},
+        )
+        # Sign normally, then rewrite ``.schemapin.sig`` with a past
+        # ``expires_at`` to simulate an aged signature.
+        SkillSigner.sign_skill(skill, priv_pem, "example.com")
+        sig = SkillSigner.load_signature(skill)
+        sig["schemapin_version"] = "1.4"
+        sig["expires_at"] = "2020-01-01T00:00:00Z"
+        (skill / SIGNATURE_FILENAME).write_text(
+            json.dumps(sig, indent=2) + "\n", encoding="utf-8"
+        )
+
+        result = SkillSigner.verify_skill_offline(
+            skill, _discovery(pub_pem), tool_id="past"
+        )
+        assert result.valid is True, "expired sigs are degraded, not failed"
+        assert result.expired is True
+        assert "signature_expired" in result.warnings
+        assert result.expires_at == "2020-01-01T00:00:00Z"
+
+    def test_verify_with_unparseable_expires_at_warns(self, tmp_path: Path) -> None:
+        """Unparseable expires_at triggers a warning, not expired/fail."""
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "skill",
+            {"SKILL.md": "---\nname: bad\n---\n# hi"},
+        )
+        SkillSigner.sign_skill(skill, priv_pem, "example.com")
+        sig = SkillSigner.load_signature(skill)
+        sig["expires_at"] = "not-a-timestamp"
+        (skill / SIGNATURE_FILENAME).write_text(
+            json.dumps(sig, indent=2) + "\n", encoding="utf-8"
+        )
+
+        result = SkillSigner.verify_skill_offline(
+            skill, _discovery(pub_pem), tool_id="bad"
+        )
+        assert result.valid is True
+        assert result.expired is False
+        assert "signature_expires_at_unparseable" in result.warnings
+
+    def test_to_dict_includes_v1_4_fields(self, tmp_path: Path) -> None:
+        """Serialized result surfaces ``expired`` / ``expires_at`` only when set."""
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "skill",
+            {"SKILL.md": "---\nname: tod\n---\n# hi"},
+        )
+        opts = SignOptions(expires_in=timedelta(days=30))
+        SkillSigner.sign_with_options(skill, priv_pem, "example.com", opts)
+        result = SkillSigner.verify_skill_offline(
+            skill, _discovery(pub_pem), tool_id="tod"
+        )
+        d = result.to_dict()
+        assert "expires_at" in d
+        # Future TTL: ``expired`` False is the default and should be omitted.
+        assert "expired" not in d

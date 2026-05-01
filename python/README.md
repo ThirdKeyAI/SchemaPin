@@ -6,6 +6,32 @@ A Python implementation of the SchemaPin protocol for cryptographic schema integ
 
 SchemaPin provides cryptographic verification of AI tool schemas using ECDSA P-256 signatures and Trust-On-First-Use (TOFU) key pinning. This Python implementation serves as the reference implementation for the protocol.
 
+## v1.4-alpha
+
+This release adds two **additive, optional** trust signals. v1.3 verifiers
+ignore both fields and continue to work unchanged.
+
+- **Signature expiration (`expires_at`)** — `SkillSigner.sign_with_options(...)`
+  with a `SignOptions(expires_in=timedelta(...))` writes an `expires_at`
+  timestamp into `.schemapin.sig` (and bumps `schemapin_version` to `"1.4"`).
+  Verifiers past the expiration emit a `signature_expired` warning but stay
+  `valid=True` (degraded, not failed). The `VerificationResult` gains
+  `expired: bool` and `expires_at: Optional[str]` fields. See the
+  [Signature Expiration guide](https://docs.schemapin.org/signature-expiration/).
+- **DNS TXT cross-verification** — `_schemapin.{domain}` TXT records of the
+  form `v=schemapin1; kid=...; fp=sha256:<hex>` are cross-checked against
+  the discovery key. New module `schemapin.dns` exposes `DnsTxtRecord`,
+  `parse_txt_record`, `verify_dns_match`, `txt_record_name`, and
+  `fetch_dns_txt`. The high-level entry point is
+  `SkillSigner.verify_skill_offline_with_dns(..., dns_txt=...)`. A
+  fingerprint mismatch fails with `ErrorCode.DOMAIN_MISMATCH`; an absent
+  record is a no-op. See the
+  [DNS TXT guide](https://docs.schemapin.org/dns-txt/).
+
+DNS lookups depend on `dnspython`, which is **optional** — install with
+`pip install schemapin[dns]` (or `pip install dnspython`). The parsing and
+match helpers themselves have no extra dependencies.
+
 ## Features
 
 - **ECDSA P-256 Cryptography**: Industry-standard elliptic curve signatures
