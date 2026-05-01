@@ -16,7 +16,8 @@
 | **1.1.0** | 2026-01 | Revocation documents, standalone revocation endpoint | Shipped |
 | **1.2.0** | 2026-02 | Offline verification, trust bundles, resolver abstraction | Shipped |
 | **1.3.0** | 2026-02 | AgentSkills security — skill folder signing | **Shipped** |
-| **1.4.0** | Q2-Q3 2026 | Signature lifecycle, version binding, A2A trust | Planning |
+| **1.4.0-alpha.1** | 2026-04-30 | Signature expiration + DNS TXT cross-verification (Rust) | **Shipped** |
+| **1.4.0** | Q2-Q3 2026 | Signature lifecycle, version binding, A2A trust | In progress |
 | **1.5.0** | Q4 2026 | Multi-key endorsement, permissions, advanced revocation | Planning |
 
 ---
@@ -96,7 +97,7 @@ The existing `.well-known/schemapin.json` discovery, TOFU key pinning database, 
 
 All v1.4 additions are optional fields — fully backward compatible with v1.3 clients.
 
-### Signature Expiration / TTL
+### Signature Expiration / TTL — **Rust shipped (alpha.1)**
 
 Right now, a signature is valid forever once created. There's a `signed_at` timestamp but no `expires_at`. A signature from 2 years ago on an abandoned tool is just as "valid" as one from yesterday — there's no forcing function for developers to re-sign after security reviews, and clients can't distinguish "actively maintained" from "signed once and forgotten."
 
@@ -127,7 +128,7 @@ SchemaPin signs a schema at a point in time, but there's no concept of "this is 
 
 No new crypto required — just metadata. The hash chain is lightweight and elegant.
 
-### DNS TXT Cross-Verification
+### DNS TXT Cross-Verification — **Rust shipped (alpha.1)**
 
 AgentPin already uses `_agentpin.{domain}` TXT records, but SchemaPin doesn't leverage DNS yet. Adding a `_schemapin.{domain}` TXT record containing the key fingerprint gives multi-channel verification without requiring a GitHub repo. DNS is controlled through a completely different credential chain than HTTPS hosting, so compromising one doesn't compromise the other.
 
@@ -322,4 +323,4 @@ We welcome input on roadmap priorities:
 
 ---
 
-*Last updated: 2026-03-01 (cross-repo alignment with AgentPin v0.3.0 AllowedDomains type)*
+*Last updated: 2026-04-30 (v1.4.0-alpha.1 — Rust signature expiration + DNS TXT cross-verification)*

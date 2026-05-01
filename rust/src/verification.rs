@@ -27,6 +27,18 @@ pub struct VerificationResult {
     pub error_message: Option<String>,
     #[serde(default)]
     pub warnings: Vec<String>,
+    /// `true` when the signature carried an `expires_at` that has passed.
+    /// `valid` remains `true` (degraded, not failed) — callers should consult
+    /// this flag for confidence scoring or policy gating.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub expired: bool,
+    /// Mirrors the `expires_at` from the signature when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +62,8 @@ impl VerificationResult {
             error_code: None,
             error_message: None,
             warnings: vec![],
+            expired: false,
+            expires_at: None,
         }
     }
 
@@ -62,7 +76,37 @@ impl VerificationResult {
             error_code: Some(code),
             error_message: Some(message.to_string()),
             warnings: vec![],
+            expired: false,
+            expires_at: None,
         }
+    }
+
+    /// Apply a signature `expires_at` check to a successful result.
+    ///
+    /// - If `expires_at` is `None`, the result is unchanged.
+    /// - If parseable and in the past, marks `expired = true`, copies
+    ///   `expires_at`, and pushes a `signature_expired` warning. `valid` is
+    ///   left intact (degraded, not failed).
+    /// - If parseable and in the future, just records `expires_at`.
+    /// - If unparseable, pushes a `signature_expires_at_unparseable` warning.
+    pub fn with_expiration_check(mut self, expires_at: Option<&str>) -> Self {
+        let Some(raw) = expires_at else {
+            return self;
+        };
+        match chrono::DateTime::parse_from_rfc3339(raw) {
+            Ok(ts) => {
+                self.expires_at = Some(raw.to_string());
+                if chrono::Utc::now() > ts.with_timezone(&chrono::Utc) {
+                    self.expired = true;
+                    self.warnings.push("signature_expired".to_string());
+                }
+            }
+            Err(_) => {
+                self.warnings
+                    .push("signature_expires_at_unparseable".to_string());
+            }
+        }
+        self
     }
 }
 

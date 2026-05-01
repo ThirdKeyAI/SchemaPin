@@ -23,6 +23,10 @@ use crate::types::revocation::RevocationDocument;
 use crate::verification::{KeyPinningStatus, VerificationResult};
 
 /// Signature metadata written to `.schemapin.sig`.
+///
+/// `expires_at` is an optional v1.4 field. When present, verifiers treat
+/// signatures past the expiration as *degraded* (warning) rather than a
+/// hard failure — see [`verify_skill_offline`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillSignature {
     pub schemapin_version: String,
@@ -30,6 +34,8 @@ pub struct SkillSignature {
     pub skill_hash: String,
     pub signature: String,
     pub signed_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
     pub domain: String,
     pub signer_kid: String,
     pub file_manifest: BTreeMap<String, String>,
@@ -179,8 +185,43 @@ pub fn load_signature(skill_dir: &Path) -> Result<SkillSignature, Error> {
     Ok(sig)
 }
 
+/// Optional sign-time parameters for [`sign_skill_with_options`].
+///
+/// Builder-style: all fields default to `None`.
+#[derive(Debug, Default, Clone)]
+pub struct SignOptions<'a> {
+    /// Override the signer key id (KID). Defaults to the discovery fingerprint of the public key.
+    pub signer_kid: Option<&'a str>,
+    /// Override the skill name. Defaults to the SKILL.md frontmatter `name:` or directory basename.
+    pub skill_name: Option<&'a str>,
+    /// Time-to-live for the signature. When set, an `expires_at` field is written.
+    pub expires_in: Option<chrono::Duration>,
+}
+
+impl<'a> SignOptions<'a> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_signer_kid(mut self, kid: &'a str) -> Self {
+        self.signer_kid = Some(kid);
+        self
+    }
+
+    pub fn with_skill_name(mut self, name: &'a str) -> Self {
+        self.skill_name = Some(name);
+        self
+    }
+
+    pub fn with_expires_in(mut self, ttl: chrono::Duration) -> Self {
+        self.expires_in = Some(ttl);
+        self
+    }
+}
+
 /// Sign a skill directory and write `.schemapin.sig`.
 ///
+/// Convenience wrapper over [`sign_skill_with_options`] preserved for v1.3 callers.
 /// Returns the signature document that was written.
 pub fn sign_skill(
     skill_dir: &Path,
@@ -189,17 +230,39 @@ pub fn sign_skill(
     signer_kid: Option<&str>,
     skill_name: Option<&str>,
 ) -> Result<SkillSignature, Error> {
+    sign_skill_with_options(
+        skill_dir,
+        private_key_pem,
+        domain,
+        SignOptions {
+            signer_kid,
+            skill_name,
+            expires_in: None,
+        },
+    )
+}
+
+/// Sign a skill directory with extended options (v1.4+).
+///
+/// When `options.expires_in` is `Some(ttl)`, an `expires_at` ISO 8601 timestamp
+/// is written. Verifiers past that timestamp emit a warning instead of failing
+/// (see [`verify_skill_offline`]).
+pub fn sign_skill_with_options(
+    skill_dir: &Path,
+    private_key_pem: &str,
+    domain: &str,
+    options: SignOptions<'_>,
+) -> Result<SkillSignature, Error> {
     let (root_hash, manifest) = canonicalize_skill(skill_dir)?;
 
-    let name = match skill_name {
+    let name = match options.skill_name {
         Some(n) => n.to_string(),
         None => parse_skill_name(skill_dir),
     };
 
-    let kid = match signer_kid {
+    let kid = match options.signer_kid {
         Some(k) => k.to_string(),
         None => {
-            // Derive public key from private, then compute fingerprint
             let secret = p256::SecretKey::from_pkcs8_pem(private_key_pem)
                 .map_err(|e| Error::Pkcs8(e.to_string()))?;
             let public = secret.public_key();
@@ -213,12 +276,20 @@ pub fn sign_skill(
     let signature_b64 = crypto::sign_data(private_key_pem, &root_hash)?;
     let skill_hash = format!("sha256:{}", hex::encode(Sha256::digest(&root_hash)));
 
+    let now = chrono::Utc::now();
+    let expires_at = options
+        .expires_in
+        .map(|ttl| (now + ttl).to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+
+    let version = if expires_at.is_some() { "1.4" } else { "1.3" };
+
     let sig_doc = SkillSignature {
-        schemapin_version: "1.3".to_string(),
+        schemapin_version: version.to_string(),
         skill_name: name,
         skill_hash,
         signature: signature_b64,
-        signed_at: chrono::Utc::now().to_rfc3339(),
+        signed_at: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        expires_at,
         domain: domain.to_string(),
         signer_kid: kid,
         file_manifest: manifest,
@@ -359,6 +430,47 @@ pub fn verify_skill_offline(
     };
 
     VerificationResult::success(&sig.domain, discovery.developer_name.as_deref(), pin_status)
+        .with_expiration_check(sig.expires_at.as_deref())
+}
+
+/// Verify a skill folder offline with an additional DNS TXT cross-check (v1.4).
+///
+/// Behaves identically to [`verify_skill_offline`], then — when `dns_txt` is
+/// `Some` — verifies that the DNS TXT record's fingerprint matches the
+/// discovery key. A mismatch converts the result into a hard failure with
+/// [`ErrorCode::DomainMismatch`]. When `dns_txt` is `None`, behaviour is
+/// unchanged (DNS TXT is an optional, additive trust signal).
+pub fn verify_skill_offline_with_dns(
+    skill_dir: &Path,
+    discovery: &WellKnownResponse,
+    signature_data: Option<&SkillSignature>,
+    revocation_doc: Option<&RevocationDocument>,
+    pin_store: Option<&mut KeyPinStore>,
+    tool_id: Option<&str>,
+    dns_txt: Option<&crate::dns::DnsTxtRecord>,
+) -> VerificationResult {
+    let result = verify_skill_offline(
+        skill_dir,
+        discovery,
+        signature_data,
+        revocation_doc,
+        pin_store,
+        tool_id,
+    );
+
+    if !result.valid {
+        return result;
+    }
+    let Some(txt) = dns_txt else {
+        return result;
+    };
+    match crate::dns::verify_dns_match(discovery, txt) {
+        Ok(()) => result,
+        Err(crate::error::Error::Verification { code, message }) => {
+            VerificationResult::failure(code, &message)
+        }
+        Err(e) => VerificationResult::failure(ErrorCode::DomainMismatch, &e.to_string()),
+    }
 }
 
 /// Resolve discovery via a [`SchemaResolver`], then delegate to
@@ -879,5 +991,175 @@ mod tests {
         );
         assert!(result.valid, "Expected valid, got: {:?}", result);
         assert_eq!(result.domain, Some("example.com".to_string()));
+    }
+
+    // ── v1.4: signature expiration tests ────────────────────────────
+
+    #[test]
+    fn test_sign_with_ttl_writes_expires_at() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: ttl\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let opts = SignOptions::new().with_expires_in(chrono::Duration::days(30));
+        let sig =
+            sign_skill_with_options(dir.path(), &kp.private_key_pem, "example.com", opts).unwrap();
+        assert!(sig.expires_at.is_some(), "expires_at should be set");
+        assert_eq!(sig.schemapin_version, "1.4");
+        // Round-trip through disk to ensure JSON contains the field.
+        let on_disk = load_signature(dir.path()).unwrap();
+        assert_eq!(on_disk.expires_at, sig.expires_at);
+    }
+
+    #[test]
+    fn test_sign_without_ttl_omits_expires_at() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: no-ttl\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let sig = sign_skill(dir.path(), &kp.private_key_pem, "example.com", None, None).unwrap();
+        assert!(sig.expires_at.is_none());
+        assert_eq!(sig.schemapin_version, "1.3");
+        let raw = fs::read_to_string(dir.path().join(".schemapin.sig")).unwrap();
+        assert!(!raw.contains("expires_at"), "JSON should omit expires_at");
+    }
+
+    #[test]
+    fn test_verify_with_future_ttl_passes_no_warnings() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: future\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let opts = SignOptions::new().with_expires_in(chrono::Duration::days(30));
+        sign_skill_with_options(dir.path(), &kp.private_key_pem, "example.com", opts).unwrap();
+
+        let discovery = build_well_known_response(&kp.public_key_pem, Some("Dev"), vec![], "1.3");
+        let result = verify_skill_offline(dir.path(), &discovery, None, None, None, Some("future"));
+        assert!(result.valid);
+        assert!(!result.expired);
+        assert!(result.expires_at.is_some());
+        assert!(
+            !result.warnings.iter().any(|w| w == "signature_expired"),
+            "no expiration warning expected"
+        );
+    }
+
+    #[test]
+    fn test_verify_with_past_ttl_passes_with_expired_warning() {
+        // Sign normally, then rewrite the .schemapin.sig with a past expires_at.
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: past\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let mut sig =
+            sign_skill(dir.path(), &kp.private_key_pem, "example.com", None, None).unwrap();
+        sig.expires_at = Some(
+            (chrono::Utc::now() - chrono::Duration::days(1))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        );
+        sig.schemapin_version = "1.4".to_string();
+        let json = serde_json::to_string_pretty(&sig).unwrap();
+        fs::write(dir.path().join(".schemapin.sig"), format!("{}\n", json)).unwrap();
+
+        let discovery = build_well_known_response(&kp.public_key_pem, Some("Dev"), vec![], "1.3");
+        let result = verify_skill_offline(dir.path(), &discovery, None, None, None, Some("past"));
+        assert!(result.valid, "expired sigs are degraded, not failed");
+        assert!(result.expired);
+        assert!(result.warnings.iter().any(|w| w == "signature_expired"));
+    }
+
+    // ── v1.4: DNS TXT cross-verification tests ─────────────────────
+
+    #[test]
+    fn test_verify_with_dns_match_passes() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: dnsok\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        sign_skill(dir.path(), &kp.private_key_pem, "example.com", None, None).unwrap();
+
+        let discovery = build_well_known_response(&kp.public_key_pem, Some("Dev"), vec![], "1.4");
+        let fp = crypto::calculate_key_id(&kp.public_key_pem)
+            .unwrap()
+            .to_ascii_lowercase();
+        let txt = crate::dns::DnsTxtRecord {
+            version: "schemapin1".to_string(),
+            kid: None,
+            fingerprint: fp,
+        };
+        let result = verify_skill_offline_with_dns(
+            dir.path(),
+            &discovery,
+            None,
+            None,
+            None,
+            Some("dnsok"),
+            Some(&txt),
+        );
+        assert!(result.valid, "expected valid, got: {:?}", result);
+    }
+
+    #[test]
+    fn test_verify_with_dns_mismatch_fails() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: dnsbad\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        sign_skill(dir.path(), &kp.private_key_pem, "example.com", None, None).unwrap();
+
+        let discovery = build_well_known_response(&kp.public_key_pem, Some("Dev"), vec![], "1.4");
+        let txt = crate::dns::DnsTxtRecord {
+            version: "schemapin1".to_string(),
+            kid: None,
+            fingerprint: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+        };
+        let result = verify_skill_offline_with_dns(
+            dir.path(),
+            &discovery,
+            None,
+            None,
+            None,
+            Some("dnsbad"),
+            Some(&txt),
+        );
+        assert!(!result.valid);
+        assert_eq!(result.error_code, Some(ErrorCode::DomainMismatch));
+    }
+
+    #[test]
+    fn test_verify_without_dns_txt_unchanged() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: nodns\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        sign_skill(dir.path(), &kp.private_key_pem, "example.com", None, None).unwrap();
+
+        let discovery = build_well_known_response(&kp.public_key_pem, Some("Dev"), vec![], "1.4");
+        // dns_txt = None should behave exactly like verify_skill_offline.
+        let result = verify_skill_offline_with_dns(
+            dir.path(),
+            &discovery,
+            None,
+            None,
+            None,
+            Some("nodns"),
+            None,
+        );
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn test_verify_with_unparseable_expires_at_warns() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: bad\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let mut sig =
+            sign_skill(dir.path(), &kp.private_key_pem, "example.com", None, None).unwrap();
+        sig.expires_at = Some("not-a-timestamp".to_string());
+        let json = serde_json::to_string_pretty(&sig).unwrap();
+        fs::write(dir.path().join(".schemapin.sig"), format!("{}\n", json)).unwrap();
+
+        let discovery = build_well_known_response(&kp.public_key_pem, Some("Dev"), vec![], "1.3");
+        let result = verify_skill_offline(dir.path(), &discovery, None, None, None, Some("bad"));
+        assert!(result.valid);
+        assert!(!result.expired);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w == "signature_expires_at_unparseable"));
     }
 }
