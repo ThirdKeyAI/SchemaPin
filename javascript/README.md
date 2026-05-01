@@ -148,6 +148,56 @@ const workflow = new SchemaVerificationWorkflow();
 const result = await workflow.verifySchema(schema, signature, toolId, domain, autoPin);
 ```
 
+## v1.4-alpha (additive, optional)
+
+v1.4-alpha.1 adds two opt-in features. Both are additive — v1.3 verifiers
+ignore the new field and the new lookup, so signed skills remain
+backward-compatible.
+
+### Signature expiration (`expires_at`)
+
+Use `signSkillWithOptions` to write an `expires_at` timestamp:
+
+```javascript
+import { signSkillWithOptions } from 'schemapin/skill';
+
+signSkillWithOptions(skillDir, privateKeyPem, 'example.com', {
+    expiresIn: 30 * 24 * 60 * 60 * 1000  // 30 days, in milliseconds
+});
+```
+
+Verifiers past the expiration treat the result as **degraded, not failed**:
+`result.valid` stays `true`, `result.expired` is set to `true`, and
+`'signature_expired'` is appended to `result.warnings`.
+
+### DNS TXT cross-verification
+
+Publish a TXT record at `_schemapin.{domain}` of the form:
+
+```
+v=schemapin1; kid=acme-2026-01; fp=sha256:<lowercase-hex-of-public-key>
+```
+
+Then cross-check at verification time:
+
+```javascript
+import { fetchDnsTxt } from 'schemapin/dns';
+import { verifySkillOfflineWithDns } from 'schemapin/skill';
+
+const txt = await fetchDnsTxt('example.com');
+const result = verifySkillOfflineWithDns(
+    skillDir, discovery, null, null, null, 'tool-id', txt
+);
+```
+
+A mismatch produces `result.error_code === 'domain_mismatch'`. A missing
+record (`txt === null`) is a no-op. The DNS path uses Node's built-in
+`node:dns/promises` — no external dependency is added.
+
+Canonical guides:
+- https://docs.schemapin.org/signature-expiration/
+- https://docs.schemapin.org/dns-txt/
+
 ## Examples
 
 Run the included examples:
