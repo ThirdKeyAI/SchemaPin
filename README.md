@@ -11,11 +11,13 @@ SchemaPin lets tool developers sign their schemas and skill folders with ECDSA P
 - **ECDSA P-256 + SHA-256** cryptographic signatures
 - **`.well-known` discovery** for public keys (RFC 8615)
 - **TOFU key pinning** to prevent key substitution attacks
-- **Key revocation** with standalone revocation documents
+- **Key revocation** with standalone signed revocation documents and structured reasons
 - **Trust bundles** for offline and air-gapped verification
 - **Pluggable resolvers** — `.well-known`, local file, trust bundle, or chain
 - **Skill folder signing** for AgentSkills (SKILL.md + file manifests)
 - **Cross-language** — Python, JavaScript, Go, and Rust implementations
+
+> **v1.4.0-alpha.1** (Rust only — preview): optional [signature expiration (`expires_at`)](https://docs.schemapin.org/signature-expiration/) with degraded-not-failed verification, and optional [DNS TXT cross-verification](https://docs.schemapin.org/dns-txt/) at `_schemapin.{domain}` for second-channel trust. Both are additive optional fields/records — v1.3 verifiers ignore them, v1.4 verifiers handle both. Python, JavaScript, and Go ports follow in subsequent alphas before the v1.4.0 release.
 
 ## Quick Start
 
@@ -60,6 +62,9 @@ go install github.com/ThirdKeyAi/schemapin/go/cmd/...@latest
 ```toml
 [dependencies]
 schemapin = "1.3.0"
+# v1.4.0-alpha.1 is also published — opt in for signature expiration
+# and DNS TXT cross-verification:
+# schemapin = { version = "1.4.0-alpha.1", features = ["dns"] }
 ```
 
 ## Documentation
@@ -70,6 +75,9 @@ schemapin = "1.3.0"
 | API Reference | [docs.schemapin.org/api-reference](https://docs.schemapin.org/api-reference/) |
 | Skill Signing | [docs.schemapin.org/skill-signing](https://docs.schemapin.org/skill-signing/) |
 | Trust Bundles | [docs.schemapin.org/trust-bundles](https://docs.schemapin.org/trust-bundles/) |
+| Revocation | [docs.schemapin.org/revocation](https://docs.schemapin.org/revocation/) |
+| Signature Expiration *(v1.4-alpha, Rust)* | [docs.schemapin.org/signature-expiration](https://docs.schemapin.org/signature-expiration/) |
+| DNS TXT Cross-Verification *(v1.4-alpha, Rust)* | [docs.schemapin.org/dns-txt](https://docs.schemapin.org/dns-txt/) |
 | Deployment | [docs.schemapin.org/deployment](https://docs.schemapin.org/deployment/) |
 | Troubleshooting | [docs.schemapin.org/troubleshooting](https://docs.schemapin.org/troubleshooting/) |
 | Technical Specification | [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md) |

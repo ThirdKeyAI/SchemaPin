@@ -361,5 +361,7 @@ const result = verifySkillOffline('./my-skill/', discoveryData, sig, null, pinSt
 - [Skill Signing](skill-signing.md) — SkillSigner deep dive
 - [Trust Bundles](trust-bundles.md) — Offline and air-gapped verification
 - [Revocation](revocation.md) — Rotate keys and serve signed revocation documents
+- [Signature Expiration](signature-expiration.md) — v1.4-alpha (Rust): `expires_at` and degraded-not-failed verification
+- [DNS TXT Cross-Verification](dns-txt.md) — v1.4-alpha (Rust): second-channel `_schemapin.{domain}` lookups
 - [Deployment](deployment.md) — Serve `.well-known` endpoints in production
 - [Troubleshooting](troubleshooting.md) — Common issues and solutions

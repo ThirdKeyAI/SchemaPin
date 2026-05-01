@@ -77,6 +77,8 @@ All four implementations use identical crypto (ECDSA P-256 + SHA-256) — cross-
 | [Skill Signing](skill-signing.md) | Sign and verify skill directories (v1.3) |
 | [Trust Bundles](trust-bundles.md) | Offline verification and pluggable resolvers |
 | [Revocation](revocation.md) | Rotate keys, publish revocation documents, fail closed |
+| [Signature Expiration](signature-expiration.md) | `expires_at` field for degraded-not-failed verification (v1.4-alpha, Rust) |
+| [DNS TXT Cross-Verification](dns-txt.md) | Second-channel `_schemapin.{domain}` lookups (v1.4-alpha, Rust) |
 | [Deployment](deployment.md) | Serve `.well-known` endpoints in production |
 | [Troubleshooting](troubleshooting.md) | Common issues and solutions |
 

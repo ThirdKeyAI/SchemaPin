@@ -18,6 +18,8 @@
     "docs/skill-signing.md",
     "docs/trust-bundles.md",
     "docs/revocation.md",
+    "docs/signature-expiration.md",
+    "docs/dns-txt.md",
     "docs/deployment.md",
     "docs/troubleshooting.md"
   ],
