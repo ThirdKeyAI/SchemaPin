@@ -1,8 +1,16 @@
-// Package skill provides skill folder signing and verification for SchemaPin v1.3.
+// Package skill provides skill folder signing and verification for SchemaPin
+// v1.3 with v1.4-alpha additions.
 //
 // Extends SchemaPin's ECDSA P-256 signing to cover file-based skill folders
 // (AgentSkills spec). Same keys, same .well-known discovery, new canonicalization
 // target.
+//
+// v1.4-alpha additions:
+//   - Optional signature expiration (expires_at) on .schemapin.sig --
+//     written via SignSkillWithOptions. Verifiers degrade past expires_at
+//     instead of failing.
+//   - Optional DNS TXT cross-verification via VerifySkillOfflineWithDNS;
+//     see the dns subpackage for the parser and lookup helpers.
 package skill
 
 import (
@@ -28,18 +36,49 @@ import (
 // SignatureFilename is the name of the signature file written into skill directories.
 const SignatureFilename = ".schemapin.sig"
 
-const schemapinVersion = "1.3"
+// Version constants written into the SchemapinVersion field of new
+// signatures. v1.3 signatures lack expires_at; v1.4 signatures may carry
+// it. Verifiers handle both transparently.
+const (
+	schemapinVersionV13 = "1.3"
+	schemapinVersionV14 = "1.4"
+)
 
 // SkillSignature represents the JSON structure of a .schemapin.sig file.
+//
+// ExpiresAt is an optional v1.4 field. When present, verifiers treat
+// signatures past the expiration as degraded (warning) rather than a hard
+// failure -- see VerifySkillOffline.
 type SkillSignature struct {
 	SchemapinVersion string            `json:"schemapin_version"`
 	SkillName        string            `json:"skill_name"`
 	SkillHash        string            `json:"skill_hash"`
 	Signature        string            `json:"signature"`
 	SignedAt         string            `json:"signed_at"`
+	ExpiresAt        string            `json:"expires_at,omitempty"`
 	Domain           string            `json:"domain"`
 	SignerKid        string            `json:"signer_kid"`
 	FileManifest     map[string]string `json:"file_manifest"`
+}
+
+// SignOptions are optional sign-time parameters for SignSkillWithOptions.
+//
+// All fields are optional and default to "absent": empty strings derive the
+// value from the key/SKILL.md/dirname, and a zero ExpiresIn omits the
+// expires_at field entirely.
+type SignOptions struct {
+	// SignerKid overrides the kid written into the signature. When empty,
+	// the kid is derived from the public key fingerprint.
+	SignerKid string
+	// SkillName overrides the skill_name written into the signature. When
+	// empty, it is parsed from SKILL.md frontmatter or falls back to the
+	// directory basename.
+	SkillName string
+	// ExpiresIn sets a TTL relative to signing time. When > 0, the
+	// signature carries an RFC 3339 expires_at field and the version is
+	// bumped to "1.4". A zero value (the default) writes no expires_at and
+	// keeps the version at "1.3".
+	ExpiresIn time.Duration
 }
 
 // TamperedFiles holds the result of comparing two file manifests.
@@ -215,7 +254,24 @@ func LoadSignature(skillDir string) (*SkillSignature, error) {
 //
 // If signerKid is empty, it is auto-computed from the public key.
 // If skillName is empty, it is parsed from SKILL.md (or falls back to dir name).
+//
+// Preserved as a thin wrapper over SignSkillWithOptions for backward
+// compatibility with v1.3 callers.
 func SignSkill(skillDir, privateKeyPEM, domain string, signerKid, skillName string) (*SkillSignature, error) {
+	return SignSkillWithOptions(skillDir, privateKeyPEM, domain, SignOptions{
+		SignerKid: signerKid,
+		SkillName: skillName,
+	})
+}
+
+// SignSkillWithOptions canonicalizes a skill directory, signs it, and writes
+// .schemapin.sig. Mirrors the v1.4 Rust API sign_skill_with_options.
+//
+// When options.ExpiresIn > 0, an RFC 3339 expires_at timestamp is written
+// (truncated to seconds, UTC, "Z" suffix) and the schemapin_version is
+// bumped to "1.4". When ExpiresIn is zero, expires_at is omitted and the
+// version stays at "1.3" -- bytewise-identical to the v1.3 wire format.
+func SignSkillWithOptions(skillDir, privateKeyPEM, domain string, options SignOptions) (*SkillSignature, error) {
 	keyManager := crypto.NewKeyManager()
 
 	privateKey, err := keyManager.LoadPrivateKeyPEM(privateKeyPEM)
@@ -228,10 +284,12 @@ func SignSkill(skillDir, privateKeyPEM, domain string, signerKid, skillName stri
 		return nil, fmt.Errorf("failed to canonicalize skill: %w", err)
 	}
 
+	skillName := options.SkillName
 	if skillName == "" {
 		skillName = ParseSkillName(skillDir)
 	}
 
+	signerKid := options.SignerKid
 	if signerKid == "" {
 		publicKey := privateKey.Public().(*ecdsa.PublicKey)
 		publicKeyPEM, err := keyManager.ExportPublicKeyPEM(publicKey)
@@ -250,12 +308,21 @@ func SignSkill(skillDir, privateKeyPEM, domain string, signerKid, skillName stri
 		return nil, fmt.Errorf("failed to sign hash: %w", err)
 	}
 
+	now := time.Now().UTC().Truncate(time.Second)
+	version := schemapinVersionV13
+	expiresAt := ""
+	if options.ExpiresIn > 0 {
+		expiresAt = now.Add(options.ExpiresIn).UTC().Format(time.RFC3339)
+		version = schemapinVersionV14
+	}
+
 	sig := &SkillSignature{
-		SchemapinVersion: schemapinVersion,
+		SchemapinVersion: version,
 		SkillName:        skillName,
 		SkillHash:        fmt.Sprintf("sha256:%s", hex.EncodeToString(rootHash)),
 		Signature:        signatureB64,
-		SignedAt:         time.Now().UTC().Format(time.RFC3339),
+		SignedAt:         now.Format(time.RFC3339),
+		ExpiresAt:        expiresAt,
 		Domain:           domain,
 		SignerKid:        signerKid,
 		FileManifest:     manifest,
@@ -398,7 +465,9 @@ func VerifySkillOffline(
 		}
 	}
 
-	return result
+	// v1.4: apply optional signature expiration check. No-op when ExpiresAt
+	// is empty; otherwise may set Expired/ExpiresAt and append a warning.
+	return result.WithExpirationCheck(sig.ExpiresAt)
 }
 
 // VerifySkillWithResolver verifies a signed skill folder using a resolver
