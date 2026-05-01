@@ -195,6 +195,61 @@ export function signSkill(skillDir, privateKeyPem, domain, signerKid = null, ski
 }
 
 /**
+ * v1.4 alpha.2 chain check error.
+ *
+ * Subclass of Error. Distinguish via the `kind` property:
+ *   - `'no_previous_hash'` — current signature has no `previous_hash` field
+ *   - `'mismatch'` — current.previous_hash !== previous.skill_hash
+ */
+export class ChainError extends Error {
+    /**
+     * @param {string} kind - 'no_previous_hash' | 'mismatch'
+     * @param {string} message
+     */
+    constructor(kind, message) {
+        super(message);
+        this.name = 'ChainError';
+        this.kind = kind;
+    }
+}
+
+/**
+ * Verify that `current` is the legitimate successor of `previous` via the
+ * `previous_hash` lineage chain (v1.4 alpha.2).
+ *
+ * Checks `current.previous_hash === previous.skill_hash`.
+ *
+ * This is a pure-metadata check — no cryptography is re-evaluated. Both
+ * signatures must already be cryptographically verified separately via
+ * {@link verifySkillOffline} for the chain check to be meaningful.
+ *
+ * Use this to defend against rug-pull attacks where an attacker substitutes
+ * a schema/skill out-of-band: a legitimate update declares the prior version's
+ * hash; an unauthorized substitution either omits `previous_hash` or points
+ * at a hash the verifier has not accepted as a valid ancestor.
+ *
+ * @param {Object} current - The new signature dict (must have `previous_hash`)
+ * @param {Object} previous - The prior signature dict (must have `skill_hash`)
+ * @throws {ChainError} On chain mismatch or missing `previous_hash`
+ */
+export function verifyChain(current, previous) {
+    const claimed = current.previous_hash;
+    if (claimed === null || claimed === undefined) {
+        throw new ChainError(
+            'no_previous_hash',
+            'current signature has no previous_hash field'
+        );
+    }
+    const expected = previous.skill_hash;
+    if (claimed !== expected) {
+        throw new ChainError(
+            'mismatch',
+            `previous_hash mismatch: current.previous_hash = ${claimed}, previous.skill_hash = ${expected}`
+        );
+    }
+}
+
+/**
  * Canonicalize a skill directory, sign, and write .schemapin.sig with extended
  * options (v1.4+).
  *
@@ -219,7 +274,17 @@ export function signSkill(skillDir, privateKeyPem, domain, signerKid = null, ski
  * @returns {Object} The signature document that was written
  */
 export function signSkillWithOptions(skillDir, privateKeyPem, domain, options = {}) {
-    const { signerKid: optSignerKid = null, skillName: optSkillName = null, expiresIn = null } = options;
+    const {
+        signerKid: optSignerKid = null,
+        skillName: optSkillName = null,
+        expiresIn = null,
+        // v1.4 alpha.2: caller-supplied semver string identifying *this* version
+        // of the signed artifact. Surfaced via VerificationResult for policy use.
+        schemaVersion = null,
+        // v1.4 alpha.2: `sha256:<hex>` of the prior signed version's
+        // `skill_hash`, forming a hash chain. Pair with `verifyChain`.
+        previousHash = null
+    } = options;
 
     const skillPath = resolve(skillDir);
     const privateKey = KeyManager.loadPrivateKeyPem(privateKeyPem);
@@ -247,42 +312,39 @@ export function signSkillWithOptions(skillDir, privateKeyPem, domain, options = 
         expiresAt = toRfc3339Seconds(new Date(now.getTime() + expiresIn));
     }
 
-    const version = expiresAt !== null ? SCHEMAPIN_VERSION_V14 : SCHEMAPIN_VERSION_V13;
+    // Any v1.4 optional field bumps the version stamp; pure v1.3 sigs stay
+    // "1.3" for byte-stable backward compatibility.
+    const usesV14Field =
+        expiresAt !== null
+        || (schemaVersion !== null && schemaVersion !== undefined)
+        || (previousHash !== null && previousHash !== undefined);
+    const version = usesV14Field ? SCHEMAPIN_VERSION_V14 : SCHEMAPIN_VERSION_V13;
 
-    const sigDoc = {
+    // Build the document in canonical field order. Optional v1.4 fields slot
+    // between `signed_at` and `domain`.
+    const ordered = {
         schemapin_version: version,
         skill_name: skillName,
         skill_hash: `sha256:${rootHash.toString('hex')}`,
         signature: signatureB64,
-        signed_at: toRfc3339Seconds(now),
-        domain: domain,
-        signer_kid: signerKid,
-        file_manifest: manifest
+        signed_at: toRfc3339Seconds(now)
     };
     if (expiresAt !== null) {
-        // Insert expires_at after signed_at to keep field order stable.
-        sigDoc.expires_at = expiresAt;
-        // Re-serialize in the documented field order.
-        const ordered = {
-            schemapin_version: sigDoc.schemapin_version,
-            skill_name: sigDoc.skill_name,
-            skill_hash: sigDoc.skill_hash,
-            signature: sigDoc.signature,
-            signed_at: sigDoc.signed_at,
-            expires_at: sigDoc.expires_at,
-            domain: sigDoc.domain,
-            signer_kid: sigDoc.signer_kid,
-            file_manifest: sigDoc.file_manifest
-        };
-        const sigPath = join(skillPath, SIGNATURE_FILENAME);
-        writeFileSync(sigPath, JSON.stringify(ordered, null, 2) + '\n', 'utf-8');
-        return ordered;
+        ordered.expires_at = expiresAt;
     }
+    if (schemaVersion !== null && schemaVersion !== undefined) {
+        ordered.schema_version = schemaVersion;
+    }
+    if (previousHash !== null && previousHash !== undefined) {
+        ordered.previous_hash = previousHash;
+    }
+    ordered.domain = domain;
+    ordered.signer_kid = signerKid;
+    ordered.file_manifest = manifest;
 
     const sigPath = join(skillPath, SIGNATURE_FILENAME);
-    writeFileSync(sigPath, JSON.stringify(sigDoc, null, 2) + '\n', 'utf-8');
-
-    return sigDoc;
+    writeFileSync(sigPath, JSON.stringify(ordered, null, 2) + '\n', 'utf-8');
+    return ordered;
 }
 
 /**
@@ -416,6 +478,15 @@ export function verifySkillOffline(skillDir, discovery, signatureData = null, re
     // v1.4: apply signature expiration check (degraded, not failed).
     if (signatureData.expires_at !== null && signatureData.expires_at !== undefined) {
         applyExpirationCheck(resultObj, signatureData.expires_at);
+    }
+
+    // v1.4 alpha.2: surface lineage metadata (informational; chain enforcement
+    // is opt-in via verifyChain).
+    if (signatureData.schema_version !== null && signatureData.schema_version !== undefined) {
+        resultObj.schema_version = signatureData.schema_version;
+    }
+    if (signatureData.previous_hash !== null && signatureData.previous_hash !== undefined) {
+        resultObj.previous_hash = signatureData.previous_hash;
     }
 
     return resultObj;

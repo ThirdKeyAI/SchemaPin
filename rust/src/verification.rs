@@ -35,6 +35,15 @@ pub struct VerificationResult {
     /// Mirrors the `expires_at` from the signature when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    /// Mirrors the `schema_version` from the signature when present (v1.4 alpha.2).
+    /// Caller-supplied semver string identifying *this* version of the artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<String>,
+    /// Mirrors the `previous_hash` from the signature when present (v1.4 alpha.2).
+    /// `sha256:<hex>` of the prior signed version's `skill_hash`. Pair with
+    /// [`crate::skill::verify_chain`] to confirm lineage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_hash: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -64,6 +73,8 @@ impl VerificationResult {
             warnings: vec![],
             expired: false,
             expires_at: None,
+            schema_version: None,
+            previous_hash: None,
         }
     }
 
@@ -78,7 +89,22 @@ impl VerificationResult {
             warnings: vec![],
             expired: false,
             expires_at: None,
+            schema_version: None,
+            previous_hash: None,
         }
+    }
+
+    /// Copy `schema_version` and `previous_hash` from the signature onto the result.
+    /// No semantic enforcement — these are informational fields callers use for
+    /// version policy and chain verification (see [`crate::skill::verify_chain`]).
+    pub fn with_lineage_metadata(
+        mut self,
+        schema_version: Option<&str>,
+        previous_hash: Option<&str>,
+    ) -> Self {
+        self.schema_version = schema_version.map(str::to_string);
+        self.previous_hash = previous_hash.map(str::to_string);
+        self
     }
 
     /// Apply a signature `expires_at` check to a successful result.

@@ -13,7 +13,13 @@ from schemapin.revocation import (
     add_revoked_key,
     build_revocation_document,
 )
-from schemapin.skill import SIGNATURE_FILENAME, SignOptions, SkillSigner
+from schemapin.skill import (
+    SIGNATURE_FILENAME,
+    ChainError,
+    SignOptions,
+    SkillSigner,
+    verify_chain,
+)
 from schemapin.verification import ErrorCode, KeyPinStore
 
 # ---------------------------------------------------------------------------
@@ -697,3 +703,111 @@ class TestSignatureExpiration:
         assert "expires_at" in d
         # Future TTL: ``expired`` False is the default and should be omitted.
         assert "expired" not in d
+
+
+class TestSchemaVersionBinding:
+    """v1.4 alpha.2: schema_version + previous_hash lineage chain."""
+
+    def test_sign_with_schema_version_writes_field(self, tmp_path: Path) -> None:
+        priv_pem, _ = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "skill", {"SKILL.md": "---\nname: ver\n---\n"}
+        )
+        opts = SignOptions(schema_version="2.1.0")
+        sig = SkillSigner.sign_with_options(skill, priv_pem, "example.com", opts)
+        assert sig["schema_version"] == "2.1.0"
+        assert sig["schemapin_version"] == "1.4"
+        on_disk = SkillSigner.load_signature(skill)
+        assert on_disk["schema_version"] == "2.1.0"
+
+    def test_sign_without_lineage_omits_fields(self, tmp_path: Path) -> None:
+        priv_pem, _ = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "skill", {"SKILL.md": "---\nname: nv\n---\n"}
+        )
+        sig = SkillSigner.sign_skill(skill, priv_pem, "example.com")
+        assert "schema_version" not in sig
+        assert "previous_hash" not in sig
+        raw = (skill / SIGNATURE_FILENAME).read_text(encoding="utf-8")
+        assert "schema_version" not in raw
+        assert "previous_hash" not in raw
+
+    def test_sign_with_previous_hash_writes_field(self, tmp_path: Path) -> None:
+        priv_pem, _ = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "skill", {"SKILL.md": "---\nname: ch\n---\n"}
+        )
+        opts = SignOptions(previous_hash="sha256:abcdef")
+        sig = SkillSigner.sign_with_options(skill, priv_pem, "example.com", opts)
+        assert sig["previous_hash"] == "sha256:abcdef"
+        assert sig["schemapin_version"] == "1.4"
+
+    def test_verify_chain_matches(self, tmp_path: Path) -> None:
+        priv_pem, _ = _make_keypair()
+        s1 = _create_skill_dir(tmp_path / "v1", {"SKILL.md": "---\nname: v1\n---\n"})
+        v1 = SkillSigner.sign_skill(s1, priv_pem, "example.com")
+
+        s2 = _create_skill_dir(tmp_path / "v2", {"SKILL.md": "---\nname: v2\n---\n"})
+        opts = SignOptions(previous_hash=v1["skill_hash"])
+        v2 = SkillSigner.sign_with_options(s2, priv_pem, "example.com", opts)
+
+        # Returns None on success
+        assert verify_chain(v2, v1) is None
+
+    def test_verify_chain_no_previous_hash_errors(self, tmp_path: Path) -> None:
+        priv_pem, _ = _make_keypair()
+        s1 = _create_skill_dir(tmp_path / "v1", {"SKILL.md": "---\nname: v1\n---\n"})
+        s2 = _create_skill_dir(tmp_path / "v2", {"SKILL.md": "---\nname: v2\n---\n"})
+        v1 = SkillSigner.sign_skill(s1, priv_pem, "example.com")
+        v2 = SkillSigner.sign_skill(s2, priv_pem, "example.com")
+        with pytest.raises(ChainError, match="no previous_hash"):
+            verify_chain(v2, v1)
+
+    def test_verify_chain_mismatch_errors(self, tmp_path: Path) -> None:
+        priv_pem, _ = _make_keypair()
+        s1 = _create_skill_dir(tmp_path / "v1", {"SKILL.md": "---\nname: v1\n---\n"})
+        s2 = _create_skill_dir(tmp_path / "v2", {"SKILL.md": "---\nname: v2\n---\n"})
+        v1 = SkillSigner.sign_skill(s1, priv_pem, "example.com")
+        opts = SignOptions(previous_hash="sha256:not-the-real-prior-hash")
+        v2 = SkillSigner.sign_with_options(s2, priv_pem, "example.com", opts)
+        with pytest.raises(ChainError, match="mismatch"):
+            verify_chain(v2, v1)
+
+    def test_verify_skill_offline_surfaces_lineage(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "s", {"SKILL.md": "---\nname: lin\n---\n"}
+        )
+        opts = SignOptions(
+            schema_version="3.2.1", previous_hash="sha256:deadbeef"
+        )
+        SkillSigner.sign_with_options(skill, priv_pem, "example.com", opts)
+        result = SkillSigner.verify_skill_offline(
+            skill, _discovery(pub_pem), tool_id="lin"
+        )
+        assert result.valid
+        assert result.schema_version == "3.2.1"
+        assert result.previous_hash == "sha256:deadbeef"
+        d = result.to_dict()
+        assert d["schema_version"] == "3.2.1"
+        assert d["previous_hash"] == "sha256:deadbeef"
+
+    def test_combined_v1_4_fields_round_trip(self, tmp_path: Path) -> None:
+        priv_pem, _ = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "s", {"SKILL.md": "---\nname: combo\n---\n"}
+        )
+        opts = SignOptions(
+            expires_in=timedelta(days=180),
+            schema_version="1.0.0",
+            previous_hash="sha256:cafebabe",
+        )
+        sig = SkillSigner.sign_with_options(skill, priv_pem, "example.com", opts)
+        assert sig["schemapin_version"] == "1.4"
+        assert "expires_at" in sig
+        assert sig["schema_version"] == "1.0.0"
+        assert sig["previous_hash"] == "sha256:cafebabe"
+        on_disk = SkillSigner.load_signature(skill)
+        assert on_disk["expires_at"] == sig["expires_at"]
+        assert on_disk["schema_version"] == "1.0.0"
+        assert on_disk["previous_hash"] == "sha256:cafebabe"

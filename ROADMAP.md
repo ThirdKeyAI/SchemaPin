@@ -16,7 +16,8 @@
 | **1.1.0** | 2026-01 | Revocation documents, standalone revocation endpoint | Shipped |
 | **1.2.0** | 2026-02 | Offline verification, trust bundles, resolver abstraction | Shipped |
 | **1.3.0** | 2026-02 | AgentSkills security — skill folder signing | **Shipped** |
-| **1.4.0-alpha.1** | 2026-04-30 | Signature expiration + DNS TXT cross-verification (Rust) | **Shipped** |
+| **1.4.0-alpha.1** | 2026-04-30 | Signature expiration + DNS TXT cross-verification (all 4 langs) | **Shipped** |
+| **1.4.0-alpha.2** | 2026-05-01 | Schema version binding (`schema_version` + `previous_hash` lineage chain, all 4 langs) | **Shipped** |
 | **1.4.0** | Q2-Q3 2026 | Signature lifecycle, version binding, A2A trust | In progress |
 | **1.5.0** | Q4 2026 | Multi-key endorsement, permissions, advanced revocation | Planning |
 
@@ -116,7 +117,7 @@ Right now, a signature is valid forever once created. There's a `signed_at` time
 }
 ```
 
-### Schema Version Binding
+### Schema Version Binding — **Shipped (alpha.2, all 4 langs)**
 
 SchemaPin signs a schema at a point in time, but there's no concept of "this is version 3.2 of this tool's schema, superseding version 3.1." If a developer legitimately updates their tool, clients with the old schema pinned have no way to know whether the new schema is an authorized upgrade or a rug pull.
 
@@ -323,4 +324,4 @@ We welcome input on roadmap priorities:
 
 ---
 
-*Last updated: 2026-04-30 (v1.4.0-alpha.1 — Rust signature expiration + DNS TXT cross-verification)*
+*Last updated: 2026-05-01 (v1.4.0-alpha.2 — schema version binding across all four language implementations)*

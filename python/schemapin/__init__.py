@@ -62,7 +62,7 @@ from .verification import (
     verify_schema_with_resolver,
 )
 
-__version__ = "1.4.0a1"
+__version__ = "1.4.0a2"
 __all__ = [
     "SchemaPinCore",
     "KeyManager",

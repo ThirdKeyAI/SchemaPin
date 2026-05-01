@@ -3,7 +3,7 @@
   "url": "https://context7.com/thirdkeyai/schemapin",
   "public_key": "pk_Ehy7QXQTu2Keb0e5BNeyx",
   "projectTitle": "SchemaPin",
-  "description": "Cryptographic tool schema verification to prevent MCP Rug Pull attacks — ECDSA P-256 signing, SHA-256 hashing, TOFU key pinning, .well-known discovery, signed key revocation documents, and (v1.4-alpha, Rust) optional signature expiration plus DNS TXT cross-verification. Stable implementations in Python, JavaScript, Rust, and Go. Part of the ThirdKey trust stack: SchemaPin (tool integrity) → AgentPin (agent identity) → Symbiont (runtime).",
+  "description": "Cryptographic tool schema verification to prevent MCP Rug Pull attacks — ECDSA P-256 signing, SHA-256 hashing, TOFU key pinning, .well-known discovery, signed key revocation documents, and (v1.4-alpha across all four languages) optional signature expiration, DNS TXT cross-verification, and schema version binding (`schema_version` + `previous_hash` lineage chain). Stable implementations in Python, JavaScript, Rust, and Go. Part of the ThirdKey trust stack: SchemaPin (tool integrity) → AgentPin (agent identity) → Symbiont (runtime).",
   "folders": [
     "SKILL.md",
     "README.md",
@@ -20,6 +20,7 @@
     "docs/revocation.md",
     "docs/signature-expiration.md",
     "docs/dns-txt.md",
+    "docs/schema-version-binding.md",
     "docs/deployment.md",
     "docs/troubleshooting.md"
   ],
@@ -75,6 +76,7 @@
     "Key fingerprints are SHA-256 of the DER-encoded SubjectPublicKeyInfo, formatted as `sha256:<lowercase-hex>`. The `sha256:` prefix is required.",
     "Never hardcode or embed private keys — use KeyManager to generate and PEM files for storage",
     "SchemaPin protects MCP tool schemas from tampering — sign on publish, verify on load",
-    "v1.4.0-alpha.1 (Rust only — preview): optional `expires_at` field on .schemapin.sig (degraded-not-failed semantics — `valid` stays true, `expired` becomes true, `signature_expired` warning appended), and optional `_schemapin.{domain}` DNS TXT record (`v=schemapin1; kid=...; fp=sha256:...`) for second-channel cross-verification (mismatch is hard DOMAIN_MISMATCH; absent is no-op). Both are additive optional fields/records — v1.3 verifiers ignore them. Python, JavaScript, and Go ports follow in subsequent alphas."
+    "v1.4.0-alpha.1 (all four languages): optional `expires_at` field on .schemapin.sig (degraded-not-failed semantics — `valid` stays true, `expired` becomes true, `signature_expired` warning appended), and optional `_schemapin.{domain}` DNS TXT record (`v=schemapin1; kid=...; fp=sha256:...`) for second-channel cross-verification (mismatch is hard DOMAIN_MISMATCH; absent is no-op). Both are additive optional fields/records — v1.3 verifiers ignore them.",
+    "v1.4.0-alpha.2 (all four languages): optional `schema_version` (caller-supplied semver string identifying *this* version, surfaced informationally) and `previous_hash` (`sha256:<hex>` of the prior signed version's `skill_hash`, forming a hash chain) on .schemapin.sig. Pair with the new `verify_chain(current, previous)` helper to opt into chain enforcement — defends against rug-pull substitutions where an attacker swaps a tampered schema/skill under the same name. ChainError distinguishes `no_previous_hash` from `mismatch`. Pure metadata; no extra crypto. v1.3 verifiers ignore both fields."
   ]
 }

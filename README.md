@@ -17,7 +17,7 @@ SchemaPin lets tool developers sign their schemas and skill folders with ECDSA P
 - **Skill folder signing** for AgentSkills (SKILL.md + file manifests)
 - **Cross-language** — Python, JavaScript, Go, and Rust implementations
 
-> **v1.4.0-alpha.1** (Rust only — preview): optional [signature expiration (`expires_at`)](https://docs.schemapin.org/signature-expiration/) with degraded-not-failed verification, and optional [DNS TXT cross-verification](https://docs.schemapin.org/dns-txt/) at `_schemapin.{domain}` for second-channel trust. Both are additive optional fields/records — v1.3 verifiers ignore them, v1.4 verifiers handle both. Python, JavaScript, and Go ports follow in subsequent alphas before the v1.4.0 release.
+> **v1.4.0-alpha.2** (all four languages): three additive optional features — [signature expiration (`expires_at`)](https://docs.schemapin.org/signature-expiration/) with degraded-not-failed verification, [DNS TXT cross-verification](https://docs.schemapin.org/dns-txt/) at `_schemapin.{domain}` for second-channel trust, and [schema version binding (`schema_version` + `previous_hash`)](https://docs.schemapin.org/schema-version-binding/) for opt-in lineage chain enforcement that defends against rug-pull substitutions. v1.3 verifiers ignore the new fields; v1.4 verifiers handle both. The remaining v1.4 items (canonicalization id, A2A context, A2A trust bundles, scan-aware sigs, cross-agent schema cache) ship in subsequent alphas before stable v1.4.0.
 
 ## Quick Start
 
@@ -62,9 +62,9 @@ go install github.com/ThirdKeyAi/schemapin/go/cmd/...@latest
 ```toml
 [dependencies]
 schemapin = "1.3.0"
-# v1.4.0-alpha.1 is also published — opt in for signature expiration
-# and DNS TXT cross-verification:
-# schemapin = { version = "1.4.0-alpha.1", features = ["dns"] }
+# v1.4.0-alpha.2 is also published — opt in for signature expiration,
+# DNS TXT cross-verification, and schema version binding:
+# schemapin = { version = "1.4.0-alpha.2", features = ["dns"] }
 ```
 
 ## Documentation
@@ -76,8 +76,9 @@ schemapin = "1.3.0"
 | Skill Signing | [docs.schemapin.org/skill-signing](https://docs.schemapin.org/skill-signing/) |
 | Trust Bundles | [docs.schemapin.org/trust-bundles](https://docs.schemapin.org/trust-bundles/) |
 | Revocation | [docs.schemapin.org/revocation](https://docs.schemapin.org/revocation/) |
-| Signature Expiration *(v1.4-alpha, Rust)* | [docs.schemapin.org/signature-expiration](https://docs.schemapin.org/signature-expiration/) |
-| DNS TXT Cross-Verification *(v1.4-alpha, Rust)* | [docs.schemapin.org/dns-txt](https://docs.schemapin.org/dns-txt/) |
+| Signature Expiration *(v1.4-alpha, all 4 langs)* | [docs.schemapin.org/signature-expiration](https://docs.schemapin.org/signature-expiration/) |
+| DNS TXT Cross-Verification *(v1.4-alpha, all 4 langs)* | [docs.schemapin.org/dns-txt](https://docs.schemapin.org/dns-txt/) |
+| Schema Version Binding *(v1.4-alpha, all 4 langs)* | [docs.schemapin.org/schema-version-binding](https://docs.schemapin.org/schema-version-binding/) |
 | Deployment | [docs.schemapin.org/deployment](https://docs.schemapin.org/deployment/) |
 | Troubleshooting | [docs.schemapin.org/troubleshooting](https://docs.schemapin.org/troubleshooting/) |
 | Technical Specification | [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md) |

@@ -13,7 +13,7 @@ import { ErrorCode, KeyPinStore } from '../src/verification.js';
 import {
     SIGNATURE_FILENAME, canonicalizeSkill, parseSkillName, loadSignature,
     signSkill, signSkillWithOptions, verifySkillOffline, verifySkillOfflineWithDns,
-    detectTamperedFiles
+    detectTamperedFiles, verifyChain, ChainError
 } from '../src/skill.js';
 
 // ---------------------------------------------------------------------------
@@ -750,6 +750,165 @@ describe('verifySkillOfflineWithDns (v1.4)', () => {
                 skillDir, makeDiscovery(publicKey), null, null, null, 'nodns', null
             );
             assert.equal(result.valid, true);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// v1.4 alpha.2: schema_version + previous_hash lineage chain
+// ---------------------------------------------------------------------------
+
+describe('Schema version binding (v1.4 alpha.2)', () => {
+    it('writes schema_version when set and bumps schemapin_version to 1.4', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: ver\n---\n' });
+            const sig = signSkillWithOptions(skillDir, privateKey, 'example.com', {
+                schemaVersion: '2.1.0'
+            });
+            assert.equal(sig.schema_version, '2.1.0');
+            assert.equal(sig.schemapin_version, '1.4');
+            const onDisk = loadSignature(skillDir);
+            assert.equal(onDisk.schema_version, '2.1.0');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('omits schema_version and previous_hash when not set', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: noversion\n---\n' });
+            const sig = signSkill(skillDir, privateKey, 'example.com');
+            assert.equal(sig.schema_version, undefined);
+            assert.equal(sig.previous_hash, undefined);
+            const raw = readFileSync(join(skillDir, SIGNATURE_FILENAME), 'utf-8');
+            assert.ok(!raw.includes('schema_version'), 'JSON should omit schema_version');
+            assert.ok(!raw.includes('previous_hash'), 'JSON should omit previous_hash');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('writes previous_hash when set and bumps schemapin_version to 1.4', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: chained\n---\n' });
+            const sig = signSkillWithOptions(skillDir, privateKey, 'example.com', {
+                previousHash: 'sha256:abcdef'
+            });
+            assert.equal(sig.previous_hash, 'sha256:abcdef');
+            assert.equal(sig.schemapin_version, '1.4');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('verifyChain accepts a valid lineage', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey } = makeKeypair();
+            const s1 = createSkillDir(join(dir, 'v1'), { 'SKILL.md': '---\nname: v1\n---\n' });
+            const v1 = signSkill(s1, privateKey, 'example.com');
+
+            const s2 = createSkillDir(join(dir, 'v2'), { 'SKILL.md': '---\nname: v2\n---\n' });
+            const v2 = signSkillWithOptions(s2, privateKey, 'example.com', {
+                previousHash: v1.skill_hash
+            });
+
+            assert.doesNotThrow(() => verifyChain(v2, v1));
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('verifyChain throws ChainError when previous_hash is missing', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey } = makeKeypair();
+            const s1 = createSkillDir(join(dir, 'v1'), { 'SKILL.md': '---\nname: v1\n---\n' });
+            const s2 = createSkillDir(join(dir, 'v2'), { 'SKILL.md': '---\nname: v2\n---\n' });
+            const v1 = signSkill(s1, privateKey, 'example.com');
+            const v2 = signSkill(s2, privateKey, 'example.com');
+            assert.throws(
+                () => verifyChain(v2, v1),
+                (err) => err instanceof ChainError && err.kind === 'no_previous_hash'
+            );
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('verifyChain throws ChainError on hash mismatch', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey } = makeKeypair();
+            const s1 = createSkillDir(join(dir, 'v1'), { 'SKILL.md': '---\nname: v1\n---\n' });
+            const s2 = createSkillDir(join(dir, 'v2'), { 'SKILL.md': '---\nname: v2\n---\n' });
+            const v1 = signSkill(s1, privateKey, 'example.com');
+            const v2 = signSkillWithOptions(s2, privateKey, 'example.com', {
+                previousHash: 'sha256:not-the-real-prior-hash'
+            });
+            assert.throws(
+                () => verifyChain(v2, v1),
+                (err) => err instanceof ChainError
+                    && err.kind === 'mismatch'
+                    && err.message.includes(v1.skill_hash)
+            );
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('verifySkillOffline surfaces lineage metadata', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey, publicKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: surfaced\n---\n' });
+            signSkillWithOptions(skillDir, privateKey, 'example.com', {
+                schemaVersion: '3.2.1',
+                previousHash: 'sha256:deadbeef'
+            });
+            const result = verifySkillOffline(
+                skillDir, makeDiscovery(publicKey), null, null, new KeyPinStore(), 'surfaced'
+            );
+            assert.equal(result.valid, true);
+            assert.equal(result.schema_version, '3.2.1');
+            assert.equal(result.previous_hash, 'sha256:deadbeef');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('combined v1.4 fields all round-trip', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: combo\n---\n' });
+            const sig = signSkillWithOptions(skillDir, privateKey, 'example.com', {
+                expiresIn: 180 * 24 * 60 * 60 * 1000, // 180 days in ms
+                schemaVersion: '1.0.0',
+                previousHash: 'sha256:cafebabe'
+            });
+            assert.equal(sig.schemapin_version, '1.4');
+            assert.ok(typeof sig.expires_at === 'string');
+            assert.equal(sig.schema_version, '1.0.0');
+            assert.equal(sig.previous_hash, 'sha256:cafebabe');
+
+            const onDisk = loadSignature(skillDir);
+            assert.equal(onDisk.expires_at, sig.expires_at);
+            assert.equal(onDisk.schema_version, '1.0.0');
+            assert.equal(onDisk.previous_hash, 'sha256:cafebabe');
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }

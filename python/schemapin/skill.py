@@ -55,6 +55,12 @@ class SignOptions:
     signer_kid: Optional[str] = None
     skill_name: Optional[str] = None
     expires_in: Optional[timedelta] = None
+    # v1.4 alpha.2: caller-supplied semver string identifying *this* version of
+    # the signed artifact. Surfaced via VerificationResult for policy use.
+    schema_version: Optional[str] = None
+    # v1.4 alpha.2: ``sha256:<hex>`` of the prior signed version's
+    # ``skill_hash``, forming a hash chain. Pair with :func:`verify_chain`.
+    previous_hash: Optional[str] = None
 
 
 class SkillSigner:
@@ -229,9 +235,12 @@ class SkillSigner:
         if options.expires_in is not None:
             expires_at = _format_rfc3339(now + options.expires_in)
 
-        version = (
-            SCHEMAPIN_VERSION_V1_4 if expires_at is not None else SCHEMAPIN_VERSION
+        uses_v1_4_field = (
+            expires_at is not None
+            or options.schema_version is not None
+            or options.previous_hash is not None
         )
+        version = SCHEMAPIN_VERSION_V1_4 if uses_v1_4_field else SCHEMAPIN_VERSION
 
         sig_doc: Dict[str, Any] = {
             "schemapin_version": version,
@@ -243,10 +252,14 @@ class SkillSigner:
             "signer_kid": signer_kid,
             "file_manifest": manifest,
         }
-        # Only emit ``expires_at`` when set, so v1.3 verifiers see an
+        # Only emit v1.4 optional fields when set, so v1.3 verifiers see an
         # unchanged document on the wire.
         if expires_at is not None:
             sig_doc["expires_at"] = expires_at
+        if options.schema_version is not None:
+            sig_doc["schema_version"] = options.schema_version
+        if options.previous_hash is not None:
+            sig_doc["previous_hash"] = options.previous_hash
 
         sig_path = skill_path / SIGNATURE_FILENAME
         sig_path.write_text(
@@ -367,7 +380,8 @@ class SkillSigner:
                 error_message="Signature verification failed",
             )
 
-        # Step 7: Return success, applying optional v1.4 expiration check.
+        # Step 7: Return success, applying optional v1.4 expiration check
+        # and surfacing lineage metadata (schema_version + previous_hash).
         developer_name = discovery.get("developer_name")
         result = VerificationResult(
             valid=True,
@@ -375,7 +389,11 @@ class SkillSigner:
             developer_name=developer_name,
             key_pinning=pinning_status,
         )
-        return result.with_expiration_check(signature_data.get("expires_at"))
+        result = result.with_expiration_check(signature_data.get("expires_at"))
+        return result.with_lineage_metadata(
+            signature_data.get("schema_version"),
+            signature_data.get("previous_hash"),
+        )
 
     @staticmethod
     def verify_skill_offline_with_dns(
@@ -499,3 +517,45 @@ def _format_rfc3339(ts: datetime) -> str:
     utc_ts = ts.astimezone(timezone.utc).replace(microsecond=0)
     # ``isoformat`` would emit ``+00:00``; the spec mandates ``Z``.
     return utc_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class ChainError(ValueError):
+    """Raised by :func:`verify_chain` when the lineage check fails.
+
+    Subclass of :class:`ValueError` so callers can ``except ValueError`` if they
+    don't care about distinguishing chain failures from generic validation.
+    """
+
+
+def verify_chain(current: Dict[str, Any], previous: Dict[str, Any]) -> None:
+    """Verify ``current`` is the legitimate successor of ``previous`` (v1.4 alpha.2).
+
+    Checks ``current["previous_hash"] == previous["skill_hash"]``.
+
+    This is a pure-metadata check -- no cryptography is re-evaluated. Both
+    signatures must already be cryptographically verified separately via
+    :meth:`SkillSigner.verify_skill_offline` for the chain check to be
+    meaningful.
+
+    Use this to defend against rug-pull attacks where an attacker substitutes
+    a schema/skill out-of-band: a legitimate update declares the prior
+    version's hash; an unauthorized substitution either omits ``previous_hash``
+    or points at a hash the verifier has not accepted as a valid ancestor.
+
+    Args:
+        current: The new signature dict (must have ``previous_hash`` set).
+        previous: The prior signature dict (must have ``skill_hash`` set).
+
+    Raises:
+        ChainError: If ``current`` has no ``previous_hash`` field, or if it
+            does not match ``previous["skill_hash"]``.
+    """
+    claimed = current.get("previous_hash")
+    if claimed is None:
+        raise ChainError("current signature has no previous_hash field")
+    expected = previous.get("skill_hash")
+    if claimed != expected:
+        raise ChainError(
+            f"previous_hash mismatch: current.previous_hash = {claimed}, "
+            f"previous.skill_hash = {expected}"
+        )

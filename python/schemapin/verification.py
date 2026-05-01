@@ -51,6 +51,13 @@ class VerificationResult:
     # so callers can use this flag for confidence scoring or policy gating.
     expired: bool = False
     expires_at: Optional[str] = None
+    # v1.4 alpha.2: schema_version + previous_hash lineage metadata, mirrored
+    # from the signature when present. ``schema_version`` is the caller's
+    # semver string identifying *this* version of the artifact. ``previous_hash``
+    # is the ``sha256:<hex>`` of the prior signed version's ``skill_hash``
+    # (pair with ``schemapin.skill.verify_chain`` to confirm lineage).
+    schema_version: Optional[str] = None
+    previous_hash: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to dictionary."""
@@ -75,6 +82,10 @@ class VerificationResult:
             d["expired"] = True
         if self.expires_at is not None:
             d["expires_at"] = self.expires_at
+        if self.schema_version is not None:
+            d["schema_version"] = self.schema_version
+        if self.previous_hash is not None:
+            d["previous_hash"] = self.previous_hash
         return d
 
     def with_expiration_check(
@@ -104,6 +115,25 @@ class VerificationResult:
         if datetime.now(timezone.utc) > ts:
             self.expired = True
             self.warnings.append("signature_expired")
+        return self
+
+    def with_lineage_metadata(
+        self,
+        schema_version: Optional[str],
+        previous_hash: Optional[str],
+    ) -> "VerificationResult":
+        """Copy v1.4 alpha.2 lineage fields onto this result.
+
+        No semantic enforcement -- these are informational fields callers use
+        for version policy and chain verification (see
+        :func:`schemapin.skill.verify_chain`).
+
+        Returns ``self`` for chaining.
+        """
+        if schema_version is not None:
+            self.schema_version = schema_version
+        if previous_hash is not None:
+            self.previous_hash = previous_hash
         return self
 
 

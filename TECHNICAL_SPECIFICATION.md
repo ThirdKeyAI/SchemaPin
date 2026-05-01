@@ -405,3 +405,83 @@ Implementations MUST strip a single trailing dot from the input domain before co
 input "example.com"  → "_schemapin.example.com"
 input "example.com." → "_schemapin.example.com"
 ```
+
+### **18. Schema Version Binding (v1.4)**
+
+SchemaPin v1.4 adds two OPTIONAL fields to signature documents that, together, defend against rug-pull attacks where an attacker substitutes a tampered schema or skill out-of-band under the same name as a previously trusted version.
+
+#### **18.1. Format**
+
+Two new optional fields on `.schemapin.sig` (and on schema signatures by extension):
+
+```json
+{
+  "schemapin_version": "1.4",
+  "skill_name": "example-skill",
+  "skill_hash": "sha256:b7e8...",
+  "signature": "MEUCIQ...",
+  "signed_at": "2026-04-30T12:00:00Z",
+  "schema_version": "2.1.0",
+  "previous_hash": "sha256:a1b2c3...",
+  "domain": "thirdkey.ai",
+  "signer_kid": "thirdkey-2026-04",
+  "file_manifest": { /* ... */ }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `schema_version` | string | Caller-supplied semver string identifying *this* version of the signed artifact. The value is opaque to SchemaPin (treat as a tag). |
+| `previous_hash` | string | `sha256:<hex>` of the *prior* signed version's `skill_hash`. Forms a hash chain across successive signatures. |
+
+Either field, when present, bumps `schemapin_version` to `"1.4"`. Documents without either field MAY remain `"1.3"`.
+
+#### **18.2. Verifier Semantics — Informational**
+
+`schema_version` and `previous_hash` are surfaced on `VerificationResult` (mirroring the same field names) but are **not** automatically enforced. Verifiers MUST:
+
+- Copy `schema_version` from the signature onto the result when present.
+- Copy `previous_hash` from the signature onto the result when present.
+
+Verifiers MUST NOT:
+
+- Reject a signature solely because `schema_version` is absent or unknown.
+- Reject a signature solely because `previous_hash` doesn't match a record the verifier holds (callers do this explicitly via the chain-verification helper below).
+
+#### **18.3. Chain Verification — Opt-In**
+
+Implementations MUST provide a chain-verification helper (named `verify_chain` or the language-equivalent) that takes a `current` signature and a `previous` signature and returns success when:
+
+```
+current.previous_hash == previous.skill_hash
+```
+
+The helper MUST distinguish two failure modes for callers:
+
+| Failure | Condition |
+|---------|-----------|
+| **No previous hash** | `current.previous_hash` is absent / empty. |
+| **Mismatch** | Both fields present but unequal. The error MUST include both the expected and observed values. |
+
+This is a pure-metadata check — no cryptography is re-evaluated. Both signatures MUST already be cryptographically verified independently for the chain check to be meaningful. Skipping the underlying signature verification would let an attacker forge a "chained" successor to any signature they choose.
+
+#### **18.4. Operational Use**
+
+A publisher MAINTAINING a chain SHOULD:
+
+1. After signing v_n, record the resulting `skill_hash`.
+2. When signing v_{n+1}, set `previous_hash = skill_hash_of_v_n`.
+3. Distribute v_{n+1} alongside (or with the ability for verifiers to fetch) v_n.
+
+A verifier APPLYING chain enforcement SHOULD maintain a per-tool `latest_known_hash` pinned alongside the TOFU public key. On encountering a signature with `previous_hash`:
+
+- Match against `latest_known_hash` → accept and roll forward.
+- No match → prompt the operator (similar to TOFU key rotation) before accepting; an unauthorized substitution would either omit `previous_hash` or claim a hash the verifier has not seen.
+
+This pairs cleanly with `schema_version`: the verifier can also enforce monotonic version progression as a policy (e.g., refuse downgrades).
+
+#### **18.5. Backward Compatibility**
+
+- v1.3 verifiers ignore both fields; signatures continue to verify.
+- v1.4 signatures without `schema_version` or `previous_hash` behave identically to v1.3 signatures.
+- The chain-verification helper is opt-in: callers who don't track lineage are unaffected.
