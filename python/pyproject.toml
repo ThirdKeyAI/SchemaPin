@@ -47,12 +47,12 @@ classifiers = [
 requires-python = ">=3.8"
 dependencies = [
     "cryptography==46.0.7",
-    "requests==2.32.4"
+    "requests==2.33.0"
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest==8.4.1",
+    "pytest==9.0.3",
     "pytest-cov==6.2.1",
     "ruff==0.12.4",
     "bandit==1.8.6",
