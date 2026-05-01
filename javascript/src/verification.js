@@ -7,6 +7,45 @@ import { KeyManager, SignatureManager } from './crypto.js';
 import { checkRevocationCombined } from './revocation.js';
 
 /**
+ * Apply a signature `expires_at` check to a verification result (v1.4).
+ *
+ * Mirrors the Rust `VerificationResult::with_expiration_check` behaviour:
+ *
+ * - If `expiresAt` is null/undefined, the result is returned unchanged.
+ * - If parseable and in the past, sets `expired = true`, copies `expiresAt`,
+ *   and pushes a `'signature_expired'` warning. `valid` is left intact —
+ *   expired signatures are *degraded*, not failed.
+ * - If parseable and in the future, just records `expiresAt`.
+ * - If unparseable, pushes a `'signature_expires_at_unparseable'` warning
+ *   (fail-open) and does not mark expired.
+ *
+ * Mutates and returns the same `result` object for ergonomic chaining.
+ *
+ * @param {Object} result - VerificationResult-shaped object
+ * @param {string|null|undefined} expiresAt - ISO 8601 / RFC 3339 timestamp
+ * @returns {Object} The (possibly mutated) result
+ */
+export function applyExpirationCheck(result, expiresAt) {
+    if (expiresAt === null || expiresAt === undefined) {
+        return result;
+    }
+    if (!Array.isArray(result.warnings)) {
+        result.warnings = [];
+    }
+    const ts = new Date(expiresAt);
+    if (Number.isNaN(ts.getTime())) {
+        result.warnings.push('signature_expires_at_unparseable');
+        return result;
+    }
+    result.expires_at = expiresAt;
+    if (ts.getTime() < Date.now()) {
+        result.expired = true;
+        result.warnings.push('signature_expired');
+    }
+    return result;
+}
+
+/**
  * Structured error codes for verification results.
  */
 export const ErrorCode = Object.freeze({

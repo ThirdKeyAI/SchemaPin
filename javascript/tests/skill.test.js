@@ -12,7 +12,8 @@ import { buildRevocationDocument, addRevokedKey, RevocationReason } from '../src
 import { ErrorCode, KeyPinStore } from '../src/verification.js';
 import {
     SIGNATURE_FILENAME, canonicalizeSkill, parseSkillName, loadSignature,
-    signSkill, verifySkillOffline, detectTamperedFiles
+    signSkill, signSkillWithOptions, verifySkillOffline, verifySkillOfflineWithDns,
+    detectTamperedFiles
 } from '../src/skill.js';
 
 // ---------------------------------------------------------------------------
@@ -559,6 +560,196 @@ describe('Load Signature', () => {
                 () => loadSignature(join(dir, 'nosig')),
                 /not found/
             );
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// v1.4: Signature Expiration
+// ---------------------------------------------------------------------------
+
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+describe('Signature Expiration (v1.4)', () => {
+    it('should write expires_at when expiresIn is set', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: ttl\n---\n# hi' });
+            const sig = signSkillWithOptions(skillDir, privateKey, 'example.com', {
+                expiresIn: 30 * ONE_DAY_MS
+            });
+            assert.equal(sig.schemapin_version, '1.4');
+            assert.ok(typeof sig.expires_at === 'string', 'expires_at should be a string');
+            assert.match(sig.expires_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+
+            // Round-trip through disk to ensure the JSON contains expires_at.
+            const onDisk = loadSignature(skillDir);
+            assert.equal(onDisk.expires_at, sig.expires_at);
+            assert.equal(onDisk.schemapin_version, '1.4');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('should omit expires_at when expiresIn is not set', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: no-ttl\n---\n# hi' });
+            const sig = signSkill(skillDir, privateKey, 'example.com');
+            assert.equal(sig.schemapin_version, '1.3');
+            assert.equal(sig.expires_at, undefined);
+
+            const raw = readFileSync(join(skillDir, SIGNATURE_FILENAME), 'utf-8');
+            assert.ok(!raw.includes('expires_at'), 'JSON should omit expires_at');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('should verify with future TTL: valid, not expired, no warning', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey, publicKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: future\n---\n# hi' });
+            signSkillWithOptions(skillDir, privateKey, 'example.com', {
+                expiresIn: 30 * ONE_DAY_MS
+            });
+            const result = verifySkillOffline(skillDir, makeDiscovery(publicKey));
+            assert.equal(result.valid, true);
+            assert.notEqual(result.expired, true);
+            assert.ok(typeof result.expires_at === 'string');
+            assert.ok(
+                !result.warnings.includes('signature_expired'),
+                'no expiration warning expected for future TTL'
+            );
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('should verify with past TTL: valid (degraded), expired=true, warning', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey, publicKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: past\n---\n# hi' });
+
+            // Sign normally, then rewrite the .schemapin.sig with a past expires_at.
+            const sig = signSkill(skillDir, privateKey, 'example.com');
+            const past = new Date(Date.now() - ONE_DAY_MS);
+            const expiredSig = {
+                ...sig,
+                schemapin_version: '1.4',
+                expires_at: past.toISOString().replace(/\.\d{3}Z$/, 'Z')
+            };
+            writeFileSync(
+                join(skillDir, SIGNATURE_FILENAME),
+                JSON.stringify(expiredSig, null, 2) + '\n',
+                'utf-8'
+            );
+
+            const result = verifySkillOffline(skillDir, makeDiscovery(publicKey));
+            assert.equal(result.valid, true, 'expired sigs are degraded, not failed');
+            assert.equal(result.expired, true);
+            assert.ok(result.warnings.includes('signature_expired'));
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('should warn (not fail) when expires_at is unparseable', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey, publicKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: bad\n---\n# hi' });
+
+            const sig = signSkill(skillDir, privateKey, 'example.com');
+            const badSig = { ...sig, expires_at: 'not-a-timestamp' };
+            writeFileSync(
+                join(skillDir, SIGNATURE_FILENAME),
+                JSON.stringify(badSig, null, 2) + '\n',
+                'utf-8'
+            );
+
+            const result = verifySkillOffline(skillDir, makeDiscovery(publicKey));
+            assert.equal(result.valid, true);
+            assert.notEqual(result.expired, true);
+            assert.ok(result.warnings.includes('signature_expires_at_unparseable'));
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// v1.4: verifySkillOfflineWithDns integration
+// ---------------------------------------------------------------------------
+
+describe('verifySkillOfflineWithDns (v1.4)', () => {
+    it('should pass when DNS TXT fingerprint matches discovery', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey, publicKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: dnsok\n---\n# hi' });
+            signSkill(skillDir, privateKey, 'example.com');
+
+            const fp = KeyManager.calculateKeyFingerprint(publicKey).toLowerCase();
+            const txt = { version: 'schemapin1', kid: null, fingerprint: fp };
+
+            const result = verifySkillOfflineWithDns(
+                skillDir, makeDiscovery(publicKey), null, null, null, 'dnsok', txt
+            );
+            assert.equal(result.valid, true);
+            assert.equal(result.domain, 'example.com');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('should fail with DOMAIN_MISMATCH when DNS TXT fingerprint does not match', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey, publicKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: dnsbad\n---\n# hi' });
+            signSkill(skillDir, privateKey, 'example.com');
+
+            const txt = {
+                version: 'schemapin1',
+                kid: null,
+                fingerprint: 'sha256:0000000000000000000000000000000000000000000000000000000000000000'
+            };
+            const result = verifySkillOfflineWithDns(
+                skillDir, makeDiscovery(publicKey), null, null, null, 'dnsbad', txt
+            );
+            assert.equal(result.valid, false);
+            assert.equal(result.error_code, ErrorCode.DOMAIN_MISMATCH);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('should be a no-op when dnsTxt is null', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey, publicKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: nodns\n---\n# hi' });
+            signSkill(skillDir, privateKey, 'example.com');
+
+            const result = verifySkillOfflineWithDns(
+                skillDir, makeDiscovery(publicKey), null, null, null, 'nodns', null
+            );
+            assert.equal(result.valid, true);
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }

@@ -49,7 +49,8 @@ export {
     ErrorCode,
     KeyPinStore,
     verifySchemaOffline,
-    verifySchemaWithResolver
+    verifySchemaWithResolver,
+    applyExpirationCheck
 } from './verification.js';
 
 // v1.3.0 new module
@@ -59,9 +60,19 @@ export {
     parseSkillName,
     loadSignature,
     signSkill,
+    signSkillWithOptions,
     verifySkillOffline,
+    verifySkillOfflineWithDns,
     verifySkillWithResolver,
     detectTamperedFiles
 } from './skill.js';
 
-export const version = '1.3.0';
+// v1.4.0-alpha.1: DNS TXT cross-verification
+export {
+    parseTxtRecord,
+    verifyDnsMatch,
+    txtRecordName,
+    fetchDnsTxt
+} from './dns.js';
+
+export const version = '1.4.0-alpha.1';

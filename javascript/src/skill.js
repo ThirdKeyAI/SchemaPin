@@ -1,9 +1,13 @@
 /**
- * Skill folder signing and verification for SchemaPin v1.3.
+ * Skill folder signing and verification for SchemaPin v1.3 / v1.4.
  *
  * Extends SchemaPin's ECDSA P-256 signing to cover file-based skill folders
  * (AgentSkills spec). Same keys, same .well-known discovery, new canonicalization
  * target.
+ *
+ * v1.4 additions (additive, optional, backward-compatible):
+ *   - `expires_at` field on `.schemapin.sig` via {@link signSkillWithOptions}.
+ *   - DNS TXT cross-verification via {@link verifySkillOfflineWithDns}.
  */
 
 import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
@@ -11,10 +15,24 @@ import { readFileSync, readdirSync, writeFileSync, lstatSync, existsSync } from 
 import { join, relative, basename, resolve } from 'node:path';
 import { KeyManager, SignatureManager } from './crypto.js';
 import { checkRevocationCombined } from './revocation.js';
-import { ErrorCode } from './verification.js';
+import { ErrorCode, applyExpirationCheck } from './verification.js';
+import { verifyDnsMatch } from './dns.js';
 
 export const SIGNATURE_FILENAME = '.schemapin.sig';
-const SCHEMAPIN_VERSION = '1.3';
+const SCHEMAPIN_VERSION_V13 = '1.3';
+const SCHEMAPIN_VERSION_V14 = '1.4';
+
+/**
+ * Format a Date as RFC 3339 UTC with seconds precision and `Z` suffix.
+ * Mirrors Rust's `chrono::SecondsFormat::Secs` rendering.
+ *
+ * @param {Date} date
+ * @returns {string} e.g. `2026-04-30T21:41:50Z`
+ */
+function toRfc3339Seconds(date) {
+    const iso = date.toISOString(); // 2026-04-30T21:41:50.123Z
+    return iso.replace(/\.\d{3}Z$/, 'Z');
+}
 
 /**
  * Recursively walk a directory in sorted order, collecting file entries.
@@ -159,6 +177,9 @@ export function loadSignature(skillDir) {
 /**
  * Canonicalize a skill directory, sign, and write .schemapin.sig.
  *
+ * v1.3 entry point. Preserved for backward compatibility — internally this is
+ * a thin wrapper over {@link signSkillWithOptions}.
+ *
  * @param {string} skillDir - Path to the skill folder
  * @param {string} privateKeyPem - PEM-encoded ECDSA P-256 private key
  * @param {string} domain - Signing domain (e.g. "thirdkey.ai")
@@ -167,6 +188,39 @@ export function loadSignature(skillDir) {
  * @returns {Object} The signature document that was written
  */
 export function signSkill(skillDir, privateKeyPem, domain, signerKid = null, skillName = null) {
+    return signSkillWithOptions(skillDir, privateKeyPem, domain, {
+        signerKid,
+        skillName
+    });
+}
+
+/**
+ * Canonicalize a skill directory, sign, and write .schemapin.sig with extended
+ * options (v1.4+).
+ *
+ * When `options.expiresIn` is set (milliseconds), an `expires_at` ISO 8601
+ * timestamp (RFC 3339 with `Z` suffix, second precision) is written and the
+ * `schemapin_version` field is bumped from `"1.3"` to `"1.4"`. Verifiers past
+ * that timestamp emit a `signature_expired` warning instead of failing — see
+ * {@link verifySkillOffline}.
+ *
+ * Options:
+ *   - `signerKid` - Override the signer key id (KID). Defaults to the
+ *     discovery fingerprint of the public key.
+ *   - `skillName` - Override the skill name. Defaults to the SKILL.md
+ *     frontmatter `name:` or directory basename.
+ *   - `expiresIn` - Time-to-live for the signature, in milliseconds. When set,
+ *     an `expires_at` field is written.
+ *
+ * @param {string} skillDir - Path to the skill folder
+ * @param {string} privateKeyPem - PEM-encoded ECDSA P-256 private key
+ * @param {string} domain - Signing domain
+ * @param {{ signerKid?: string|null, skillName?: string|null, expiresIn?: number|null }} [options]
+ * @returns {Object} The signature document that was written
+ */
+export function signSkillWithOptions(skillDir, privateKeyPem, domain, options = {}) {
+    const { signerKid: optSignerKid = null, skillName: optSkillName = null, expiresIn = null } = options;
+
     const skillPath = resolve(skillDir);
     const privateKey = KeyManager.loadPrivateKeyPem(privateKeyPem);
 
@@ -177,26 +231,53 @@ export function signSkill(skillDir, privateKeyPem, domain, signerKid = null, ski
 
     const { rootHash, manifest } = canonicalizeSkill(skillPath);
 
-    if (skillName === null || skillName === undefined) {
-        skillName = parseSkillName(skillPath);
-    }
+    const skillName = (optSkillName === null || optSkillName === undefined)
+        ? parseSkillName(skillPath)
+        : optSkillName;
 
-    if (signerKid === null || signerKid === undefined) {
-        signerKid = KeyManager.calculateKeyFingerprint(publicKeyPem);
-    }
+    const signerKid = (optSignerKid === null || optSignerKid === undefined)
+        ? KeyManager.calculateKeyFingerprint(publicKeyPem)
+        : optSignerKid;
 
     const signatureB64 = SignatureManager.signHash(rootHash, privateKey);
 
+    const now = new Date();
+    let expiresAt = null;
+    if (expiresIn !== null && expiresIn !== undefined) {
+        expiresAt = toRfc3339Seconds(new Date(now.getTime() + expiresIn));
+    }
+
+    const version = expiresAt !== null ? SCHEMAPIN_VERSION_V14 : SCHEMAPIN_VERSION_V13;
+
     const sigDoc = {
-        schemapin_version: SCHEMAPIN_VERSION,
+        schemapin_version: version,
         skill_name: skillName,
         skill_hash: `sha256:${rootHash.toString('hex')}`,
         signature: signatureB64,
-        signed_at: new Date().toISOString(),
+        signed_at: toRfc3339Seconds(now),
         domain: domain,
         signer_kid: signerKid,
         file_manifest: manifest
     };
+    if (expiresAt !== null) {
+        // Insert expires_at after signed_at to keep field order stable.
+        sigDoc.expires_at = expiresAt;
+        // Re-serialize in the documented field order.
+        const ordered = {
+            schemapin_version: sigDoc.schemapin_version,
+            skill_name: sigDoc.skill_name,
+            skill_hash: sigDoc.skill_hash,
+            signature: sigDoc.signature,
+            signed_at: sigDoc.signed_at,
+            expires_at: sigDoc.expires_at,
+            domain: sigDoc.domain,
+            signer_kid: sigDoc.signer_kid,
+            file_manifest: sigDoc.file_manifest
+        };
+        const sigPath = join(skillPath, SIGNATURE_FILENAME);
+        writeFileSync(sigPath, JSON.stringify(ordered, null, 2) + '\n', 'utf-8');
+        return ordered;
+    }
 
     const sigPath = join(skillPath, SIGNATURE_FILENAME);
     writeFileSync(sigPath, JSON.stringify(sigDoc, null, 2) + '\n', 'utf-8');
@@ -332,7 +413,52 @@ export function verifySkillOffline(skillDir, discovery, signatureData = null, re
         warnings: []
     };
 
+    // v1.4: apply signature expiration check (degraded, not failed).
+    if (signatureData.expires_at !== null && signatureData.expires_at !== undefined) {
+        applyExpirationCheck(resultObj, signatureData.expires_at);
+    }
+
     return resultObj;
+}
+
+/**
+ * Verify a signed skill folder offline with an optional DNS TXT cross-check (v1.4).
+ *
+ * Behaves identically to {@link verifySkillOffline}, then — when `dnsTxt` is
+ * non-null — verifies that the DNS TXT record's fingerprint matches the
+ * discovery key. A mismatch converts the result into a hard failure with
+ * `ErrorCode.DOMAIN_MISMATCH`. When `dnsTxt` is null, behaviour is unchanged
+ * (DNS TXT is an optional, additive trust signal).
+ *
+ * @param {string} skillDir - Path to skill directory
+ * @param {Object} discovery - Well-known discovery document
+ * @param {Object|null} signatureData - Pre-loaded signature data (loads from file if null)
+ * @param {Object|null} revocationDoc - Standalone revocation document
+ * @param {KeyPinStore|null} pinStore - TOFU pin store
+ * @param {string|null} toolId - Tool identifier for pinning
+ * @param {Object|null} dnsTxt - Parsed DNS TXT record (`{ version, kid, fingerprint }`)
+ * @returns {Object} Verification result
+ */
+export function verifySkillOfflineWithDns(skillDir, discovery, signatureData = null, revocationDoc = null, pinStore = null, toolId = null, dnsTxt = null) {
+    const result = verifySkillOffline(skillDir, discovery, signatureData, revocationDoc, pinStore, toolId);
+
+    if (!result.valid) {
+        return result;
+    }
+    if (dnsTxt === null || dnsTxt === undefined) {
+        return result;
+    }
+    try {
+        verifyDnsMatch(discovery, dnsTxt);
+        return result;
+    } catch (e) {
+        return {
+            valid: false,
+            domain: result.domain,
+            error_code: ErrorCode.DOMAIN_MISMATCH,
+            error_message: e.message
+        };
+    }
 }
 
 /**
