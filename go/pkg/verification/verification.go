@@ -65,6 +65,14 @@ type VerificationResult struct {
 	Expired bool `json:"expired,omitempty"`
 	// ExpiresAt mirrors the signature's expires_at value when present.
 	ExpiresAt string `json:"expires_at,omitempty"`
+	// SchemaVersion (v1.4 alpha.2) mirrors the signature's schema_version
+	// field when present -- a caller-supplied semver string identifying
+	// *this* version of the artifact, surfaced for policy use.
+	SchemaVersion string `json:"schema_version,omitempty"`
+	// PreviousHash (v1.4 alpha.2) mirrors the signature's previous_hash
+	// field when present -- sha256:<hex> of the prior signed version's
+	// SkillHash. Pair with skill.VerifyChain to confirm lineage.
+	PreviousHash string `json:"previous_hash,omitempty"`
 }
 
 // WithExpirationCheck applies a v1.4 signature expiration check to a
@@ -93,6 +101,26 @@ func (r *VerificationResult) WithExpirationCheck(expiresAt string) *Verification
 	if time.Now().UTC().After(ts.UTC()) {
 		r.Expired = true
 		r.Warnings = append(r.Warnings, WarningSignatureExpired)
+	}
+	return r
+}
+
+// WithLineageMetadata copies v1.4 alpha.2 schema_version and previous_hash
+// fields onto a successful VerificationResult and returns the receiver.
+//
+// No semantic enforcement -- these are informational fields callers use for
+// version policy and chain verification (see skill.VerifyChain).
+//
+// The receiver may be nil; in that case it is returned unchanged.
+func (r *VerificationResult) WithLineageMetadata(schemaVersion, previousHash string) *VerificationResult {
+	if r == nil {
+		return r
+	}
+	if schemaVersion != "" {
+		r.SchemaVersion = schemaVersion
+	}
+	if previousHash != "" {
+		r.PreviousHash = previousHash
 	}
 	return r
 }

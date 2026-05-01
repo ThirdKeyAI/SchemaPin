@@ -24,9 +24,15 @@ use crate::verification::{KeyPinningStatus, VerificationResult};
 
 /// Signature metadata written to `.schemapin.sig`.
 ///
-/// `expires_at` is an optional v1.4 field. When present, verifiers treat
-/// signatures past the expiration as *degraded* (warning) rather than a
-/// hard failure — see [`verify_skill_offline`].
+/// Optional v1.4 fields:
+/// - `expires_at` — verifiers past the expiration emit a `signature_expired` warning
+///   (see [`verify_skill_offline`]); they do not fail.
+/// - `schema_version` — caller-supplied semver string identifying *this* version of
+///   the signed artifact (e.g. `"2.1.0"`). Returned via [`crate::verification::VerificationResult`]
+///   so consumers can apply their own version policy.
+/// - `previous_hash` — SHA-256 hash (`sha256:<hex>`) of the *prior* signed version's
+///   `skill_hash`, forming a hash chain. Use [`verify_chain`] to confirm a new signature
+///   descends from a specific prior signature.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillSignature {
     pub schemapin_version: String,
@@ -36,6 +42,10 @@ pub struct SkillSignature {
     pub signed_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_hash: Option<String>,
     pub domain: String,
     pub signer_kid: String,
     pub file_manifest: BTreeMap<String, String>,
@@ -196,6 +206,12 @@ pub struct SignOptions<'a> {
     pub skill_name: Option<&'a str>,
     /// Time-to-live for the signature. When set, an `expires_at` field is written.
     pub expires_in: Option<chrono::Duration>,
+    /// Caller-supplied semver string identifying *this* version of the signed artifact.
+    /// Written to `schema_version` and surfaced on [`crate::verification::VerificationResult`].
+    pub schema_version: Option<&'a str>,
+    /// `sha256:<hex>` hash of the *prior* signed version's `skill_hash`, forming a chain.
+    /// When set, written to `previous_hash`. Pair with [`verify_chain`] at verify time.
+    pub previous_hash: Option<&'a str>,
 }
 
 impl<'a> SignOptions<'a> {
@@ -215,6 +231,16 @@ impl<'a> SignOptions<'a> {
 
     pub fn with_expires_in(mut self, ttl: chrono::Duration) -> Self {
         self.expires_in = Some(ttl);
+        self
+    }
+
+    pub fn with_schema_version(mut self, version: &'a str) -> Self {
+        self.schema_version = Some(version);
+        self
+    }
+
+    pub fn with_previous_hash(mut self, hash: &'a str) -> Self {
+        self.previous_hash = Some(hash);
         self
     }
 }
@@ -238,6 +264,8 @@ pub fn sign_skill(
             signer_kid,
             skill_name,
             expires_in: None,
+            schema_version: None,
+            previous_hash: None,
         },
     )
 }
@@ -281,7 +309,14 @@ pub fn sign_skill_with_options(
         .expires_in
         .map(|ttl| (now + ttl).to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
 
-    let version = if expires_at.is_some() { "1.4" } else { "1.3" };
+    let schema_version = options.schema_version.map(str::to_string);
+    let previous_hash = options.previous_hash.map(str::to_string);
+
+    // Any v1.4 optional field bumps the version stamp; pure v1.3 sigs stay "1.3"
+    // for byte-stable backward compatibility.
+    let uses_v1_4_field =
+        expires_at.is_some() || schema_version.is_some() || previous_hash.is_some();
+    let version = if uses_v1_4_field { "1.4" } else { "1.3" };
 
     let sig_doc = SkillSignature {
         schemapin_version: version.to_string(),
@@ -290,6 +325,8 @@ pub fn sign_skill_with_options(
         signature: signature_b64,
         signed_at: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         expires_at,
+        schema_version,
+        previous_hash,
         domain: domain.to_string(),
         signer_kid: kid,
         file_manifest: manifest,
@@ -431,6 +468,58 @@ pub fn verify_skill_offline(
 
     VerificationResult::success(&sig.domain, discovery.developer_name.as_deref(), pin_status)
         .with_expiration_check(sig.expires_at.as_deref())
+        .with_lineage_metadata(sig.schema_version.as_deref(), sig.previous_hash.as_deref())
+}
+
+/// Errors returned by [`verify_chain`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChainError {
+    /// `current.previous_hash` is absent — the new signature doesn't claim a predecessor.
+    NoPreviousHash,
+    /// `current.previous_hash` is present but doesn't match `previous.skill_hash`.
+    Mismatch { expected: String, got: String },
+}
+
+impl std::fmt::Display for ChainError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoPreviousHash => write!(f, "current signature has no previous_hash field"),
+            Self::Mismatch { expected, got } => write!(
+                f,
+                "previous_hash mismatch: current.previous_hash = {}, previous.skill_hash = {}",
+                got, expected
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ChainError {}
+
+/// Verify that `current` is the legitimate successor of `previous` via the
+/// `previous_hash` lineage chain (v1.4 alpha.2).
+///
+/// Returns `Ok(())` when `current.previous_hash == Some(previous.skill_hash)`.
+///
+/// This is a pure-metadata check — no cryptography is re-evaluated. Both signatures
+/// must already be cryptographically verified separately via [`verify_skill_offline`]
+/// for the chain check to be meaningful.
+///
+/// Use this to defend against rug-pull attacks where an attacker substitutes a
+/// schema/skill out-of-band: a legitimate update declares the prior version's hash;
+/// an unauthorized substitution either omits `previous_hash` or points at a hash
+/// the verifier hasn't accepted as a valid ancestor.
+pub fn verify_chain(current: &SkillSignature, previous: &SkillSignature) -> Result<(), ChainError> {
+    let Some(claimed) = current.previous_hash.as_deref() else {
+        return Err(ChainError::NoPreviousHash);
+    };
+    if claimed == previous.skill_hash {
+        Ok(())
+    } else {
+        Err(ChainError::Mismatch {
+            expected: previous.skill_hash.clone(),
+            got: claimed.to_string(),
+        })
+    }
 }
 
 /// Verify a skill folder offline with an additional DNS TXT cross-check (v1.4).
@@ -1161,5 +1250,142 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w == "signature_expires_at_unparseable"));
+    }
+
+    // ── v1.4 alpha.2: schema_version + previous_hash lineage tests ──
+
+    #[test]
+    fn test_sign_with_schema_version_writes_field() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: ver\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let opts = SignOptions::new().with_schema_version("2.1.0");
+        let sig =
+            sign_skill_with_options(dir.path(), &kp.private_key_pem, "example.com", opts).unwrap();
+        assert_eq!(sig.schema_version.as_deref(), Some("2.1.0"));
+        assert_eq!(sig.schemapin_version, "1.4");
+        let on_disk = load_signature(dir.path()).unwrap();
+        assert_eq!(on_disk.schema_version.as_deref(), Some("2.1.0"));
+    }
+
+    #[test]
+    fn test_sign_without_schema_version_omits_field() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: noversion\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let sig = sign_skill(dir.path(), &kp.private_key_pem, "example.com", None, None).unwrap();
+        assert!(sig.schema_version.is_none());
+        let raw = fs::read_to_string(dir.path().join(".schemapin.sig")).unwrap();
+        assert!(
+            !raw.contains("schema_version"),
+            "JSON should omit schema_version"
+        );
+        assert!(
+            !raw.contains("previous_hash"),
+            "JSON should omit previous_hash"
+        );
+    }
+
+    #[test]
+    fn test_sign_with_previous_hash_writes_field() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: chained\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let opts = SignOptions::new().with_previous_hash("sha256:abcdef");
+        let sig =
+            sign_skill_with_options(dir.path(), &kp.private_key_pem, "example.com", opts).unwrap();
+        assert_eq!(sig.previous_hash.as_deref(), Some("sha256:abcdef"));
+        assert_eq!(sig.schemapin_version, "1.4");
+    }
+
+    #[test]
+    fn test_verify_chain_matches() {
+        let dir1 = tempdir().unwrap();
+        make_skill_dir(dir1.path(), &[("SKILL.md", b"---\nname: v1\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let v1 = sign_skill(dir1.path(), &kp.private_key_pem, "example.com", None, None).unwrap();
+
+        let dir2 = tempdir().unwrap();
+        make_skill_dir(dir2.path(), &[("SKILL.md", b"---\nname: v2\n---\n")]);
+        let opts = SignOptions::new().with_previous_hash(&v1.skill_hash);
+        let v2 =
+            sign_skill_with_options(dir2.path(), &kp.private_key_pem, "example.com", opts).unwrap();
+
+        verify_chain(&v2, &v1).unwrap();
+    }
+
+    #[test]
+    fn test_verify_chain_no_previous_hash_errors() {
+        let dir1 = tempdir().unwrap();
+        let dir2 = tempdir().unwrap();
+        make_skill_dir(dir1.path(), &[("SKILL.md", b"---\nname: v1\n---\n")]);
+        make_skill_dir(dir2.path(), &[("SKILL.md", b"---\nname: v2\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let v1 = sign_skill(dir1.path(), &kp.private_key_pem, "example.com", None, None).unwrap();
+        let v2 = sign_skill(dir2.path(), &kp.private_key_pem, "example.com", None, None).unwrap();
+
+        // v2 has no previous_hash → chain check rejects
+        assert_eq!(verify_chain(&v2, &v1), Err(ChainError::NoPreviousHash));
+    }
+
+    #[test]
+    fn test_verify_chain_mismatch_errors() {
+        let dir1 = tempdir().unwrap();
+        let dir2 = tempdir().unwrap();
+        make_skill_dir(dir1.path(), &[("SKILL.md", b"---\nname: v1\n---\n")]);
+        make_skill_dir(dir2.path(), &[("SKILL.md", b"---\nname: v2\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let v1 = sign_skill(dir1.path(), &kp.private_key_pem, "example.com", None, None).unwrap();
+        let opts = SignOptions::new().with_previous_hash("sha256:not-the-real-prior-hash");
+        let v2 =
+            sign_skill_with_options(dir2.path(), &kp.private_key_pem, "example.com", opts).unwrap();
+
+        match verify_chain(&v2, &v1).unwrap_err() {
+            ChainError::Mismatch { expected, got } => {
+                assert_eq!(expected, v1.skill_hash);
+                assert_eq!(got, "sha256:not-the-real-prior-hash");
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_verify_skill_offline_surfaces_lineage_metadata() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: surfaced\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let opts = SignOptions::new()
+            .with_schema_version("3.2.1")
+            .with_previous_hash("sha256:deadbeef");
+        sign_skill_with_options(dir.path(), &kp.private_key_pem, "example.com", opts).unwrap();
+
+        let discovery = build_well_known_response(&kp.public_key_pem, Some("Dev"), vec![], "1.4");
+        let result =
+            verify_skill_offline(dir.path(), &discovery, None, None, None, Some("surfaced"));
+        assert!(result.valid);
+        assert_eq!(result.schema_version.as_deref(), Some("3.2.1"));
+        assert_eq!(result.previous_hash.as_deref(), Some("sha256:deadbeef"));
+    }
+
+    #[test]
+    fn test_combined_v1_4_fields_all_round_trip() {
+        let dir = tempdir().unwrap();
+        make_skill_dir(dir.path(), &[("SKILL.md", b"---\nname: combo\n---\n")]);
+        let kp = generate_key_pair().unwrap();
+        let opts = SignOptions::new()
+            .with_expires_in(chrono::Duration::days(180))
+            .with_schema_version("1.0.0")
+            .with_previous_hash("sha256:cafebabe");
+        let sig =
+            sign_skill_with_options(dir.path(), &kp.private_key_pem, "example.com", opts).unwrap();
+        assert_eq!(sig.schemapin_version, "1.4");
+        assert!(sig.expires_at.is_some());
+        assert_eq!(sig.schema_version.as_deref(), Some("1.0.0"));
+        assert_eq!(sig.previous_hash.as_deref(), Some("sha256:cafebabe"));
+
+        let on_disk = load_signature(dir.path()).unwrap();
+        assert_eq!(on_disk.expires_at, sig.expires_at);
+        assert_eq!(on_disk.schema_version, sig.schema_version);
+        assert_eq!(on_disk.previous_hash, sig.previous_hash);
     }
 }

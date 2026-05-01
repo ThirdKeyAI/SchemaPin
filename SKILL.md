@@ -1,8 +1,8 @@
 ---
 name: schemapin
 title: SchemaPin
-description: Cryptographic tool schema verification to prevent MCP Rug Pull attacks — ECDSA P-256 signing, SHA-256 hashing, TOFU key pinning, .well-known discovery, signed revocation documents, and (v1.4-alpha, Rust) signature expiration plus DNS TXT cross-verification
-version: 1.4.0-alpha.1
+description: Cryptographic tool schema verification to prevent MCP Rug Pull attacks — ECDSA P-256 signing, SHA-256 hashing, TOFU key pinning, .well-known discovery, signed revocation documents, and (v1.4-alpha across all four languages) signature expiration, DNS TXT cross-verification, and schema version binding (lineage chain)
+version: 1.4.0-alpha.2
 stable_version: 1.3.0
 ---
 
@@ -299,7 +299,59 @@ tampered = detect_tampered_files(current_manifest, sig.file_manifest)
 
 ---
 
-## v1.4.0-alpha.1 Features (Rust only — preview)
+## v1.4.0-alpha.2 Features (all four languages — preview)
+
+### Schema Version Binding (`schema_version` + `previous_hash`)
+
+Two additive optional fields on `.schemapin.sig` give publishers a way to declare lineage and verifiers a way to enforce it. Defends against rug-pull substitutions where an attacker swaps a tampered schema under the same name.
+
+**Rust:**
+```rust
+use schemapin::skill::{sign_skill_with_options, SignOptions, verify_chain};
+
+let v1 = sign_skill_with_options(&dir_v1, &priv_pem, "example.com",
+    SignOptions::new().with_schema_version("1.0.0"))?;
+
+let v2 = sign_skill_with_options(&dir_v2, &priv_pem, "example.com",
+    SignOptions::new()
+        .with_schema_version("1.1.0")
+        .with_previous_hash(&v1.skill_hash))?;
+
+verify_chain(&v2, &v1)?;  // Pure metadata check; both must already be cryptographically verified.
+```
+
+**Python:**
+```python
+from schemapin.skill import SkillSigner, SignOptions, verify_chain
+v2 = SkillSigner.sign_with_options(dir_v2, priv_pem, "example.com",
+    SignOptions(schema_version="1.1.0", previous_hash=v1["skill_hash"]))
+verify_chain(v2, v1)
+```
+
+**JavaScript:**
+```javascript
+import { signSkillWithOptions, verifyChain } from 'schemapin';
+const v2 = signSkillWithOptions(dirV2, privPem, 'example.com',
+    { schemaVersion: '1.1.0', previousHash: v1.skill_hash });
+verifyChain(v2, v1);
+```
+
+**Go:**
+```go
+v2, _ := skill.SignSkillWithOptions(dirV2, privPEM, "example.com", skill.SignOptions{
+    SchemaVersion: "1.1.0",
+    PreviousHash:  v1.SkillHash,
+})
+err := skill.VerifyChain(v2, v1)
+```
+
+`VerificationResult` gains `schema_version` and `previous_hash` fields — verifiers surface these informationally. Chain enforcement is opt-in via `verify_chain` (or the language equivalent). `ChainError` distinguishes two failure modes: `no_previous_hash` (current sig lacks the field) and `mismatch` (both present but unequal — likely substitution).
+
+Full guide: **[docs/schema-version-binding.md](docs/schema-version-binding.md)**.
+
+---
+
+## v1.4.0-alpha.1 Features (all four languages — preview)
 
 Both features are **additive optional fields/records**: v1.3 verifiers ignore them, and v1.4 signatures without these fields behave identically to v1.3. Python, JavaScript, and Go ports follow in subsequent alphas before the v1.4.0 release.
 

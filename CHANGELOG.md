@@ -5,6 +5,32 @@ All notable changes to the SchemaPin project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0-alpha.2] - 2026-05-01
+
+### Added
+
+#### Schema Version Binding (`schema_version` + `previous_hash`) — All Four Languages
+
+- **`SkillSignature.schema_version`**: Optional caller-supplied semver string identifying *this* version of the signed artifact. Opaque to SchemaPin (treated as a tag); surfaced via `VerificationResult.schema_version` for policy use.
+- **`SkillSignature.previous_hash`**: Optional `sha256:<hex>` of the prior signed version's `skill_hash`. Forms a hash chain across successive signatures.
+- **`SignOptions.with_schema_version` / `SignOptions.with_previous_hash`** (Rust); equivalent fields on the Python dataclass, JS options object, and Go struct. Either field bumps `schemapin_version` to `"1.4"`.
+- **`verify_chain(current, previous)`**: New chain-verification helper in every language. Returns success when `current.previous_hash == previous.skill_hash`. Distinguishes two failure modes — `NoPreviousHash` (current sig lacks the field) and `Mismatch` (both present but unequal). Pure-metadata check; cryptographic verification of both signatures must happen separately.
+- **`VerificationResult.schema_version` / `VerificationResult.previous_hash`**: New optional fields, mirrored from the signature when present. No automatic enforcement — chain verification is opt-in via `verify_chain`.
+- **`ChainError`**: Per-language error/exception type carrying the kind (`no_previous_hash` / `mismatch`) and, on mismatch, the expected and observed values.
+
+#### Specification Updates (v1.4)
+
+- **Section 18**: Schema Version Binding — wire format, informational verifier semantics for `schema_version` and `previous_hash`, opt-in chain verification, operational pattern (per-tool `latest_known_hash` pinned alongside the TOFU key), backward compatibility.
+
+### Changed
+
+- All four implementations bumped to `1.4.0-alpha.2` (`1.4.0a2` for Python per PEP 440).
+
+### Notes
+
+- Item #2 from the v1.4 roadmap. The full v1.4.0 release also requires items 4–8 (canonicalization id, A2A context, A2A trust bundles, scan-aware signatures, cross-agent schema cache).
+- Both new fields are additive optional fields — v1.3 verifiers ignore them, and v1.4 signatures without lineage opts behave identically to v1.3 signatures.
+
 ## [1.4.0-alpha.1] - 2026-04-30
 
 ### Added

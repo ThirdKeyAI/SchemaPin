@@ -46,9 +46,13 @@ const (
 
 // SkillSignature represents the JSON structure of a .schemapin.sig file.
 //
-// ExpiresAt is an optional v1.4 field. When present, verifiers treat
-// signatures past the expiration as degraded (warning) rather than a hard
-// failure -- see VerifySkillOffline.
+// Optional v1.4 fields:
+//   - ExpiresAt: when present, verifiers treat signatures past the expiration
+//     as degraded (warning) rather than a hard failure -- see VerifySkillOffline.
+//   - SchemaVersion: caller-supplied semver string identifying *this* version
+//     of the signed artifact. Surfaced via VerificationResult for policy use.
+//   - PreviousHash: sha256:<hex> of the prior signed version's SkillHash,
+//     forming a hash chain. Pair with VerifyChain.
 type SkillSignature struct {
 	SchemapinVersion string            `json:"schemapin_version"`
 	SkillName        string            `json:"skill_name"`
@@ -56,6 +60,8 @@ type SkillSignature struct {
 	Signature        string            `json:"signature"`
 	SignedAt         string            `json:"signed_at"`
 	ExpiresAt        string            `json:"expires_at,omitempty"`
+	SchemaVersion    string            `json:"schema_version,omitempty"`
+	PreviousHash     string            `json:"previous_hash,omitempty"`
 	Domain           string            `json:"domain"`
 	SignerKid        string            `json:"signer_kid"`
 	FileManifest     map[string]string `json:"file_manifest"`
@@ -79,6 +85,13 @@ type SignOptions struct {
 	// bumped to "1.4". A zero value (the default) writes no expires_at and
 	// keeps the version at "1.3".
 	ExpiresIn time.Duration
+	// SchemaVersion is a caller-supplied semver string identifying *this*
+	// version of the signed artifact (v1.4 alpha.2). Empty omits the field.
+	SchemaVersion string
+	// PreviousHash is sha256:<hex> of the prior signed version's SkillHash,
+	// forming a hash chain (v1.4 alpha.2). Pair with VerifyChain at verify
+	// time. Empty omits the field.
+	PreviousHash string
 }
 
 // TamperedFiles holds the result of comparing two file manifests.
@@ -309,10 +322,15 @@ func SignSkillWithOptions(skillDir, privateKeyPEM, domain string, options SignOp
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
-	version := schemapinVersionV13
 	expiresAt := ""
 	if options.ExpiresIn > 0 {
 		expiresAt = now.Add(options.ExpiresIn).UTC().Format(time.RFC3339)
+	}
+
+	// Any v1.4 optional field bumps the version stamp; pure v1.3 sigs stay
+	// "1.3" for byte-stable backward compatibility.
+	version := schemapinVersionV13
+	if expiresAt != "" || options.SchemaVersion != "" || options.PreviousHash != "" {
 		version = schemapinVersionV14
 	}
 
@@ -323,6 +341,8 @@ func SignSkillWithOptions(skillDir, privateKeyPEM, domain string, options SignOp
 		Signature:        signatureB64,
 		SignedAt:         now.Format(time.RFC3339),
 		ExpiresAt:        expiresAt,
+		SchemaVersion:    options.SchemaVersion,
+		PreviousHash:     options.PreviousHash,
 		Domain:           domain,
 		SignerKid:        signerKid,
 		FileManifest:     manifest,
@@ -467,7 +487,10 @@ func VerifySkillOffline(
 
 	// v1.4: apply optional signature expiration check. No-op when ExpiresAt
 	// is empty; otherwise may set Expired/ExpiresAt and append a warning.
-	return result.WithExpirationCheck(sig.ExpiresAt)
+	result = result.WithExpirationCheck(sig.ExpiresAt)
+	// v1.4 alpha.2: surface lineage metadata (informational; chain enforcement
+	// is opt-in via VerifyChain).
+	return result.WithLineageMetadata(sig.SchemaVersion, sig.PreviousHash)
 }
 
 // VerifySkillWithResolver verifies a signed skill folder using a resolver
@@ -523,4 +546,62 @@ func DetectTamperedFiles(current, signed map[string]string) *TamperedFiles {
 	sort.Strings(result.Removed)
 
 	return result
+}
+
+// ChainErrorKind enumerates VerifyChain failure modes.
+type ChainErrorKind int
+
+const (
+	// ChainErrorNoPreviousHash indicates current.PreviousHash is empty.
+	ChainErrorNoPreviousHash ChainErrorKind = iota + 1
+	// ChainErrorMismatch indicates current.PreviousHash != previous.SkillHash.
+	ChainErrorMismatch
+)
+
+// ChainError is returned by VerifyChain on lineage failure.
+type ChainError struct {
+	Kind     ChainErrorKind
+	Expected string
+	Got      string
+}
+
+func (e *ChainError) Error() string {
+	switch e.Kind {
+	case ChainErrorNoPreviousHash:
+		return "current signature has no previous_hash field"
+	case ChainErrorMismatch:
+		return fmt.Sprintf(
+			"previous_hash mismatch: current.previous_hash = %s, previous.skill_hash = %s",
+			e.Got, e.Expected,
+		)
+	default:
+		return "unknown chain error"
+	}
+}
+
+// VerifyChain verifies that current is the legitimate successor of previous
+// via the previous_hash lineage chain (v1.4 alpha.2).
+//
+// Checks current.PreviousHash == previous.SkillHash.
+//
+// This is a pure-metadata check -- no cryptography is re-evaluated. Both
+// signatures must already be cryptographically verified separately via
+// VerifySkillOffline for the chain check to be meaningful.
+//
+// Use this to defend against rug-pull attacks where an attacker substitutes
+// a schema/skill out-of-band: a legitimate update declares the prior version's
+// hash; an unauthorized substitution either omits previous_hash or points at
+// a hash the verifier has not accepted as a valid ancestor.
+func VerifyChain(current, previous *SkillSignature) error {
+	if current.PreviousHash == "" {
+		return &ChainError{Kind: ChainErrorNoPreviousHash}
+	}
+	if current.PreviousHash != previous.SkillHash {
+		return &ChainError{
+			Kind:     ChainErrorMismatch,
+			Expected: previous.SkillHash,
+			Got:      current.PreviousHash,
+		}
+	}
+	return nil
 }
