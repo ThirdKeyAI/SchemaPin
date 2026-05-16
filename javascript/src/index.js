@@ -50,8 +50,21 @@ export {
     KeyPinStore,
     verifySchemaOffline,
     verifySchemaWithResolver,
-    applyExpirationCheck
+    applyExpirationCheck,
+    // v1.4 alpha.3
+    CANONICALIZATION_V1,
+    checkCanonicalization,
+    A2A_MAX_DELEGATION_DEPTH,
+    verifySchemaForA2A
 } from './verification.js';
+
+// v1.4 alpha.3: A2A verification context
+export {
+    A2aVerificationContext,
+    a2aIsUnrestricted,
+    a2aAllows,
+    a2aIntersect
+} from './a2a.js';
 
 // v1.3.0 new module
 export {

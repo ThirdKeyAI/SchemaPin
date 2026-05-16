@@ -54,14 +54,18 @@ const (
 //   - PreviousHash: sha256:<hex> of the prior signed version's SkillHash,
 //     forming a hash chain. Pair with VerifyChain.
 type SkillSignature struct {
-	SchemapinVersion string            `json:"schemapin_version"`
-	SkillName        string            `json:"skill_name"`
-	SkillHash        string            `json:"skill_hash"`
-	Signature        string            `json:"signature"`
-	SignedAt         string            `json:"signed_at"`
-	ExpiresAt        string            `json:"expires_at,omitempty"`
-	SchemaVersion    string            `json:"schema_version,omitempty"`
-	PreviousHash     string            `json:"previous_hash,omitempty"`
+	SchemapinVersion string `json:"schemapin_version"`
+	SkillName        string `json:"skill_name"`
+	SkillHash        string `json:"skill_hash"`
+	Signature        string `json:"signature"`
+	SignedAt         string `json:"signed_at"`
+	ExpiresAt        string `json:"expires_at,omitempty"`
+	SchemaVersion    string `json:"schema_version,omitempty"`
+	PreviousHash     string `json:"previous_hash,omitempty"`
+	// Canonicalization (v1.4 alpha.3) names the algorithm used to produce
+	// the signing input. Absence is wire-equivalent to "schemapin-v1".
+	// Verifiers MUST reject any other value as ErrCanonicalizationUnsupported.
+	Canonicalization string            `json:"canonicalization,omitempty"`
 	Domain           string            `json:"domain"`
 	SignerKid        string            `json:"signer_kid"`
 	FileManifest     map[string]string `json:"file_manifest"`
@@ -92,6 +96,10 @@ type SignOptions struct {
 	// forming a hash chain (v1.4 alpha.2). Pair with VerifyChain at verify
 	// time. Empty omits the field.
 	PreviousHash string
+	// Canonicalization (v1.4 alpha.3) is the algorithm identifier to write
+	// into the signature. Empty omits the field on the wire (== implicit
+	// "schemapin-v1"); pass "schemapin-v1" to declare it explicitly.
+	Canonicalization string
 }
 
 // TamperedFiles holds the result of comparing two file manifests.
@@ -330,7 +338,7 @@ func SignSkillWithOptions(skillDir, privateKeyPEM, domain string, options SignOp
 	// Any v1.4 optional field bumps the version stamp; pure v1.3 sigs stay
 	// "1.3" for byte-stable backward compatibility.
 	version := schemapinVersionV13
-	if expiresAt != "" || options.SchemaVersion != "" || options.PreviousHash != "" {
+	if expiresAt != "" || options.SchemaVersion != "" || options.PreviousHash != "" || options.Canonicalization != "" {
 		version = schemapinVersionV14
 	}
 
@@ -343,6 +351,7 @@ func SignSkillWithOptions(skillDir, privateKeyPEM, domain string, options SignOp
 		ExpiresAt:        expiresAt,
 		SchemaVersion:    options.SchemaVersion,
 		PreviousHash:     options.PreviousHash,
+		Canonicalization: options.Canonicalization,
 		Domain:           domain,
 		SignerKid:        signerKid,
 		FileManifest:     manifest,
@@ -389,6 +398,16 @@ func VerifySkillOffline(
 		toolID = sig.SkillName
 		if toolID == "" {
 			toolID = filepath.Base(skillDir)
+		}
+	}
+
+	// Step 1a (v1.4 alpha.3): canonicalization algorithm check.
+	if bad := verification.CheckCanonicalization(sig.Canonicalization); bad != "" {
+		return &verification.VerificationResult{
+			Valid:        false,
+			Domain:       domain,
+			ErrorCode:    verification.ErrCanonicalizationUnsupported,
+			ErrorMessage: fmt.Sprintf("Unsupported canonicalization algorithm: %s", bad),
 		}
 	}
 

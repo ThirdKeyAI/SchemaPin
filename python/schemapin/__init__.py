@@ -54,15 +54,25 @@ from .utils import (
     create_well_known_response,
 )
 from .verification import (
+    A2A_MAX_DELEGATION_DEPTH,
+    CANONICALIZATION_V1,
     ErrorCode,
     KeyPinningStatus,
     KeyPinStore,
     VerificationResult,
+    check_canonicalization,
+    verify_schema_for_a2a,
     verify_schema_offline,
     verify_schema_with_resolver,
 )
+from .a2a import (
+    A2aVerificationContext,
+    allows as a2a_allows,
+    intersect as a2a_intersect,
+    is_unrestricted as a2a_is_unrestricted,
+)
 
-__version__ = "1.4.0a2"
+__version__ = "1.4.0a3"
 __all__ = [
     "SchemaPinCore",
     "KeyManager",
@@ -115,4 +125,13 @@ __all__ = [
     "verify_dns_match",
     "txt_record_name",
     "fetch_dns_txt",
+    # v1.4 alpha.3
+    "CANONICALIZATION_V1",
+    "check_canonicalization",
+    "A2A_MAX_DELEGATION_DEPTH",
+    "verify_schema_for_a2a",
+    "A2aVerificationContext",
+    "a2a_allows",
+    "a2a_intersect",
+    "a2a_is_unrestricted",
 ]

@@ -13,10 +13,10 @@ import (
 type RevocationReason string
 
 const (
-	ReasonKeyCompromise         RevocationReason = "key_compromise"
-	ReasonSuperseded            RevocationReason = "superseded"
-	ReasonCessationOfOperation  RevocationReason = "cessation_of_operation"
-	ReasonPrivilegeWithdrawn    RevocationReason = "privilege_withdrawn"
+	ReasonKeyCompromise        RevocationReason = "key_compromise"
+	ReasonSuperseded           RevocationReason = "superseded"
+	ReasonCessationOfOperation RevocationReason = "cessation_of_operation"
+	ReasonPrivilegeWithdrawn   RevocationReason = "privilege_withdrawn"
 )
 
 // RevokedKey represents a single revoked key entry.

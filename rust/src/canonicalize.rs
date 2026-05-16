@@ -2,6 +2,28 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+/// Canonical-algorithm identifier (v1.4) for the sorted-key, no-whitespace,
+/// UTF-8 canonicalization implemented in this module.
+///
+/// Signatures MAY carry a `canonicalization` field naming the algorithm used
+/// to produce the signing input. Absence is equivalent to this identifier
+/// for backward compatibility with v1.3 signatures. Verifiers MUST reject
+/// any other value as `CANONICALIZATION_UNSUPPORTED`.
+pub const CANONICALIZATION_V1: &str = "schemapin-v1";
+
+/// Returns `Ok(())` if `algorithm` names a canonicalization algorithm this
+/// SDK supports. Returns `Err(declared)` with the offending value when it
+/// does not — the caller surfaces this as `ErrorCode::CanonicalizationUnsupported`.
+///
+/// `None` means the field is absent and is equivalent to the default
+/// `schemapin-v1` algorithm (v1.3 backward compatibility).
+pub fn check_canonicalization(algorithm: Option<&str>) -> Result<(), String> {
+    match algorithm {
+        None | Some(CANONICALIZATION_V1) => Ok(()),
+        Some(other) => Err(other.to_string()),
+    }
+}
+
 /// Recursively sort JSON object keys and produce a canonical string.
 ///
 /// - Object keys are sorted lexicographically (BTreeMap guarantees this).

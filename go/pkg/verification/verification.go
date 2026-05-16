@@ -38,7 +38,35 @@ const (
 	ErrDiscoveryInvalid             ErrorCode = "discovery_invalid"
 	ErrDomainMismatch               ErrorCode = "domain_mismatch"
 	ErrSchemaCanonicalizationFailed ErrorCode = "schema_canonicalization_failed"
+	// ErrCanonicalizationUnsupported (v1.4 alpha.3) — signature declared a
+	// canonicalization algorithm this verifier does not support.
+	ErrCanonicalizationUnsupported ErrorCode = "canonicalization_unsupported"
+	// ErrA2AScopeViolation (v1.4 alpha.3) — A2A scope violation (provider
+	// domain not in caller's trusted_domains, or delegation_depth exceeded).
+	ErrA2AScopeViolation ErrorCode = "a2a_scope_violation"
 )
+
+// CanonicalizationV1 is the algorithm identifier (v1.4 alpha.3) for the
+// sorted-key, no-whitespace, UTF-8 canonicalization implemented in
+// core.SchemaPinCore. Signatures MAY carry a "canonicalization" field
+// naming the algorithm used to produce the signing input. Absence is
+// equivalent to this identifier for backward compatibility with v1.3
+// signatures. Verifiers MUST reject any other value as
+// ErrCanonicalizationUnsupported.
+const CanonicalizationV1 = "schemapin-v1"
+
+// CheckCanonicalization returns the empty string when `algorithm` names a
+// canonicalization algorithm this SDK supports, or the offending value
+// otherwise.
+//
+// An empty string input means the field is absent and is equivalent to the
+// default schemapin-v1 algorithm (v1.3 backward compatibility).
+func CheckCanonicalization(algorithm string) string {
+	if algorithm == "" || algorithm == CanonicalizationV1 {
+		return ""
+	}
+	return algorithm
+}
 
 // KeyPinningStatus represents the pinning status in a verification result.
 type KeyPinningStatus struct {
@@ -196,6 +224,10 @@ func FromJSON(jsonStr string) (*KeyPinStore, error) {
 // 5. Canonicalize schema and compute hash
 // 6. Verify ECDSA signature against hash
 // 7. Return structured result
+//
+// Use VerifySchemaOfflineWithCanonicalization when the signature carries
+// a v1.4 alpha.3 canonicalization algorithm identifier; this thin wrapper
+// passes the empty string (== default schemapin-v1).
 func VerifySchemaOffline(
 	schema map[string]interface{},
 	signatureB64 string,
@@ -205,6 +237,38 @@ func VerifySchemaOffline(
 	rev *revocation.RevocationDocument,
 	pinStore *KeyPinStore,
 ) *VerificationResult {
+	return VerifySchemaOfflineWithCanonicalization(
+		schema, signatureB64, domain, toolID, disc, rev, pinStore, "",
+	)
+}
+
+// VerifySchemaOfflineWithCanonicalization is VerifySchemaOffline plus the
+// optional v1.4 alpha.3 canonicalization algorithm parameter.
+//
+// `canonicalization` mirrors the optional "canonicalization" field on
+// .schemapin.sig documents. Empty string or "schemapin-v1" are equivalent
+// and accepted; any other value fails with ErrCanonicalizationUnsupported
+// before any crypto work.
+func VerifySchemaOfflineWithCanonicalization(
+	schema map[string]interface{},
+	signatureB64 string,
+	domain string,
+	toolID string,
+	disc *discovery.WellKnownResponse,
+	rev *revocation.RevocationDocument,
+	pinStore *KeyPinStore,
+	canonicalization string,
+) *VerificationResult {
+	// Step 0 (v1.4 alpha.3): canonicalization algorithm check.
+	if bad := CheckCanonicalization(canonicalization); bad != "" {
+		return &VerificationResult{
+			Valid:        false,
+			Domain:       domain,
+			ErrorCode:    ErrCanonicalizationUnsupported,
+			ErrorMessage: fmt.Sprintf("Unsupported canonicalization algorithm: %s", bad),
+		}
+	}
+
 	// Step 1: Validate discovery document
 	if disc == nil || disc.PublicKeyPEM == "" || !strings.Contains(disc.PublicKeyPEM, "-----BEGIN PUBLIC KEY-----") {
 		return &VerificationResult{
@@ -324,4 +388,68 @@ func VerifySchemaWithResolver(
 	rev, _ := r.ResolveRevocation(domain, disc)
 
 	return VerifySchemaOffline(schema, signatureB64, domain, toolID, disc, rev, pinStore)
+}
+
+// VerifySchemaForA2A verifies a schema in the context of an A2A interaction
+// (v1.4 alpha.3).
+//
+// Wraps VerifySchemaOfflineWithCanonicalization with an A2A scope check:
+//
+//  1. Reject when context.DelegationDepth > A2AMaxDelegationDepth.
+//     Surfaces as ErrA2AScopeViolation.
+//  2. Run the standard 7-step verification. If it fails, return that
+//     result unchanged.
+//  3. Reject when context.TrustedDomains is non-empty and domain is not
+//     allowed by it. Surfaces as ErrA2AScopeViolation.
+//
+// On success the returned VerificationResult is the result from step 2
+// unchanged — A2A context does not modify the cryptographic outcome, only
+// the policy outcome.
+func VerifySchemaForA2A(
+	schema map[string]interface{},
+	signatureB64 string,
+	domain string,
+	toolID string,
+	disc *discovery.WellKnownResponse,
+	rev *revocation.RevocationDocument,
+	pinStore *KeyPinStore,
+	context *A2AVerificationContext,
+	canonicalization string,
+) *VerificationResult {
+	if context != nil && context.DelegationDepth > A2AMaxDelegationDepth {
+		return &VerificationResult{
+			Valid:     false,
+			Domain:    domain,
+			ErrorCode: ErrA2AScopeViolation,
+			ErrorMessage: fmt.Sprintf(
+				"A2A delegation_depth %d exceeds cap of %d",
+				context.DelegationDepth, A2AMaxDelegationDepth,
+			),
+		}
+	}
+
+	result := VerifySchemaOfflineWithCanonicalization(
+		schema, signatureB64, domain, toolID, disc, rev, pinStore, canonicalization,
+	)
+	if !result.Valid {
+		return result
+	}
+
+	var trusted []string
+	if context != nil {
+		trusted = context.TrustedDomains
+	}
+	if !A2AAllows(trusted, domain) {
+		return &VerificationResult{
+			Valid:     false,
+			Domain:    domain,
+			ErrorCode: ErrA2AScopeViolation,
+			ErrorMessage: fmt.Sprintf(
+				"Provider domain '%s' not in caller's A2A trusted_domains scope",
+				domain,
+			),
+		}
+	}
+
+	return result
 }

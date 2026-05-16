@@ -33,6 +33,9 @@ use crate::verification::{KeyPinningStatus, VerificationResult};
 /// - `previous_hash` — SHA-256 hash (`sha256:<hex>`) of the *prior* signed version's
 ///   `skill_hash`, forming a hash chain. Use [`verify_chain`] to confirm a new signature
 ///   descends from a specific prior signature.
+/// - `canonicalization` — algorithm identifier naming the canonicalization used to
+///   produce the signing input. Absence is equivalent to `"schemapin-v1"`. Verifiers
+///   MUST reject any other value as `CANONICALIZATION_UNSUPPORTED`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillSignature {
     pub schemapin_version: String,
@@ -46,6 +49,8 @@ pub struct SkillSignature {
     pub schema_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonicalization: Option<String>,
     pub domain: String,
     pub signer_kid: String,
     pub file_manifest: BTreeMap<String, String>,
@@ -212,6 +217,13 @@ pub struct SignOptions<'a> {
     /// `sha256:<hex>` hash of the *prior* signed version's `skill_hash`, forming a chain.
     /// When set, written to `previous_hash`. Pair with [`verify_chain`] at verify time.
     pub previous_hash: Option<&'a str>,
+    /// Canonicalization algorithm identifier to record in the signature.
+    ///
+    /// When set, written to `canonicalization`. The default (`None`) maps to "absent
+    /// field" on the wire, which v1.3+ verifiers MUST interpret as the implicit
+    /// `schemapin-v1` algorithm. Pass `Some("schemapin-v1")` explicitly to declare
+    /// the algorithm on the wire while staying behavior-equivalent.
+    pub canonicalization: Option<&'a str>,
 }
 
 impl<'a> SignOptions<'a> {
@@ -243,6 +255,17 @@ impl<'a> SignOptions<'a> {
         self.previous_hash = Some(hash);
         self
     }
+
+    /// Declare the canonicalization algorithm identifier on the wire.
+    ///
+    /// Pass [`crate::canonicalize::CANONICALIZATION_V1`] to write the default
+    /// `schemapin-v1` value. Unknown values will be rejected by every v1.4
+    /// verifier that supports this field — there is currently exactly one
+    /// supported algorithm.
+    pub fn with_canonicalization(mut self, algorithm: &'a str) -> Self {
+        self.canonicalization = Some(algorithm);
+        self
+    }
 }
 
 /// Sign a skill directory and write `.schemapin.sig`.
@@ -266,6 +289,7 @@ pub fn sign_skill(
             expires_in: None,
             schema_version: None,
             previous_hash: None,
+            canonicalization: None,
         },
     )
 }
@@ -311,11 +335,14 @@ pub fn sign_skill_with_options(
 
     let schema_version = options.schema_version.map(str::to_string);
     let previous_hash = options.previous_hash.map(str::to_string);
+    let canonicalization = options.canonicalization.map(str::to_string);
 
     // Any v1.4 optional field bumps the version stamp; pure v1.3 sigs stay "1.3"
     // for byte-stable backward compatibility.
-    let uses_v1_4_field =
-        expires_at.is_some() || schema_version.is_some() || previous_hash.is_some();
+    let uses_v1_4_field = expires_at.is_some()
+        || schema_version.is_some()
+        || previous_hash.is_some()
+        || canonicalization.is_some();
     let version = if uses_v1_4_field { "1.4" } else { "1.3" };
 
     let sig_doc = SkillSignature {
@@ -327,6 +354,7 @@ pub fn sign_skill_with_options(
         expires_at,
         schema_version,
         previous_hash,
+        canonicalization,
         domain: domain.to_string(),
         signer_kid: kid,
         file_manifest: manifest,
@@ -367,6 +395,17 @@ pub fn verify_skill_offline(
             }
         },
     };
+
+    // Step 1a (v1.4): Reject unknown canonicalization algorithms before any
+    // crypto work — absent / "schemapin-v1" are equivalent and accepted.
+    if let Err(declared) =
+        crate::canonicalize::check_canonicalization(sig.canonicalization.as_deref())
+    {
+        return VerificationResult::failure(
+            ErrorCode::CanonicalizationUnsupported,
+            &format!("Unsupported canonicalization algorithm: {}", declared),
+        );
+    }
 
     // Step 2: Validate discovery document
     if let Err(e) = validate_well_known_response(discovery) {
