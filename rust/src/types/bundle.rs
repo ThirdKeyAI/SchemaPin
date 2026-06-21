@@ -4,13 +4,40 @@ use super::discovery::WellKnownResponse;
 use super::revocation::RevocationDocument;
 
 /// A pre-shared collection of discovery and revocation documents for offline verification.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// v1.4 adds optional distribution fields (`bundle_authority`, `signed_at`,
+/// `expires_at`, `signature`) so bundles can be signed by a bundle authority and
+/// safely exchanged between agents over A2A. See [`crate::bundle`] for the
+/// sign / verify / merge operations.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SchemaPinTrustBundle {
     pub schemapin_bundle_version: String,
     pub created_at: String,
     pub documents: Vec<BundledDiscovery>,
     #[serde(default)]
     pub revocations: Vec<RevocationDocument>,
+    /// (v1.4) The authority that signed this bundle. Present on signed bundles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_authority: Option<BundleAuthority>,
+    /// (v1.4) RFC 3339 timestamp the bundle was signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_at: Option<String>,
+    /// (v1.4) Optional RFC 3339 expiry; verifiers reject the bundle past this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// (v1.4) Base64 DER ECDSA P-256 signature over the canonical bundle bytes
+    /// (`schemapin-v1` canonicalization with this field set to `""`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+/// (v1.4) Identifies and carries the public key of the authority that signed a
+/// trust bundle. TOFU-pinned by `kid` on first use (see
+/// [`crate::bundle::verify_trust_bundle`]).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BundleAuthority {
+    pub kid: String,
+    pub public_key_pem: String,
 }
 
 /// A discovery document bundled with its domain.
@@ -29,6 +56,10 @@ impl SchemaPinTrustBundle {
             created_at: created_at.to_string(),
             documents: vec![],
             revocations: vec![],
+            bundle_authority: None,
+            signed_at: None,
+            expires_at: None,
+            signature: None,
         }
     }
 
@@ -64,6 +95,7 @@ mod tests {
                 },
             }],
             revocations: vec![],
+            ..Default::default()
         }
     }
 

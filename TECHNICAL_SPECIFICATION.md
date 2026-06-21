@@ -588,3 +588,50 @@ Implementations SHOULD copy these helpers from this section rather than taking a
 - v1.3 verifiers do not know about A2A context — they have no `verify_schema_for_a2a` entry point. Callers integrating with v1.3 verifiers fall back to the standard `verify_schema_offline` flow without scope enforcement.
 - The `A2A_SCOPE_VIOLATION` error code is new in v1.4. Older verifiers cannot emit it.
 - All v1.4 alpha.3 additions are additive — they introduce no changes to the signature on the wire (the new error code lives only in verifier output) so v1.4 alpha.1 / alpha.2 signatures verify identically under alpha.3 verifiers.
+
+### **21. Trust Bundle Distribution (v1.4)**
+
+#### **21.1. Purpose**
+
+Allow a **bundle authority** to sign a trust bundle so it can be exchanged between agents over A2A without per-bundle out-of-band trust establishment. The receiving verifier authenticates the bundle and TOFU-pins the authority key by `kid`, the same trust model used for tool signing keys. All fields are optional and additive — an unsigned bundle is unchanged from v1.2/v1.3.
+
+#### **21.2. Wire Format**
+
+A signed trust bundle adds four OPTIONAL top-level fields:
+
+```json
+{
+  "schemapin_bundle_version": "1.4",
+  "documents": [ "..." ],
+  "revocations": [ "..." ],
+  "bundle_authority": {
+    "kid": "schemapin-bundle-authority-2026",
+    "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----\n"
+  },
+  "signed_at": "2026-05-15T00:00:00Z",
+  "expires_at": "2099-01-01T00:00:00Z",
+  "signature": "<base64 DER ECDSA P-256>"
+}
+```
+
+The authority public key is carried as `public_key_pem` (consistent with discovery documents), making the bundle self-verifying. Signing sets `schemapin_bundle_version` to `"1.4"`.
+
+#### **21.3. Signing Input**
+
+The signature covers the `schemapin-v1` canonicalization (§19; recursive sorted keys, compact, UTF-8) of the entire bundle object with the `signature` field set to the empty string `""`. All four SDKs MUST produce the identical byte string so a bundle signed by any SDK verifies in every other.
+
+#### **21.4. Operations**
+
+- `sign_trust_bundle(bundle, private_key_pem, kid, signed_at, expires_at?)` — derive the authority public key, stamp `bundle_authority` / `signed_at` / `expires_at`, and write the signature.
+- `verify_trust_bundle(bundle, authority_pin_store)`:
+  1. Require `bundle_authority` and `signature` — else `BUNDLE_UNSIGNED`.
+  2. Reject when `expires_at` is present and in the past or unparseable — `BUNDLE_EXPIRED`.
+  3. TOFU-pin the authority key fingerprint by `kid`; a different key under a pinned `kid` is `KEY_PIN_MISMATCH`.
+  4. Verify the signature over the canonical bytes — failure is `SIGNATURE_INVALID`.
+- `merge_trust_bundles(bundles)` — deduplicate `documents` and `revocations` by domain, the newer source (`signed_at`, else `created_at`) winning. Returns an UNSIGNED bundle to be re-signed before redistribution.
+- `schemapin/trustBundle` JSON-RPC envelope helpers — `build_trust_bundle_request` / `build_trust_bundle_response` / `parse_trust_bundle_response`. The libraries define the message envelope; transport and the receiving pin-store update are the host application's responsibility.
+
+#### **21.5. Backward Compatibility**
+
+- Unsigned bundles omit all four fields and are byte-identical to pre-v1.4 bundles; existing resolvers ignore the new fields.
+- The `BUNDLE_UNSIGNED` and `BUNDLE_EXPIRED` error codes are new in v1.4.

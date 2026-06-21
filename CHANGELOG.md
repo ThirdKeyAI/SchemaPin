@@ -5,6 +5,59 @@ All notable changes to the SchemaPin project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0-alpha.4] - 2026-06-21
+
+### Added
+
+#### Trust Bundle Distribution for A2A Networks — All Four Languages
+
+Signed trust bundles so they can be exchanged between agents over A2A without
+per-bundle out-of-band trust establishment. Roadmap item 6. All additions are
+optional fields — existing unsigned bundles are unaffected.
+
+- **Wire format**: trust bundles gain four optional top-level fields —
+  `bundle_authority` (`{ kid, public_key_pem }`), `signed_at`, `expires_at`,
+  and `signature` (base64 DER ECDSA P-256). Signing stamps
+  `schemapin_bundle_version` to `"1.4"`.
+- **Signing input**: the signature covers the `schemapin-v1` canonicalization
+  (recursive sorted keys, compact, UTF-8) of the whole bundle with the
+  `signature` field set to `""`. The four SDKs produce byte-identical signing
+  input, so a bundle signed by any SDK verifies in every other (proven by the
+  shared `tests/cross-language/signed_bundle.json` fixture).
+- **`sign_trust_bundle(bundle, private_key_pem, kid, signed_at, expires_at?)`**:
+  derives the authority public key from the private key, stamps metadata, and
+  writes the signature. (Camel/Pascal-cased per language.)
+- **`verify_trust_bundle(bundle, authority_pin_store)`**: requires a signed
+  bundle (else `BUNDLE_UNSIGNED`), rejects past-`expires_at` bundles
+  (`BUNDLE_EXPIRED`), TOFU-pins the authority key by `kid` (mismatch →
+  `KEY_PIN_MISMATCH`), then verifies the signature (`SIGNATURE_INVALID`).
+- **`merge_trust_bundles(bundles)`**: deduplicates discovery and revocation
+  documents by domain, newest source (`signed_at`, else `created_at`) winning.
+  Returns an unsigned merged bundle to be re-signed before redistribution.
+- **`schemapin/trustBundle` JSON-RPC envelope helpers**
+  (`build_trust_bundle_request` / `build_trust_bundle_response` /
+  `parse_trust_bundle_response`) for A2A bundle exchange. The libraries provide
+  the message envelope; transport and the receiving pin-store update are the
+  host application's (e.g. Symbiont's) responsibility.
+- **New error codes**: `BUNDLE_UNSIGNED`, `BUNDLE_EXPIRED`.
+
+### Changed
+
+- All four implementations bumped to `1.4.0-alpha.4` (`1.4.0a4` for Python).
+- **Deviation from the scope doc**: `bundle_authority` carries the authority
+  key as `public_key_pem` (consistent with discovery documents) rather than a
+  JWK. PEM is a plain string, which keeps the cross-language canonical signing
+  input trivially identical; JWK would add a key-serialization surface for
+  cross-SDK drift.
+
+### Notes
+
+- This is item 6 of the v1.4 roadmap. Items 7 (scan-aware signatures) and 8
+  (cross-agent schema cache) were **descoped to v1.5** — they are additive and
+  independent, so deferring them does not block the v1.4.0 GA.
+- Symbiont follow-up: receive `schemapin/trustBundle` over A2A and update the
+  local pin store (filed Symbiont-side).
+
 ## [1.4.0-alpha.3] - 2026-05-16
 
 ### Added

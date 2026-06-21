@@ -1106,6 +1106,7 @@ mod tests {
                 well_known: discovery,
             }],
             revocations: vec![],
+            ..Default::default()
         };
         let resolver = TrustBundleResolver::new(&bundle);
         let mut pin_store = KeyPinStore::new();

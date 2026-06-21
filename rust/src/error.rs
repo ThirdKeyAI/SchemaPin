@@ -91,6 +91,14 @@ pub enum ErrorCode {
     /// empty-list-equals-unrestricted convention).
     #[serde(rename = "A2A_SCOPE_VIOLATION")]
     A2aScopeViolation,
+    /// (v1.4) A trust bundle was passed to `verify_trust_bundle` without a
+    /// `bundle_authority` / `signature` pair. Bundle distribution requires a
+    /// signed bundle.
+    #[serde(rename = "BUNDLE_UNSIGNED")]
+    BundleUnsigned,
+    /// (v1.4) A signed trust bundle's `expires_at` is in the past.
+    #[serde(rename = "BUNDLE_EXPIRED")]
+    BundleExpired,
 }
 
 impl std::fmt::Display for ErrorCode {
@@ -106,6 +114,8 @@ impl std::fmt::Display for ErrorCode {
             ErrorCode::SchemaCanonicalizationFailed => "SCHEMA_CANONICALIZATION_FAILED",
             ErrorCode::CanonicalizationUnsupported => "CANONICALIZATION_UNSUPPORTED",
             ErrorCode::A2aScopeViolation => "A2A_SCOPE_VIOLATION",
+            ErrorCode::BundleUnsigned => "BUNDLE_UNSIGNED",
+            ErrorCode::BundleExpired => "BUNDLE_EXPIRED",
         };
         write!(f, "{}", s)
     }

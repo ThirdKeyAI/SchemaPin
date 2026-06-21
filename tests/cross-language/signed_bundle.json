@@ -1,0 +1,22 @@
+{
+  "schemapin_bundle_version": "1.4",
+  "created_at": "2026-05-15T00:00:00Z",
+  "documents": [
+    {
+      "domain": "example.com",
+      "schema_version": "1.4",
+      "developer_name": "Example Corp",
+      "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMOCK\n-----END PUBLIC KEY-----",
+      "revoked_keys": [],
+      "contact": "security@example.com"
+    }
+  ],
+  "revocations": [],
+  "bundle_authority": {
+    "kid": "schemapin-bundle-authority-2026",
+    "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEg+aix0OfT3YmM1E+s98N6MoGP7C5\nCvO1BtD5K4KmJgv6N0B+LNtCf4Igu6Z94oyIoVHTUQ6i/cjQ1kzXx3Mv0w==\n-----END PUBLIC KEY-----\n"
+  },
+  "signed_at": "2026-05-15T00:00:00Z",
+  "expires_at": "2099-01-01T00:00:00Z",
+  "signature": "MEUCIQDyUMRPiPY6la8RTfOW7vRmOuIUkGMcrFjM4bAM/g9IRQIgQ3CRP/j/M1NrMzNU3s6f1S3kQm9h2a+ffLmfPHm9Uzs="
+}

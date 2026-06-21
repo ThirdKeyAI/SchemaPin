@@ -1,8 +1,32 @@
 """SchemaPin: Cryptographic schema integrity verification for AI tools."""
 
+from .a2a import (
+    A2aVerificationContext,
+)
+from .a2a import (
+    allows as a2a_allows,
+)
+from .a2a import (
+    intersect as a2a_intersect,
+)
+from .a2a import (
+    is_unrestricted as a2a_is_unrestricted,
+)
 from .bundle import (
+    BundleAuthority,
     SchemaPinTrustBundle,
     create_bundled_discovery,
+)
+from .bundle_distribution import (
+    BUNDLE_AUTHORITY_PIN_DOMAIN,
+    BUNDLE_VERSION_SIGNED,
+    BundleVerificationError,
+    build_trust_bundle_request,
+    build_trust_bundle_response,
+    merge_trust_bundles,
+    parse_trust_bundle_response,
+    sign_trust_bundle,
+    verify_trust_bundle,
 )
 from .core import SchemaPinCore
 from .crypto import KeyManager, SignatureManager
@@ -65,14 +89,8 @@ from .verification import (
     verify_schema_offline,
     verify_schema_with_resolver,
 )
-from .a2a import (
-    A2aVerificationContext,
-    allows as a2a_allows,
-    intersect as a2a_intersect,
-    is_unrestricted as a2a_is_unrestricted,
-)
 
-__version__ = "1.4.0a3"
+__version__ = "1.4.0a4"
 __all__ = [
     "SchemaPinCore",
     "KeyManager",
@@ -134,4 +152,15 @@ __all__ = [
     "a2a_allows",
     "a2a_intersect",
     "a2a_is_unrestricted",
+    # v1.4 — A2A trust-bundle distribution
+    "BundleAuthority",
+    "BundleVerificationError",
+    "BUNDLE_VERSION_SIGNED",
+    "BUNDLE_AUTHORITY_PIN_DOMAIN",
+    "sign_trust_bundle",
+    "verify_trust_bundle",
+    "merge_trust_bundles",
+    "build_trust_bundle_request",
+    "build_trust_bundle_response",
+    "parse_trust_bundle_response",
 ]
