@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "schemapin"
-version = "1.4.0-alpha.2"
+version = "1.4.0-alpha.3"
 dependencies = [
  "async-trait",
  "base64 0.21.7",

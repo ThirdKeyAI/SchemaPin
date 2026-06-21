@@ -80,3 +80,8 @@ pub mod verification;
 
 // New module (v1.4.0): DNS TXT cross-verification
 pub mod dns;
+
+// Re-exports for the v1.4 A2A surface so callers can write
+// `use schemapin::A2aVerificationContext;` without diving into `types::a2a`.
+pub use types::a2a::A2aVerificationContext;
+pub use verification::{verify_schema_for_a2a, A2A_MAX_DELEGATION_DEPTH};

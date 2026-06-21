@@ -12,7 +12,7 @@ import (
 // BundledDiscovery combines a domain with its well-known response.
 // Uses custom JSON marshaling for flattened format.
 type BundledDiscovery struct {
-	Domain   string
+	Domain    string
 	WellKnown discovery.WellKnownResponse
 }
 
@@ -59,9 +59,9 @@ func (b *BundledDiscovery) UnmarshalJSON(data []byte) error {
 
 // SchemaPinTrustBundle holds discovery documents and revocations for offline use.
 type SchemaPinTrustBundle struct {
-	SchemapinBundleVersion string                       `json:"schemapin_bundle_version"`
-	CreatedAt              string                       `json:"created_at"`
-	Documents              []BundledDiscovery           `json:"documents"`
+	SchemapinBundleVersion string                          `json:"schemapin_bundle_version"`
+	CreatedAt              string                          `json:"created_at"`
+	Documents              []BundledDiscovery              `json:"documents"`
 	Revocations            []revocation.RevocationDocument `json:"revocations"`
 }
 

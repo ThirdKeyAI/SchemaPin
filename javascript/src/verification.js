@@ -5,6 +5,7 @@
 import { SchemaPinCore } from './core.js';
 import { KeyManager, SignatureManager } from './crypto.js';
 import { checkRevocationCombined } from './revocation.js';
+import { a2aAllows } from './a2a.js';
 
 /**
  * Apply a signature `expires_at` check to a verification result (v1.4).
@@ -56,8 +57,42 @@ export const ErrorCode = Object.freeze({
     DISCOVERY_FETCH_FAILED: 'discovery_fetch_failed',
     DISCOVERY_INVALID: 'discovery_invalid',
     DOMAIN_MISMATCH: 'domain_mismatch',
-    SCHEMA_CANONICALIZATION_FAILED: 'schema_canonicalization_failed'
+    SCHEMA_CANONICALIZATION_FAILED: 'schema_canonicalization_failed',
+    // v1.4 alpha.3: signature declared a canonicalization algorithm this
+    // verifier does not support. Hard failure.
+    CANONICALIZATION_UNSUPPORTED: 'canonicalization_unsupported',
+    // v1.4 alpha.3: A2A scope violation (provider domain not in caller's
+    // trusted_domains, or delegation_depth exceeded).
+    A2A_SCOPE_VIOLATION: 'a2a_scope_violation'
 });
+
+/**
+ * v1.4 alpha.3: canonicalization algorithm identifier.
+ *
+ * Signatures MAY carry a `canonicalization` field naming the algorithm used
+ * to produce the signing input. Absence is equivalent to this identifier
+ * for backward compatibility with v1.3 signatures. Verifiers MUST reject
+ * any other value as `CANONICALIZATION_UNSUPPORTED`.
+ */
+export const CANONICALIZATION_V1 = 'schemapin-v1';
+
+/**
+ * Returns `null` when `algorithm` is supported, or the offending value
+ * otherwise. The caller surfaces a non-null return as
+ * `ErrorCode.CANONICALIZATION_UNSUPPORTED`.
+ *
+ * `null` / `undefined` are equivalent to the implicit `schemapin-v1`
+ * default and are accepted (v1.3 backward compatibility).
+ *
+ * @param {string|null|undefined} algorithm
+ * @returns {string|null}
+ */
+export function checkCanonicalization(algorithm) {
+    if (algorithm === null || algorithm === undefined || algorithm === CANONICALIZATION_V1) {
+        return null;
+    }
+    return algorithm;
+}
 
 /**
  * Lightweight in-memory fingerprint-based pin store.
@@ -148,9 +183,24 @@ export class KeyPinStore {
  * @param {Object} discovery - Well-known response
  * @param {Object|null} revocation - Standalone revocation document
  * @param {KeyPinStore} pinStore
+ * @param {string|null} [canonicalization] - v1.4 alpha.3 optional canonicalization
+ *   algorithm identifier from the signature. `null` / `undefined` /
+ *   `'schemapin-v1'` are equivalent and accepted; any other value fails with
+ *   `CANONICALIZATION_UNSUPPORTED`.
  * @returns {Object} Verification result
  */
-export function verifySchemaOffline(schema, signatureB64, domain, toolId, discovery, revocation, pinStore) {
+export function verifySchemaOffline(schema, signatureB64, domain, toolId, discovery, revocation, pinStore, canonicalization = null) {
+    // Step 0 (v1.4 alpha.3): canonicalization algorithm check
+    const unsupportedAlgo = checkCanonicalization(canonicalization);
+    if (unsupportedAlgo !== null) {
+        return {
+            valid: false,
+            domain,
+            error_code: ErrorCode.CANONICALIZATION_UNSUPPORTED,
+            error_message: `Unsupported canonicalization algorithm: ${unsupportedAlgo}`
+        };
+    }
+
     // Step 1: Validate discovery document
     const publicKeyPem = discovery?.public_key_pem;
     if (!publicKeyPem || !publicKeyPem.includes('-----BEGIN PUBLIC KEY-----')) {
@@ -269,4 +319,92 @@ export async function verifySchemaWithResolver(schema, signatureB64, domain, too
     const revocation = await resolver.resolveRevocation(domain, discovery);
 
     return verifySchemaOffline(schema, signatureB64, domain, toolId, discovery, revocation, pinStore);
+}
+
+/**
+ * Maximum A2A delegation depth allowed by this verifier (v1.4 alpha.3).
+ *
+ * Mirrors the AgentPin `max_delegation_depth` cap (AgentPin spec §4.3).
+ * Bumping this on the SchemaPin side without a matching bump on AgentPin
+ * would let SchemaPin accept chains AgentPin would reject — keep in lockstep.
+ */
+export const A2A_MAX_DELEGATION_DEPTH = 3;
+
+/**
+ * Verify a schema in the context of an A2A interaction (v1.4 alpha.3).
+ *
+ * Wraps {@link verifySchemaOffline} with an A2A scope check:
+ *
+ *   1. Reject when `context.delegationDepth > A2A_MAX_DELEGATION_DEPTH`.
+ *      Surfaces as `A2A_SCOPE_VIOLATION`.
+ *   2. Run the standard 7-step verification. If it fails, return that
+ *      result unchanged.
+ *   3. Reject when `context.trustedDomains` is non-empty and `domain` is
+ *      not allowed by it. Surfaces as `A2A_SCOPE_VIOLATION`.
+ *
+ * On success the returned result is the result from step 2 unchanged — A2A
+ * context does not modify the cryptographic outcome, only the policy
+ * outcome.
+ *
+ * @param {Object} schema
+ * @param {string} signatureB64
+ * @param {string} domain
+ * @param {string} toolId
+ * @param {Object} discovery
+ * @param {Object|null} revocation
+ * @param {KeyPinStore} pinStore
+ * @param {import('./a2a.js').A2aVerificationContext} context
+ * @param {string|null} [canonicalization=null]
+ * @returns {Object} Verification result
+ */
+export function verifySchemaForA2A(
+    schema,
+    signatureB64,
+    domain,
+    toolId,
+    discovery,
+    revocation,
+    pinStore,
+    context,
+    canonicalization = null,
+) {
+    // Async import would force the public function to be async; instead use
+    // a lazy require-style approach via dynamic await. Since a2a.js has no
+    // side effects and tiny size, eager static import below is fine — JS
+    // can't tree-shake conditionally either way.
+    // (See bottom of file for the import.)
+    if (context.delegationDepth > A2A_MAX_DELEGATION_DEPTH) {
+        return {
+            valid: false,
+            domain,
+            error_code: ErrorCode.A2A_SCOPE_VIOLATION,
+            error_message:
+                `A2A delegation_depth ${context.delegationDepth} exceeds cap of ${A2A_MAX_DELEGATION_DEPTH}`
+        };
+    }
+
+    const result = verifySchemaOffline(
+        schema,
+        signatureB64,
+        domain,
+        toolId,
+        discovery,
+        revocation,
+        pinStore,
+        canonicalization,
+    );
+    if (!result.valid) {
+        return result;
+    }
+
+    if (!a2aAllows(context.trustedDomains, domain)) {
+        return {
+            valid: false,
+            domain,
+            error_code: ErrorCode.A2A_SCOPE_VIOLATION,
+            error_message: `Provider domain '${domain}' not in caller's A2A trusted_domains scope`
+        };
+    }
+
+    return result;
 }

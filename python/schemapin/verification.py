@@ -23,6 +23,33 @@ class ErrorCode(Enum):
     DISCOVERY_INVALID = "discovery_invalid"
     DOMAIN_MISMATCH = "domain_mismatch"
     SCHEMA_CANONICALIZATION_FAILED = "schema_canonicalization_failed"
+    # v1.4 alpha.3: signature declared a canonicalization algorithm this
+    # verifier does not support. Hard failure.
+    CANONICALIZATION_UNSUPPORTED = "canonicalization_unsupported"
+    # v1.4 alpha.3: A2A scope violation (provider domain not in caller's
+    # trusted_domains, or delegation_depth exceeded).
+    A2A_SCOPE_VIOLATION = "a2a_scope_violation"
+
+
+# v1.4 alpha.3: canonicalization algorithm identifier
+#
+# Signatures MAY carry a ``canonicalization`` field naming the algorithm used
+# to produce the signing input. Absence is equivalent to ``CANONICALIZATION_V1``
+# for backward compatibility with v1.3 signatures. Verifiers MUST reject any
+# other value as ``CANONICALIZATION_UNSUPPORTED``.
+CANONICALIZATION_V1 = "schemapin-v1"
+
+
+def check_canonicalization(algorithm: Optional[str]) -> Optional[str]:
+    """Return ``None`` when ``algorithm`` is supported, or the offending value.
+
+    ``None`` or ``"schemapin-v1"`` are equivalent and supported. Any other
+    value is unsupported and the caller surfaces it as
+    ``ErrorCode.CANONICALIZATION_UNSUPPORTED``.
+    """
+    if algorithm is None or algorithm == CANONICALIZATION_V1:
+        return None
+    return algorithm
 
 
 @dataclass
@@ -212,6 +239,7 @@ def verify_schema_offline(
     discovery: Dict[str, Any],
     revocation: Optional[RevocationDocument],
     pin_store: KeyPinStore,
+    canonicalization: Optional[str] = None,
 ) -> VerificationResult:
     """Verify a schema offline using pre-fetched discovery and revocation data.
 
@@ -223,7 +251,23 @@ def verify_schema_offline(
     5. Canonicalize schema and compute hash
     6. Verify ECDSA signature against hash
     7. Return structured result
+
+    ``canonicalization`` is a v1.4 alpha.3 addition: when the signature
+    carries a ``canonicalization`` field, the caller passes the value through
+    to this function. ``None`` or ``"schemapin-v1"`` are equivalent and
+    accepted; any other value fails with ``CANONICALIZATION_UNSUPPORTED``
+    before any crypto work.
     """
+    # Step 0 (v1.4): canonicalization algorithm check
+    unsupported = check_canonicalization(canonicalization)
+    if unsupported is not None:
+        return VerificationResult(
+            valid=False,
+            domain=domain,
+            error_code=ErrorCode.CANONICALIZATION_UNSUPPORTED,
+            error_message=f"Unsupported canonicalization algorithm: {unsupported}",
+        )
+
     # Step 1: Validate discovery document
     public_key_pem = discovery.get("public_key_pem")
     if not public_key_pem or "-----BEGIN PUBLIC KEY-----" not in public_key_pem:
@@ -341,3 +385,80 @@ def verify_schema_with_resolver(
     return verify_schema_offline(
         schema, signature_b64, domain, tool_id, discovery, revocation, pin_store
     )
+
+
+# v1.4 alpha.3 — A2A context verification
+#
+# Mirrors AgentPin's max_delegation_depth cap (AgentPin spec §4.3). Bumping
+# this on the SchemaPin side without a matching bump on AgentPin would let
+# SchemaPin accept chains AgentPin would reject — keep in lockstep.
+A2A_MAX_DELEGATION_DEPTH = 3
+
+
+def verify_schema_for_a2a(
+    schema: Dict[str, Any],
+    signature_b64: str,
+    domain: str,
+    tool_id: str,
+    discovery: Dict[str, Any],
+    revocation: Optional[RevocationDocument],
+    pin_store: KeyPinStore,
+    context,  # forward reference to schemapin.a2a.A2aVerificationContext
+    canonicalization: Optional[str] = None,
+) -> VerificationResult:
+    """Verify a schema in the context of an A2A interaction (v1.4 alpha.3).
+
+    Wraps :func:`verify_schema_offline` with an A2A scope check:
+
+    1. Reject when ``context.delegation_depth > A2A_MAX_DELEGATION_DEPTH``.
+       Surfaces as ``A2A_SCOPE_VIOLATION``.
+    2. Run the standard 7-step verification. If it fails, return that
+       result unchanged.
+    3. Reject when ``context.trusted_domains`` is non-empty and ``domain``
+       is not allowed by it. Surfaces as ``A2A_SCOPE_VIOLATION``.
+
+    On success the returned :class:`VerificationResult` is the result from
+    step 2 unchanged — A2A context does not modify the cryptographic
+    outcome, only the policy outcome.
+    """
+    # Local import to avoid a circular dependency: schemapin.a2a doesn't
+    # depend on verification, and we don't want verification to require a2a
+    # at import time for callers that don't use the A2A surface.
+    from .a2a import allows as a2a_allows
+
+    if context.delegation_depth > A2A_MAX_DELEGATION_DEPTH:
+        return VerificationResult(
+            valid=False,
+            domain=domain,
+            error_code=ErrorCode.A2A_SCOPE_VIOLATION,
+            error_message=(
+                f"A2A delegation_depth {context.delegation_depth} exceeds cap of "
+                f"{A2A_MAX_DELEGATION_DEPTH}"
+            ),
+        )
+
+    result = verify_schema_offline(
+        schema,
+        signature_b64,
+        domain,
+        tool_id,
+        discovery,
+        revocation,
+        pin_store,
+        canonicalization,
+    )
+    if not result.valid:
+        return result
+
+    if not a2a_allows(context.trusted_domains, domain):
+        return VerificationResult(
+            valid=False,
+            domain=domain,
+            error_code=ErrorCode.A2A_SCOPE_VIOLATION,
+            error_message=(
+                f"Provider domain '{domain}' not in caller's A2A "
+                f"trusted_domains scope"
+            ),
+        )
+
+    return result

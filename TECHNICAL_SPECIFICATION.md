@@ -1,8 +1,19 @@
 # SchemaPin: A Technical Specification
 
-Version 1.2
+Version 1.4 (alpha.3)
 
 Status: Draft
+
+> **What's new in v1.4 alpha.3 (2026-05-16, additive, wire-compatible
+> with v1.3 / v1.4 alpha.1 / v1.4 alpha.2):**
+> §19 introduces an optional `canonicalization` field on `.schemapin.sig`
+> for forward-compatibility with future canonicalization algorithms;
+> unknown values are a hard failure (`CANONICALIZATION_UNSUPPORTED`).
+> §20 introduces `A2aVerificationContext` and `verify_schema_for_a2a` for
+> A2A-aware verification, interoperating with AgentPin v0.3's
+> `AllowedDomains` typed wrapper. The scope check uses the empty-list
+> means *unrestricted* convention (AgentPin spec §4.11) and enforces a
+> delegation-depth cap matching AgentPin's `max_delegation_depth`.
 
 ### **1. Introduction**
 
@@ -485,3 +496,95 @@ This pairs cleanly with `schema_version`: the verifier can also enforce monotoni
 - v1.3 verifiers ignore both fields; signatures continue to verify.
 - v1.4 signatures without `schema_version` or `previous_hash` behave identically to v1.3 signatures.
 - The chain-verification helper is opt-in: callers who don't track lineage are unaffected.
+
+### **19. Canonicalization Algorithm Identifier (v1.4)**
+
+#### **19.1. Purpose**
+
+The canonicalization rules of §4 are fixed across all v1.x signatures. To leave a forward-compatibility hook for a future v2.x canonicalization (e.g. RFC 8785 / JCS) without breaking existing v1.x signatures, v1.4 introduces an optional `canonicalization` field on `.schemapin.sig` documents (and a matching parameter on the verifier APIs).
+
+The current and only supported value is `"schemapin-v1"` — the algorithm specified in §4. Future spec versions MAY introduce new identifiers; verifiers MUST reject any unrecognised identifier rather than silently fall back, so signers cannot trick a v1.x verifier into trusting a v2.x signing input.
+
+#### **19.2. Wire Format**
+
+```json
+{
+  "schemapin_version": "1.4",
+  "canonicalization": "schemapin-v1",
+  ...
+}
+```
+
+The field is OPTIONAL. Absence is wire-equivalent to the implicit `"schemapin-v1"` default — signers who do not need to declare the algorithm SHOULD omit the field to keep v1.3-byte-identical wire output.
+
+#### **19.3. Verifier Semantics**
+
+Given a signature with `canonicalization == V`:
+
+| Value of `V` | Verifier action |
+|---|---|
+| Absent (field missing) | Use `schemapin-v1` (the algorithm in §4). |
+| `"schemapin-v1"` | Use `schemapin-v1`. |
+| Anything else | **Hard failure** — surface as `CANONICALIZATION_UNSUPPORTED`. |
+
+This check MUST execute before any cryptographic work (signature verification, public-key loading) so a misconfigured signer cannot induce timing-dependent failures.
+
+#### **19.4. Backward Compatibility**
+
+- v1.3 verifiers ignore unknown fields; v1.4 signatures with `canonicalization: "schemapin-v1"` continue to verify under v1.3.
+- v1.4 signatures without `canonicalization` behave identically to v1.3 signatures.
+
+### **20. A2A Verification Context (v1.4)**
+
+#### **20.1. Purpose**
+
+When tool schemas cross an A2A (Agent-to-Agent) trust boundary, verifiers need to scope verification to the intersection of *caller-trusted* domains and the *tool provider's* domain. SchemaPin v1.4 introduces `A2aVerificationContext` and `verify_schema_for_a2a` for this purpose. The semantics interoperate with AgentPin v0.3's `AllowedDomains` typed wrapper (AgentPin technical specification §4.11) so a SchemaPin verifier can directly consume the allow-list a caller's AgentPin credential carries.
+
+#### **20.2. `A2aVerificationContext`**
+
+```text
+A2aVerificationContext {
+  caller_agent_id:    String      // URN-style, matching AgentPin; informational
+  delegation_depth:   u8          // 0 = direct caller
+  originating_domain: String      // informational
+  trusted_domains:    [String]    // see §20.3 convention
+}
+```
+
+`caller_agent_id` and `originating_domain` are informational — verifiers do not validate them or use them in the scope check. Downstream policy engines (e.g. Symbiont) MAY correlate verification results with these fields for audit purposes.
+
+#### **20.3. AllowedDomains Convention**
+
+The `trusted_domains` list uses the same convention as AgentPin v0.3:
+
+> **An empty `trusted_domains` list means *unrestricted*** — all provider domains are trusted. This is the opposite of the naïve set-theoretic interpretation but it matches the existing behaviour where an *omitted* allow-list permitted all domains.
+
+A non-empty list restricts the verifier to provider domains that match an entry. Pattern matching follows the AgentPin §5.5 wildcard rule: a leading `*.` matches any subdomain (e.g. `*.client.com` matches `api.client.com` but NOT `client.com` itself).
+
+#### **20.4. Verification Algorithm**
+
+Given a context `C` and a normal verification request for provider domain `D`:
+
+1. **Delegation-depth cap.** If `C.delegation_depth > 3`, fail with `A2A_SCOPE_VIOLATION`. The cap of 3 mirrors AgentPin's `max_delegation_depth` (AgentPin spec §4.3) and is exposed as the constant `A2A_MAX_DELEGATION_DEPTH`. Both specs MUST move this cap in lockstep.
+2. **Standard verification.** Run the 7-step verification flow from §7 (including the §19 canonicalization check when applicable). If it fails, return that result unchanged — A2A scope is NOT a remedy for a failed cryptographic verification.
+3. **Scope check.** When `C.trusted_domains` is non-empty, test whether `D` is allowed by the list under §20.3 semantics. If not, fail with `A2A_SCOPE_VIOLATION`. When `C.trusted_domains` is empty (unrestricted), this step is a no-op.
+
+The scope check MUST use the `allows(trusted_domains, D)` primitive directly, NOT `allows(intersect(trusted_domains, [D]))`. The intersection helper documented in §20.5 has an edge case where two non-empty disjoint allow-lists intersect to `[]`, which the convention treats as "unrestricted" — using `intersect` here would silently bypass the scope check.
+
+#### **20.5. AllowedDomains Helpers**
+
+Each SDK MUST expose helpers matching the AgentPin v0.3 `AllowedDomains` API exactly:
+
+| Operation | Behaviour |
+|---|---|
+| `is_unrestricted(list)` | `true` when `list` is empty. |
+| `allows(list, domain)` | `true` when `list` is empty OR `domain` matches any entry (with `*.` wildcard expansion). |
+| `intersect(lhs, rhs)` | `lhs ∩ rhs`, with two `unrestricted` short-circuits: `unrestricted ∩ X = X`, `X ∩ unrestricted = X`. Two non-empty disjoint inputs intersect to `[]` which, under the convention, then *also* means "unrestricted" — documented edge case from AgentPin spec §4.11.4. |
+
+Implementations SHOULD copy these helpers from this section rather than taking a hard dependency on the AgentPin SDK, to keep SchemaPin self-contained for tool-integrity-only deployments. When both SDKs are linked, the AgentPin helpers can be substituted directly — the wire and in-memory shapes are identical.
+
+#### **20.6. Backward Compatibility**
+
+- v1.3 verifiers do not know about A2A context — they have no `verify_schema_for_a2a` entry point. Callers integrating with v1.3 verifiers fall back to the standard `verify_schema_offline` flow without scope enforcement.
+- The `A2A_SCOPE_VIOLATION` error code is new in v1.4. Older verifiers cannot emit it.
+- All v1.4 alpha.3 additions are additive — they introduce no changes to the signature on the wire (the new error code lives only in verifier output) so v1.4 alpha.1 / alpha.2 signatures verify identically under alpha.3 verifiers.

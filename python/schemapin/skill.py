@@ -31,6 +31,7 @@ from .verification import (
     KeyPinningStatus,
     KeyPinStore,
     VerificationResult,
+    check_canonicalization,
 )
 
 SIGNATURE_FILENAME = ".schemapin.sig"
@@ -61,6 +62,10 @@ class SignOptions:
     # v1.4 alpha.2: ``sha256:<hex>`` of the prior signed version's
     # ``skill_hash``, forming a hash chain. Pair with :func:`verify_chain`.
     previous_hash: Optional[str] = None
+    # v1.4 alpha.3: canonicalization algorithm identifier written to the
+    # signature. ``None`` is wire-equivalent to the implicit "schemapin-v1"
+    # default; pass ``"schemapin-v1"`` to declare it explicitly.
+    canonicalization: Optional[str] = None
 
 
 class SkillSigner:
@@ -239,6 +244,7 @@ class SkillSigner:
             expires_at is not None
             or options.schema_version is not None
             or options.previous_hash is not None
+            or options.canonicalization is not None
         )
         version = SCHEMAPIN_VERSION_V1_4 if uses_v1_4_field else SCHEMAPIN_VERSION
 
@@ -260,6 +266,8 @@ class SkillSigner:
             sig_doc["schema_version"] = options.schema_version
         if options.previous_hash is not None:
             sig_doc["previous_hash"] = options.previous_hash
+        if options.canonicalization is not None:
+            sig_doc["canonicalization"] = options.canonicalization
 
         sig_path = skill_path / SIGNATURE_FILENAME
         sig_path.write_text(
@@ -303,6 +311,16 @@ class SkillSigner:
         domain = signature_data.get("domain", "")
         if tool_id is None:
             tool_id = signature_data.get("skill_name", skill_path.name)
+
+        # Step 1a (v1.4 alpha.3): canonicalization algorithm check.
+        unsupported = check_canonicalization(signature_data.get("canonicalization"))
+        if unsupported is not None:
+            return VerificationResult(
+                valid=False,
+                domain=domain,
+                error_code=ErrorCode.CANONICALIZATION_UNSUPPORTED,
+                error_message=f"Unsupported canonicalization algorithm: {unsupported}",
+            )
 
         # Step 2: Validate discovery document
         public_key_pem = discovery.get("public_key_pem")

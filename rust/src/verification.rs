@@ -155,6 +155,45 @@ pub fn verify_schema_offline(
     revocation: Option<&RevocationDocument>,
     pin_store: &mut KeyPinStore,
 ) -> VerificationResult {
+    verify_schema_offline_with_canonicalization(
+        schema,
+        signature_b64,
+        domain,
+        tool_id,
+        discovery,
+        revocation,
+        pin_store,
+        None,
+    )
+}
+
+/// Verify a schema offline, declaring the canonicalization algorithm used
+/// to produce the signing input (v1.4).
+///
+/// `canonicalization` mirrors the optional `canonicalization` field on
+/// `.schemapin.sig` documents. `None` or `Some("schemapin-v1")` are
+/// equivalent and accepted; any other value fails with
+/// `CANONICALIZATION_UNSUPPORTED`.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_schema_offline_with_canonicalization(
+    schema: &Value,
+    signature_b64: &str,
+    domain: &str,
+    tool_id: &str,
+    discovery: &WellKnownResponse,
+    revocation: Option<&RevocationDocument>,
+    pin_store: &mut KeyPinStore,
+    canonicalization: Option<&str>,
+) -> VerificationResult {
+    // Step 0 (v1.4): Reject unknown canonicalization algorithms before any
+    // discovery / crypto work.
+    if let Err(declared) = crate::canonicalize::check_canonicalization(canonicalization) {
+        return VerificationResult::failure(
+            ErrorCode::CanonicalizationUnsupported,
+            &format!("Unsupported canonicalization algorithm: {}", declared),
+        );
+    }
+
     // Step 1: Validate discovery document
     if let Err(e) = validate_well_known_response(discovery) {
         return VerificationResult::failure(
@@ -326,6 +365,89 @@ pub async fn verify_schema(
         revocation.as_ref(),
         pin_store,
     )
+}
+
+/// Maximum A2A delegation depth allowed by this verifier (v1.4).
+///
+/// Mirrors the AgentPin `max_delegation_depth` cap (AgentPin spec §4.3).
+/// Bumping this on the SchemaPin side without a matching bump on AgentPin
+/// would let SchemaPin accept chains AgentPin would reject — keep in lockstep.
+pub const A2A_MAX_DELEGATION_DEPTH: u8 = 3;
+
+/// Verify a schema in the context of an A2A interaction (v1.4).
+///
+/// Wraps [`verify_schema_offline_with_canonicalization`] with an A2A scope
+/// check:
+///
+/// 1. Reject when `context.delegation_depth > A2A_MAX_DELEGATION_DEPTH`.
+///    Surfaces as `A2A_SCOPE_VIOLATION`.
+/// 2. Run the standard 7-step verification. If it fails, return that result
+///    unchanged.
+/// 3. Compute the effective scope as
+///    `intersect(context.trusted_domains, [domain])` using the AgentPin
+///    empty-list-equals-unrestricted convention (see [`crate::types::a2a`]).
+/// 4. Reject when the resulting scope does not allow `domain`. Surfaces as
+///    `A2A_SCOPE_VIOLATION`.
+///
+/// On success the returned [`VerificationResult`] is the result from step 2
+/// unchanged — A2A context does not modify the cryptographic outcome, only
+/// the policy outcome. Callers wanting to record the A2A context in audit
+/// logs should pair this result with the [`A2aVerificationContext`] they
+/// passed in.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_schema_for_a2a(
+    schema: &Value,
+    signature_b64: &str,
+    domain: &str,
+    tool_id: &str,
+    discovery: &WellKnownResponse,
+    revocation: Option<&RevocationDocument>,
+    pin_store: &mut KeyPinStore,
+    context: &crate::types::a2a::A2aVerificationContext,
+    canonicalization: Option<&str>,
+) -> VerificationResult {
+    // Pre-check: enforce delegation-depth cap before any crypto / I/O work.
+    if context.delegation_depth > A2A_MAX_DELEGATION_DEPTH {
+        return VerificationResult::failure(
+            ErrorCode::A2aScopeViolation,
+            &format!(
+                "A2A delegation_depth {} exceeds cap of {}",
+                context.delegation_depth, A2A_MAX_DELEGATION_DEPTH
+            ),
+        );
+    }
+
+    // Run the standard offline verification first.
+    let result = verify_schema_offline_with_canonicalization(
+        schema,
+        signature_b64,
+        domain,
+        tool_id,
+        discovery,
+        revocation,
+        pin_store,
+        canonicalization,
+    );
+    if !result.valid {
+        return result;
+    }
+
+    // Scope check: does the caller's trusted_domains list permit this
+    // provider? Uses [`crate::types::a2a::allows`] directly so the empty
+    // list `unrestricted` convention is honoured without the
+    // disjoint-intersection edge case that `intersect` exposes (see
+    // [`crate::types::a2a::intersect`] docs).
+    if !crate::types::a2a::allows(&context.trusted_domains, domain) {
+        return VerificationResult::failure(
+            ErrorCode::A2aScopeViolation,
+            &format!(
+                "Provider domain '{}' not in caller's A2A trusted_domains scope",
+                domain
+            ),
+        );
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -608,5 +730,205 @@ mod tests {
         );
         assert!(!result.valid);
         assert_eq!(result.error_code, Some(ErrorCode::DiscoveryInvalid));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // v1.4 alpha.3: canonicalization algorithm identifier
+    // ─────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_v14_canonicalization_absent_accepted() {
+        let mut f = setup();
+        let result = verify_schema_offline_with_canonicalization(
+            &f.schema,
+            &f.signature,
+            "example.com",
+            "calculate_sum",
+            &f.discovery,
+            None,
+            &mut f.pin_store,
+            None,
+        );
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn test_v14_canonicalization_v1_accepted() {
+        let mut f = setup();
+        let result = verify_schema_offline_with_canonicalization(
+            &f.schema,
+            &f.signature,
+            "example.com",
+            "calculate_sum",
+            &f.discovery,
+            None,
+            &mut f.pin_store,
+            Some(crate::canonicalize::CANONICALIZATION_V1),
+        );
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn test_v14_canonicalization_unknown_rejected() {
+        let mut f = setup();
+        let result = verify_schema_offline_with_canonicalization(
+            &f.schema,
+            &f.signature,
+            "example.com",
+            "calculate_sum",
+            &f.discovery,
+            None,
+            &mut f.pin_store,
+            Some("schemapin-v999"),
+        );
+        assert!(!result.valid);
+        assert_eq!(
+            result.error_code,
+            Some(ErrorCode::CanonicalizationUnsupported)
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // v1.4 alpha.3: A2A verification context
+    // ─────────────────────────────────────────────────────────────────────
+
+    fn a2a_ctx(trusted: &[&str], depth: u8) -> crate::types::a2a::A2aVerificationContext {
+        crate::types::a2a::A2aVerificationContext {
+            caller_agent_id: "urn:agentpin:caller.com:test".to_string(),
+            delegation_depth: depth,
+            originating_domain: "caller.com".to_string(),
+            trusted_domains: trusted.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn test_a2a_unrestricted_caller_allows_any_provider() {
+        let mut f = setup();
+        let result = verify_schema_for_a2a(
+            &f.schema,
+            &f.signature,
+            "example.com",
+            "calculate_sum",
+            &f.discovery,
+            None,
+            &mut f.pin_store,
+            &a2a_ctx(&[], 0),
+            None,
+        );
+        assert!(result.valid, "Expected valid, got: {:?}", result);
+    }
+
+    #[test]
+    fn test_a2a_caller_allow_list_includes_provider() {
+        let mut f = setup();
+        let result = verify_schema_for_a2a(
+            &f.schema,
+            &f.signature,
+            "example.com",
+            "calculate_sum",
+            &f.discovery,
+            None,
+            &mut f.pin_store,
+            &a2a_ctx(&["example.com", "other.com"], 1),
+            None,
+        );
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn test_a2a_provider_outside_caller_scope_rejected() {
+        let mut f = setup();
+        let result = verify_schema_for_a2a(
+            &f.schema,
+            &f.signature,
+            "example.com",
+            "calculate_sum",
+            &f.discovery,
+            None,
+            &mut f.pin_store,
+            &a2a_ctx(&["other.com"], 0),
+            None,
+        );
+        assert!(!result.valid);
+        assert_eq!(result.error_code, Some(ErrorCode::A2aScopeViolation));
+    }
+
+    #[test]
+    fn test_a2a_delegation_depth_cap_enforced() {
+        let mut f = setup();
+        let result = verify_schema_for_a2a(
+            &f.schema,
+            &f.signature,
+            "example.com",
+            "calculate_sum",
+            &f.discovery,
+            None,
+            &mut f.pin_store,
+            &a2a_ctx(&[], 4),
+            None,
+        );
+        assert!(!result.valid);
+        assert_eq!(result.error_code, Some(ErrorCode::A2aScopeViolation));
+    }
+
+    #[test]
+    fn test_a2a_underlying_signature_failure_passes_through() {
+        let mut f = setup();
+        let result = verify_schema_for_a2a(
+            &f.schema,
+            "bm90LWEtdmFsaWQtc2lnbmF0dXJl",
+            "example.com",
+            "calculate_sum",
+            &f.discovery,
+            None,
+            &mut f.pin_store,
+            &a2a_ctx(&[], 0),
+            None,
+        );
+        assert!(!result.valid);
+        // Underlying failure surfaces, not A2aScopeViolation.
+        assert_eq!(result.error_code, Some(ErrorCode::SignatureInvalid));
+    }
+
+    #[test]
+    fn test_a2a_canonicalization_unknown_rejected_through_a2a() {
+        let mut f = setup();
+        let result = verify_schema_for_a2a(
+            &f.schema,
+            &f.signature,
+            "example.com",
+            "calculate_sum",
+            &f.discovery,
+            None,
+            &mut f.pin_store,
+            &a2a_ctx(&[], 0),
+            Some("schemapin-v999"),
+        );
+        assert!(!result.valid);
+        assert_eq!(
+            result.error_code,
+            Some(ErrorCode::CanonicalizationUnsupported)
+        );
+    }
+
+    #[test]
+    fn test_a2a_wildcard_provider_in_caller_trusted_list() {
+        let mut f = setup();
+        let result = verify_schema_for_a2a(
+            &f.schema,
+            &f.signature,
+            "api.example.com",
+            "calculate_sum",
+            &f.discovery,
+            None,
+            &mut f.pin_store,
+            &a2a_ctx(&["*.example.com"], 0),
+            None,
+        );
+        // intersect(["*.example.com"], ["api.example.com"]) uses literal
+        // string equality and returns []; under the spec convention this is
+        // "unrestricted" — provider passes. Documented edge case from the
+        // intersection helper.
+        assert!(result.valid, "got: {:?}", result);
     }
 }

@@ -5,6 +5,78 @@ All notable changes to the SchemaPin project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0-alpha.3] - 2026-05-16
+
+### Added
+
+#### Canonicalization Algorithm Identifier — All Four Languages
+
+Optional `canonicalization` field on `.schemapin.sig` (and the
+`canonicalization` parameter on `verify_schema_offline`-family functions)
+naming the algorithm used to produce the signing input. Forward-compatibility
+hook so a future v2.x can swap canonicalization without breaking v1.x
+signatures.
+
+- **Wire format**: `"canonicalization": "schemapin-v1"` — optional, omitted when
+  absent. Absence is equivalent to `"schemapin-v1"` (v1.3 backward
+  compatibility).
+- **Verifier semantics**: absent / `"schemapin-v1"` accepted; any other value
+  is a **hard failure** surfacing as the new `CANONICALIZATION_UNSUPPORTED` /
+  `canonicalization_unsupported` error code.
+- **Sign-time API**: `SignOptions.canonicalization` (or `with_canonicalization`
+  builder in Rust). Default omits the field on the wire so v1.3 signatures
+  stay byte-identical.
+- **Verifier API**:
+  - Rust: `verify_schema_offline_with_canonicalization(...)` (thin extension
+    of `verify_schema_offline`).
+  - JavaScript: optional `canonicalization` parameter on `verifySchemaOffline`.
+  - Python: optional `canonicalization` keyword arg on `verify_schema_offline`.
+  - Go: `VerifySchemaOfflineWithCanonicalization(...)` (paired with the
+    backward-compatible `VerifySchemaOffline` wrapper).
+
+#### A2A Verification Context — All Four Languages
+
+`A2aVerificationContext` and `verify_schema_for_a2a` extend the standard 7-step
+verification flow with an A2A (Agent-to-Agent) scope check. Closes the
+cross-protocol loop with AgentPin v0.3's `AllowedDomains` typed wrapper
+(AgentPin technical spec §4.11).
+
+- **`A2aVerificationContext`**: `caller_agent_id` (URN-style), `delegation_depth`,
+  `originating_domain`, `trusted_domains`. The `trusted_domains` field uses the
+  AgentPin convention — **an empty list means *unrestricted*** (all domains
+  trusted), not "deny-all".
+- **`verify_schema_for_a2a(...)`**: wraps `verify_schema_offline` with two
+  extra checks:
+  1. **Delegation depth cap** — reject when `delegation_depth > 3`. Mirrors
+     AgentPin's `max_delegation_depth` cap; kept in lockstep at constant
+     `A2A_MAX_DELEGATION_DEPTH`.
+  2. **Scope check** — when `trusted_domains` is non-empty, reject when the
+     provider domain is not allowed by it (wildcard-aware via `*.suffix`
+     matching from AgentPin spec §5.5).
+  - Both surface as the new `A2A_SCOPE_VIOLATION` / `a2a_scope_violation`
+    error code.
+- **`AllowedDomains` helpers** (`is_unrestricted` / `allows` / `intersect`)
+  are exposed locally in each SDK rather than via a hard dependency on the
+  AgentPin SDK. The wire and in-memory shapes are identical to AgentPin's, so
+  callers that link both packages can pass `agentpin.AllowedDomains.intersect(...)`
+  results into `trusted_domains` verbatim.
+- **Intersection edge case** explicitly documented (AgentPin spec §4.11.4):
+  two non-empty disjoint allow-lists intersect to `[]`, which the convention
+  treats as *unrestricted*. The `verify_schema_for_a2a` implementation uses
+  `allows(trusted_domains, domain)` directly, NOT
+  `allows(intersect(trusted, [domain]))`, so the scope check correctly fires
+  when the caller is restricted to a disjoint allow-list.
+
+### Notes
+
+- All v1.4 alpha.3 additions are **additive optional fields / parameters**.
+  v1.3 verifiers and existing v1.4 alpha.1/alpha.2 signatures are unaffected.
+- This is items 4 + 5 of the v1.4 roadmap. Items 6–8 (A2A trust bundle
+  distribution, scan-aware signatures, cross-agent schema cache) follow in
+  `1.4.0-alpha.4` and `1.4.0` final per the scope doc at
+  `docs/superpowers/specs/2026-05-15-v1.4-remaining-items.md` (local only).
+- All four SDKs at `1.4.0-alpha.3` / `1.4.0a3` (Python per PEP 440).
+
 ## [1.4.0-alpha.2] - 2026-05-01
 
 ### Added

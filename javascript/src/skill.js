@@ -15,7 +15,7 @@ import { readFileSync, readdirSync, writeFileSync, lstatSync, existsSync } from 
 import { join, relative, basename, resolve } from 'node:path';
 import { KeyManager, SignatureManager } from './crypto.js';
 import { checkRevocationCombined } from './revocation.js';
-import { ErrorCode, applyExpirationCheck } from './verification.js';
+import { ErrorCode, applyExpirationCheck, checkCanonicalization } from './verification.js';
 import { verifyDnsMatch } from './dns.js';
 
 export const SIGNATURE_FILENAME = '.schemapin.sig';
@@ -283,7 +283,11 @@ export function signSkillWithOptions(skillDir, privateKeyPem, domain, options = 
         schemaVersion = null,
         // v1.4 alpha.2: `sha256:<hex>` of the prior signed version's
         // `skill_hash`, forming a hash chain. Pair with `verifyChain`.
-        previousHash = null
+        previousHash = null,
+        // v1.4 alpha.3: canonicalization algorithm identifier written to the
+        // signature. `null` is wire-equivalent to the implicit "schemapin-v1"
+        // default; pass `'schemapin-v1'` to declare it explicitly.
+        canonicalization = null
     } = options;
 
     const skillPath = resolve(skillDir);
@@ -317,7 +321,8 @@ export function signSkillWithOptions(skillDir, privateKeyPem, domain, options = 
     const usesV14Field =
         expiresAt !== null
         || (schemaVersion !== null && schemaVersion !== undefined)
-        || (previousHash !== null && previousHash !== undefined);
+        || (previousHash !== null && previousHash !== undefined)
+        || (canonicalization !== null && canonicalization !== undefined);
     const version = usesV14Field ? SCHEMAPIN_VERSION_V14 : SCHEMAPIN_VERSION_V13;
 
     // Build the document in canonical field order. Optional v1.4 fields slot
@@ -337,6 +342,9 @@ export function signSkillWithOptions(skillDir, privateKeyPem, domain, options = 
     }
     if (previousHash !== null && previousHash !== undefined) {
         ordered.previous_hash = previousHash;
+    }
+    if (canonicalization !== null && canonicalization !== undefined) {
+        ordered.canonicalization = canonicalization;
     }
     ordered.domain = domain;
     ordered.signer_kid = signerKid;
@@ -386,6 +394,17 @@ export function verifySkillOffline(skillDir, discovery, signatureData = null, re
     const domain = signatureData.domain || '';
     if (toolId === null || toolId === undefined) {
         toolId = signatureData.skill_name || basename(skillPath);
+    }
+
+    // Step 1a (v1.4 alpha.3): canonicalization algorithm check.
+    const unsupportedAlgo = checkCanonicalization(signatureData.canonicalization);
+    if (unsupportedAlgo !== null) {
+        return {
+            valid: false,
+            domain,
+            error_code: ErrorCode.CANONICALIZATION_UNSUPPORTED,
+            error_message: `Unsupported canonicalization algorithm: ${unsupportedAlgo}`
+        };
     }
 
     // Step 2: Validate discovery document

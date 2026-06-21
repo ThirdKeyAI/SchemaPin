@@ -81,6 +81,16 @@ pub enum ErrorCode {
     DomainMismatch,
     #[serde(rename = "SCHEMA_CANONICALIZATION_FAILED")]
     SchemaCanonicalizationFailed,
+    /// (v1.4) Signature declared a `canonicalization` algorithm identifier that
+    /// this verifier does not support. Hard failure — verifiers MUST reject
+    /// unknown algorithms rather than silently fall back.
+    #[serde(rename = "CANONICALIZATION_UNSUPPORTED")]
+    CanonicalizationUnsupported,
+    /// (v1.4) A2A scope violation — the tool provider's domain is not in the
+    /// caller's `AllowedDomains` allow-list (under the AgentPin
+    /// empty-list-equals-unrestricted convention).
+    #[serde(rename = "A2A_SCOPE_VIOLATION")]
+    A2aScopeViolation,
 }
 
 impl std::fmt::Display for ErrorCode {
@@ -94,6 +104,8 @@ impl std::fmt::Display for ErrorCode {
             ErrorCode::DiscoveryInvalid => "DISCOVERY_INVALID",
             ErrorCode::DomainMismatch => "DOMAIN_MISMATCH",
             ErrorCode::SchemaCanonicalizationFailed => "SCHEMA_CANONICALIZATION_FAILED",
+            ErrorCode::CanonicalizationUnsupported => "CANONICALIZATION_UNSUPPORTED",
+            ErrorCode::A2aScopeViolation => "A2A_SCOPE_VIOLATION",
         };
         write!(f, "{}", s)
     }

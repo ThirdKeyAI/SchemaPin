@@ -89,7 +89,7 @@ func TestCanonicalizeSortedDeterministic(t *testing.T) {
 
 func TestCanonicalizeSkipSigFile(t *testing.T) {
 	dir := createSkillDir(t, map[string]string{
-		"main.py":       "print('hello')",
+		"main.py":        "print('hello')",
 		".schemapin.sig": `{"signature":"old"}`,
 	})
 
@@ -642,9 +642,9 @@ func TestDetectTamperedFiles(t *testing.T) {
 		"c.txt": "sha256:ccc",
 	}
 	current := map[string]string{
-		"a.txt": "sha256:aaa",       // unchanged
-		"b.txt": "sha256:modified",  // modified
-		"d.txt": "sha256:ddd",       // added
+		"a.txt": "sha256:aaa",      // unchanged
+		"b.txt": "sha256:modified", // modified
+		"d.txt": "sha256:ddd",      // added
 	}
 
 	result := DetectTamperedFiles(current, signed)
@@ -697,7 +697,7 @@ func buildTrustBundleJSON(t *testing.T, pubPEM, domain string) string {
 	t.Helper()
 	bundleData := map[string]interface{}{
 		"schemapin_bundle_version": "1.2",
-		"created_at":              "2024-01-01T00:00:00Z",
+		"created_at":               "2024-01-01T00:00:00Z",
 		"documents": []map[string]interface{}{
 			{
 				"domain":         domain,
