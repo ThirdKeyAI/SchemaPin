@@ -35,7 +35,7 @@ tokio = { version = "1.0", optional = true }
 async-trait = { version = "0.1", optional = true }
 
 # Optional dependency for DNS TXT cross-verification (v1.4)
-hickory-resolver = { version = "0.24", optional = true }
+hickory-resolver = { version = "0.26", optional = true }
 
 [dev-dependencies]
 tempfile = "3.0"
