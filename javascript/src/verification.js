@@ -63,7 +63,13 @@ export const ErrorCode = Object.freeze({
     CANONICALIZATION_UNSUPPORTED: 'canonicalization_unsupported',
     // v1.4 alpha.3: A2A scope violation (provider domain not in caller's
     // trusted_domains, or delegation_depth exceeded).
-    A2A_SCOPE_VIOLATION: 'a2a_scope_violation'
+    A2A_SCOPE_VIOLATION: 'a2a_scope_violation',
+    // v1.4 alpha.3 (bundle distribution): a trust bundle lacks the
+    // bundle_authority / signature required to verify it.
+    BUNDLE_UNSIGNED: 'bundle_unsigned',
+    // v1.4 alpha.3 (bundle distribution): a trust bundle is past its
+    // expires_at (or has an unparseable expires_at).
+    BUNDLE_EXPIRED: 'bundle_expired'
 });
 
 /**

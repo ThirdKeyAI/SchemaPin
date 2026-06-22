@@ -80,6 +80,7 @@ All four implementations use identical crypto (ECDSA P-256 + SHA-256) — cross-
 | [Signature Expiration](signature-expiration.md) | `expires_at` field for degraded-not-failed verification (v1.4-alpha, all 4 languages) |
 | [DNS TXT Cross-Verification](dns-txt.md) | Second-channel `_schemapin.{domain}` lookups (v1.4-alpha, all 4 languages) |
 | [Schema Version Binding](schema-version-binding.md) | `schema_version` + `previous_hash` lineage chain to defend against rug-pull substitutions (v1.4-alpha, all 4 languages) |
+| [Trust Bundle Distribution](trust-bundle-distribution.md) | Sign, verify, and merge trust bundles for safe A2A exchange (v1.4-alpha, all 4 languages) |
 | [Deployment](deployment.md) | Serve `.well-known` endpoints in production |
 | [Troubleshooting](troubleshooting.md) | Common issues and solutions |
 

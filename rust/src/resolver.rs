@@ -257,6 +257,7 @@ mod tests {
                 ),
             }],
             revocations: vec![],
+            ..Default::default()
         }
     }
 

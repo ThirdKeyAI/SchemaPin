@@ -44,6 +44,13 @@ const (
 	// ErrA2AScopeViolation (v1.4 alpha.3) — A2A scope violation (provider
 	// domain not in caller's trusted_domains, or delegation_depth exceeded).
 	ErrA2AScopeViolation ErrorCode = "a2a_scope_violation"
+	// ErrBundleUnsigned (v1.4) — a trust bundle was passed to VerifyTrustBundle
+	// without a bundle_authority / signature pair. Bundle distribution requires
+	// a signed bundle.
+	ErrBundleUnsigned ErrorCode = "bundle_unsigned"
+	// ErrBundleExpired (v1.4) — a signed trust bundle's expires_at is in the
+	// past (or unparseable).
+	ErrBundleExpired ErrorCode = "bundle_expired"
 )
 
 // CanonicalizationV1 is the algorithm identifier (v1.4 alpha.3) for the

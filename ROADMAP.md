@@ -1,7 +1,7 @@
 # SchemaPin Roadmap
 
-![Version](https://img.shields.io/badge/current-v1.3.0-brightgreen)
-![Next](https://img.shields.io/badge/next-v1.4.0_(planning)-blue)
+![Version](https://img.shields.io/badge/current-v1.4.0--alpha.4-blue)
+![Next](https://img.shields.io/badge/next-v1.4.0_GA-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 **Cryptographic schema integrity verification for AI tool ecosystems — the trust anchor of the ThirdKey trust stack.**
@@ -18,8 +18,10 @@
 | **1.3.0** | 2026-02 | AgentSkills security — skill folder signing | **Shipped** |
 | **1.4.0-alpha.1** | 2026-04-30 | Signature expiration + DNS TXT cross-verification (all 4 langs) | **Shipped** |
 | **1.4.0-alpha.2** | 2026-05-01 | Schema version binding (`schema_version` + `previous_hash` lineage chain, all 4 langs) | **Shipped** |
-| **1.4.0** | Q2-Q3 2026 | Signature lifecycle, version binding, A2A trust | In progress |
-| **1.5.0** | Q4 2026 | Multi-key endorsement, permissions, advanced revocation | Planning |
+| **1.4.0-alpha.3** | 2026-05-16 | Canonicalization algorithm id + A2A verification context (all 4 langs) | **Shipped** |
+| **1.4.0-alpha.4** | 2026-06-21 | A2A trust-bundle distribution — bundle signing, merge, TOFU, JSON-RPC (all 4 langs) | **Shipped** |
+| **1.4.0** | Q3 2026 | Signature lifecycle, version binding, A2A trust — GA (items 7–8 moved to 1.5) | In progress |
+| **1.5.0** | Q4 2026 | Scan-aware signatures, cross-agent schema cache, multi-key endorsement, permissions, advanced revocation | Planning |
 
 ---
 
@@ -145,7 +147,7 @@ AgentPin already uses `_agentpin.{domain}` TXT records, but SchemaPin doesn't le
 _schemapin.example.com. IN TXT "v=schemapin1; kid=acme-2026-01; fp=sha256:a1b2c3d4..."
 ```
 
-### Canonicalization Algorithm Identifier
+### Canonicalization Algorithm Identifier — **Shipped (alpha.3, all 4 langs)**
 
 The current spec hardcodes the canonicalization algorithm (sorted keys, no whitespace, UTF-8). If the algorithm ever needs to change (and JSON canonicalization is notoriously tricky across languages), there's no way to signal which algorithm was used.
 
@@ -156,7 +158,7 @@ The current spec hardcodes the canonicalization algorithm (sorted keys, no white
 
 Trivial to add now, saves a painful migration later.
 
-### A2A Context for Schema Verification
+### A2A Context for Schema Verification — **Shipped (alpha.3, all 4 langs)**
 
 When agents collaborate via A2A (Agent-to-Agent), tool schemas cross trust boundaries. SchemaPin v1.4.0 ensures that tool integrity verification extends seamlessly into A2A networks — every tool invoked through an A2A bridge is verified against its provider's signed schema.
 
@@ -167,16 +169,21 @@ When agents collaborate via A2A (Agent-to-Agent), tool schemas cross trust bound
 | Domain scoping | Accept optional trusted domains as `Vec<String>`, matching the `AllowedDomains` type exported by AgentPin v0.3.0 (extracted from `AgentDeclaration.constraints`). Empty list means no domain restriction. |
 | Intersection check | Scope verification to intersection of caller's allowed domains and tool provider's domain |
 
-### Trust Bundle Distribution for A2A Networks
+### Trust Bundle Distribution for A2A Networks — **Shipped (alpha.4, all 4 langs)**
 
 | Item | Details |
 |------|---------|
-| Bundle signing | Sign trust bundles with a bundle authority key |
+| Bundle signing | Sign trust bundles with a bundle authority key (ECDSA P-256 over `schemapin-v1` canonical bytes) |
 | `merge_trust_bundles()` | Combine bundles from multiple sources with deduplication (newest wins) |
-| TOFU for bundles | TOFU pinning for bundle authority keys |
-| JSON-RPC method | `schemapin/trustBundle` for A2A bundle exchange |
+| TOFU for bundles | TOFU pinning for bundle authority keys, keyed by `kid` |
+| JSON-RPC method | `schemapin/trustBundle` envelope helpers for A2A bundle exchange |
 
-### Scan-Aware Signatures
+Bundle authority key carried as `public_key_pem` (consistent with discovery docs) rather than JWK — see the alpha.4 CHANGELOG for rationale.
+
+### Scan-Aware Signatures — **Moved to v1.5.0**
+
+> Descoped from v1.4.0 GA (2026-06-21). Additive and independent of the rest of
+> v1.4, so deferring it does not block GA. Spec below is retained as the v1.5 plan.
 
 Right now scanning and signing are somewhat independent in the Symbiont/SchemaPin workflow. Making the scan result part of the signature metadata closes this gap — a skill signed with `scan_passed: true` at signing time, with the scanner version and ruleset hash recorded, tells verifiers not just that the content is authentic but that it passed security review at a specific rule version.
 
@@ -200,7 +207,10 @@ Right now scanning and signing are somewhat independent in the Symbiont/SchemaPi
 
 This is fully optional and backward compatible — v1.3 verifiers ignore the new fields.
 
-### Cross-Agent Tool Schema Caching
+### Cross-Agent Tool Schema Caching — **Moved to v1.5.0**
+
+> Descoped from v1.4.0 GA (2026-06-21). A local in-memory cache helper with no
+> wire-format impact; deferring it does not block GA. Spec below is the v1.5 plan.
 
 | Item | Details |
 |------|---------|
@@ -215,6 +225,11 @@ All four language implementations (Rust, JavaScript, Python, Go) receive matchin
 ---
 
 ## v1.5.0 — Multi-Key Endorsement, Permissions & Advanced Revocation (Q4 2026)
+
+**Carried over from v1.4 (descoped 2026-06-21):** Scan-Aware Signatures and
+Cross-Agent Tool Schema Caching. Both are additive and independent of the v1.4
+trust surface, so they ship in v1.5 rather than blocking the v1.4.0 GA. Their
+full specs live in the v1.4 section above (marked "Moved to v1.5.0").
 
 ### Multi-Key / Organizational Endorsement
 
@@ -324,4 +339,4 @@ We welcome input on roadmap priorities:
 
 ---
 
-*Last updated: 2026-05-01 (v1.4.0-alpha.2 — schema version binding across all four language implementations)*
+*Last updated: 2026-06-21 (v1.4.0-alpha.4 — A2A trust-bundle distribution across all four language implementations; items 7–8 descoped to v1.5.0)*

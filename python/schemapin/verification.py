@@ -29,6 +29,12 @@ class ErrorCode(Enum):
     # v1.4 alpha.3: A2A scope violation (provider domain not in caller's
     # trusted_domains, or delegation_depth exceeded).
     A2A_SCOPE_VIOLATION = "a2a_scope_violation"
+    # v1.4: a trust bundle was passed to verify_trust_bundle without a
+    # bundle_authority / signature pair. Bundle distribution requires a
+    # signed bundle.
+    BUNDLE_UNSIGNED = "bundle_unsigned"
+    # v1.4: a signed trust bundle's expires_at is in the past (or unparseable).
+    BUNDLE_EXPIRED = "bundle_expired"
 
 
 # v1.4 alpha.3: canonicalization algorithm identifier

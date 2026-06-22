@@ -68,6 +68,7 @@ pub mod core;
 pub mod crypto;
 
 // New modules (v1.2.0)
+pub mod bundle;
 pub mod canonicalize;
 pub mod discovery;
 pub mod error;

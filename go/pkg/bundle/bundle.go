@@ -57,12 +57,37 @@ func (b *BundledDiscovery) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(wellKnownData, &b.WellKnown)
 }
 
+// BundleAuthority (v1.4) identifies and carries the public key of the authority
+// that signed a trust bundle. TOFU-pinned by Kid on first use (see
+// VerifyTrustBundle).
+type BundleAuthority struct {
+	Kid          string `json:"kid"`
+	PublicKeyPEM string `json:"public_key_pem"`
+}
+
 // SchemaPinTrustBundle holds discovery documents and revocations for offline use.
+//
+// v1.4 adds optional distribution fields (BundleAuthority, SignedAt, ExpiresAt,
+// Signature) so bundles can be signed by a bundle authority and safely exchanged
+// between agents over A2A. See the SignTrustBundle / VerifyTrustBundle /
+// MergeTrustBundles operations in distribution.go.
 type SchemaPinTrustBundle struct {
 	SchemapinBundleVersion string                          `json:"schemapin_bundle_version"`
 	CreatedAt              string                          `json:"created_at"`
 	Documents              []BundledDiscovery              `json:"documents"`
 	Revocations            []revocation.RevocationDocument `json:"revocations"`
+	// BundleAuthority (v1.4) is the authority that signed this bundle. Present
+	// on signed bundles.
+	BundleAuthority *BundleAuthority `json:"bundle_authority,omitempty"`
+	// SignedAt (v1.4) is the RFC 3339 timestamp the bundle was signed.
+	SignedAt string `json:"signed_at,omitempty"`
+	// ExpiresAt (v1.4) is an optional RFC 3339 expiry; verifiers reject the
+	// bundle past this.
+	ExpiresAt string `json:"expires_at,omitempty"`
+	// Signature (v1.4) is the base64 DER ECDSA P-256 signature over the
+	// canonical bundle bytes (schemapin-v1 canonicalization with this field set
+	// to "").
+	Signature string `json:"signature,omitempty"`
 }
 
 // NewTrustBundle creates a new empty trust bundle.

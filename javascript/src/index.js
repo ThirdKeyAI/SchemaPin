@@ -36,7 +36,16 @@ export {
     createBundledDiscovery,
     findDiscovery,
     findRevocation,
-    parseTrustBundle
+    parseTrustBundle,
+    // v1.4: A2A trust-bundle distribution
+    BUNDLE_VERSION_SIGNED,
+    BUNDLE_AUTHORITY_PIN_DOMAIN,
+    signTrustBundle,
+    verifyTrustBundle,
+    mergeTrustBundles,
+    buildTrustBundleRequest,
+    buildTrustBundleResponse,
+    parseTrustBundleResponse
 } from './bundle.js';
 export {
     SchemaResolver,

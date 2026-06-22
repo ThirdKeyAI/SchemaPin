@@ -679,6 +679,7 @@ mod tests {
                 well_known: f.discovery.clone(),
             }],
             revocations: vec![],
+            ..Default::default()
         };
         let resolver = TrustBundleResolver::new(&bundle);
         let mut pin_store = KeyPinStore::new();
