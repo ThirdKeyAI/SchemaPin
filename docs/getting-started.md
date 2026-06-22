@@ -361,7 +361,10 @@ const result = verifySkillOffline('./my-skill/', discoveryData, sig, null, pinSt
 - [Skill Signing](skill-signing.md) — SkillSigner deep dive
 - [Trust Bundles](trust-bundles.md) — Offline and air-gapped verification
 - [Revocation](revocation.md) — Rotate keys and serve signed revocation documents
-- [Signature Expiration](signature-expiration.md) — v1.4-alpha (Rust): `expires_at` and degraded-not-failed verification
-- [DNS TXT Cross-Verification](dns-txt.md) — v1.4-alpha (Rust): second-channel `_schemapin.{domain}` lookups
+- [Signature Expiration](signature-expiration.md) — v1.4-alpha (all 4 languages): `expires_at` and degraded-not-failed verification
+- [DNS TXT Cross-Verification](dns-txt.md) — v1.4-alpha (all 4 languages): second-channel `_schemapin.{domain}` lookups
+- [Schema Version Binding](schema-version-binding.md) — v1.4-alpha (all 4 languages): `schema_version` + `previous_hash` lineage chain
+- [A2A Verification Context](a2a-context.md) — v1.4-alpha (all 4 languages): scope verification to caller-trusted domains
+- [Trust Bundle Distribution](trust-bundle-distribution.md) — v1.4-alpha (all 4 languages): sign, verify, and merge trust bundles for A2A
 - [Deployment](deployment.md) — Serve `.well-known` endpoints in production
 - [Troubleshooting](troubleshooting.md) — Common issues and solutions

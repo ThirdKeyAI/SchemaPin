@@ -2,6 +2,8 @@
 
 SchemaPin v1.2 introduced trust bundles and pluggable discovery resolvers for environments where HTTP-based `.well-known` discovery is unavailable or impractical.
 
+> **v1.4:** trust bundles can now be **signed by a bundle authority** and exchanged between agents over A2A. See [Trust Bundle Distribution](trust-bundle-distribution.md).
+
 ---
 
 ## When to Use Offline Verification
