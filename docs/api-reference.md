@@ -409,3 +409,47 @@ check_revocation(doc, some_fingerprint)  # raises if revoked
 | Rust | `detect_tampered_files(current, original)` | `TamperResult` |
 
 See [Skill Signing](skill-signing.md) for detailed usage.
+
+---
+
+## v1.4 Features
+
+All v1.4 additions are optional fields/parameters — v1.3 clients are unaffected. Each feature has a dedicated page with full per-language examples; this section is the at-a-glance index.
+
+### Signature Expiration — alpha.1
+
+Optional `expires_at` on signatures; expired signatures degrade to a warning rather than failing. See [Signature Expiration](signature-expiration.md).
+
+### DNS TXT Cross-Verification — alpha.1
+
+Second-channel `_schemapin.{domain}` TXT lookup cross-checks the discovery key fingerprint. See [DNS TXT Cross-Verification](dns-txt.md).
+
+### Schema Version Binding — alpha.2
+
+Optional `schema_version` + `previous_hash` lineage chain, with opt-in `verify_chain` (`verifyChain` / `VerifyChain`). See [Schema Version Binding](schema-version-binding.md).
+
+### Canonicalization Algorithm Identifier — alpha.3
+
+Optional `canonicalization` field (`"schemapin-v1"`); unknown algorithms are a hard `CANONICALIZATION_UNSUPPORTED` failure. Verifier functions take an optional `canonicalization` argument.
+
+### A2A Verification Context — alpha.3
+
+| Language | Function |
+|----------|----------|
+| Python | `verify_schema_for_a2a(schema, sig, domain, tool_id, discovery, revocation, pin_store, context, canonicalization=None)` |
+| JavaScript | `verifySchemaForA2a(schema, sig, domain, toolId, discovery, revocation, pinStore, context)` |
+| Go | `verification.VerifySchemaForA2A(schema, sig, domain, toolID, discovery, revocation, pinStore, ctx)` |
+| Rust | `verify_schema_for_a2a(schema, sig, domain, tool_id, discovery, revocation, pin_store, context, canonicalization)` |
+
+Scopes verification to caller-trusted domains; failure is `A2A_SCOPE_VIOLATION`. See [A2A Verification Context](a2a-context.md).
+
+### Trust Bundle Distribution — alpha.4
+
+| Operation | Python / JS / Go / Rust |
+|-----------|--------------------------|
+| Sign | `sign_trust_bundle` / `signTrustBundle` / `SignTrustBundle` / `sign_trust_bundle` |
+| Verify | `verify_trust_bundle` / `verifyTrustBundle` / `VerifyTrustBundle` / `verify_trust_bundle` |
+| Merge | `merge_trust_bundles` / `mergeTrustBundles` / `MergeTrustBundles` / `merge_trust_bundles` |
+| JSON-RPC | `build_trust_bundle_request` / `build_trust_bundle_response` / `parse_trust_bundle_response` (+ camel/Pascal variants) |
+
+Sign and exchange trust bundles between agents; new error codes `BUNDLE_UNSIGNED` / `BUNDLE_EXPIRED`. See [Trust Bundle Distribution](trust-bundle-distribution.md).
