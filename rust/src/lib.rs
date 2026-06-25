@@ -64,7 +64,6 @@
 //! The [`error::Error`] enum provides a unified error type for the full verification workflow.
 
 // Preserved modules (backward compatible)
-pub mod core;
 pub mod crypto;
 
 // New modules (v1.2.0)

@@ -218,64 +218,6 @@ impl KeyManager {
     pub fn load_public_key_pem(pem_data: &str) -> Result<PublicKey, Error> {
         Ok(PublicKey::from_public_key_pem(pem_data)?)
     }
-
-    /// Calculate SHA-256 fingerprint of public key.
-    pub fn calculate_key_fingerprint(public_key: &PublicKey) -> Result<String, Error> {
-        let der_bytes = public_key.to_public_key_der()?;
-        let mut hasher = Sha256::new();
-        hasher.update(der_bytes.as_bytes());
-        let hash = hasher.finalize();
-        Ok(format!("sha256:{}", hex::encode(hash)))
-    }
-
-    /// Calculate SHA-256 fingerprint from PEM-encoded public key.
-    pub fn calculate_key_fingerprint_from_pem(public_key_pem: &str) -> Result<String, Error> {
-        let public_key = Self::load_public_key_pem(public_key_pem)?;
-        Self::calculate_key_fingerprint(&public_key)
-    }
-}
-
-/// Signature manager for ECDSA operations (matches Python API)
-pub struct SignatureManager;
-
-impl SignatureManager {
-    /// Sign hash using ECDSA P-256 and return Base64-encoded signature.
-    pub fn sign_hash(hash_bytes: &[u8], private_key: &SecretKey) -> Result<String, Error> {
-        let signing_key = SigningKey::from(private_key.clone());
-        let signature: p256::ecdsa::Signature = signing_key.sign(hash_bytes);
-        Ok(general_purpose::STANDARD.encode(signature.to_der()))
-    }
-
-    /// Verify ECDSA signature against hash.
-    pub fn verify_signature(
-        hash_bytes: &[u8],
-        signature_b64: &str,
-        public_key: &PublicKey,
-    ) -> Result<bool, Error> {
-        let verifying_key = VerifyingKey::from(*public_key);
-        let signature_bytes = general_purpose::STANDARD.decode(signature_b64)?;
-        let signature_obj =
-            Signature::from_der(&signature_bytes).map_err(|_| Error::InvalidKeyFormat)?;
-
-        match verifying_key.verify(hash_bytes, &signature_obj) {
-            Ok(()) => Ok(true),
-            Err(_) => Ok(false),
-        }
-    }
-
-    /// Sign schema hash and return Base64 signature.
-    pub fn sign_schema_hash(schema_hash: &[u8], private_key: &SecretKey) -> Result<String, Error> {
-        Self::sign_hash(schema_hash, private_key)
-    }
-
-    /// Verify schema signature against hash.
-    pub fn verify_schema_signature(
-        schema_hash: &[u8],
-        signature_b64: &str,
-        public_key: &PublicKey,
-    ) -> Result<bool, Error> {
-        Self::verify_signature(schema_hash, signature_b64, public_key)
-    }
 }
 
 #[cfg(test)]
@@ -333,23 +275,11 @@ mod tests {
         let loaded_private = KeyManager::load_private_key_pem(&private_key_pem).unwrap();
         let loaded_public = KeyManager::load_public_key_pem(&public_key_pem).unwrap();
 
-        // Keys should be equivalent
+        // Keys should round-trip through PEM unchanged.
         assert_eq!(private_key.to_bytes(), loaded_private.to_bytes());
-        // Test that the public keys can be used to verify the same signature
-        let test_data = b"test data";
-        let sig1 = SignatureManager::sign_hash(test_data, &private_key).unwrap();
-        assert!(SignatureManager::verify_signature(test_data, &sig1, &public_key).unwrap());
-        assert!(SignatureManager::verify_signature(test_data, &sig1, &loaded_public).unwrap());
-    }
-
-    #[test]
-    fn test_signature_manager_api() {
-        let (private_key, public_key) = KeyManager::generate_keypair().unwrap();
-        let data = b"Test data for signature";
-
-        let signature = SignatureManager::sign_hash(data, &private_key).unwrap();
-        let is_valid = SignatureManager::verify_signature(data, &signature, &public_key).unwrap();
-
-        assert!(is_valid);
+        assert_eq!(
+            KeyManager::export_public_key_pem(&loaded_public).unwrap(),
+            public_key_pem
+        );
     }
 }
