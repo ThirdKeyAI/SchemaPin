@@ -1,22 +1,23 @@
 {
   "server": {
-    "host": "0.0.0.0",
+    "host": "127.0.0.1",
     "port": 8000,
-    "debug": true,
-    "reload": true
+    "debug": false,
+    "reload": false
   },
   "cors": {
     "allow_origins": ["*"],
-    "allow_credentials": true,
-    "allow_methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    "allow_credentials": false,
+    "allow_methods": ["GET", "OPTIONS"],
     "allow_headers": ["*"]
   },
   "security": {
     "rate_limit": {
       "requests_per_minute": 60
     },
+    "admin_token": null,
     "max_key_size": 8192,
-    "allowed_key_types": ["ECDSA", "RSA"]
+    "allowed_key_types": ["ECDSA"]
   },
   "storage": {
     "keys_directory": "./keys",
@@ -38,7 +39,7 @@
       "enabled": true
     },
     "bob.example.com": {
-      "name": "Bob Industries", 
+      "name": "Bob Industries",
       "contact": "security@bob.example.com",
       "enabled": true
     },
