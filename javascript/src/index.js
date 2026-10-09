@@ -105,6 +105,9 @@ export {
     detectTamperedFiles
 } from './skill.js';
 
+// Verifier-side lineage store (spec section 18.4)
+export { LineageStore, LineageError, versionIncreases } from './lineage.js';
+
 // v1.4.0-alpha.1: DNS TXT cross-verification
 export {
     parseTxtRecord,

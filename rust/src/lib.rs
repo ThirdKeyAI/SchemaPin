@@ -72,6 +72,7 @@ pub mod canonicalize;
 pub mod discovery;
 pub mod domain;
 pub mod error;
+pub mod lineage;
 pub mod pinning;
 pub mod resolver;
 pub mod revocation;

@@ -52,6 +52,7 @@ from .interactive import (
     PromptType,
     UserDecision,
 )
+from .lineage import LineageError, LineageRecord, LineageStore, version_increases
 from .pinning import KeyPinning, PinningMode, PinningPolicy
 from .resolver import (
     ChainResolver,
@@ -156,6 +157,10 @@ __all__ = [
     "ChainError",
     "SkillCanonicalizationError",
     "verify_chain",
+    "LineageStore",
+    "LineageRecord",
+    "LineageError",
+    "version_increases",
     # v1.3.0
     "SkillSigner",
     "SIGNATURE_FILENAME",
