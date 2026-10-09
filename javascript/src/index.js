@@ -7,7 +7,7 @@ export { InvalidDomainError, validateDomain, isValidDomain } from './domain.js';
 export { TransportError, fetchJson, requireHttps, MAX_RESPONSE_BYTES } from './transport.js';
 export { KeyManager, SignatureManager } from './crypto.js';
 export { PublicKeyDiscovery } from './discovery.js';
-export { KeyPinning, PinningMode, PinningPolicy } from './pinning.js';
+export { KeyPinning, PinningMode, PinningPolicy, PinStoreCorruptError } from './pinning.js';
 export {
     SchemaSigningWorkflow,
     SchemaVerificationWorkflow,

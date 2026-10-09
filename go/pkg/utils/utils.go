@@ -11,6 +11,7 @@ import (
 	"github.com/ThirdKeyAi/schemapin/go/pkg/core"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/crypto"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/discovery"
+	"github.com/ThirdKeyAi/schemapin/go/pkg/domain"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/pinning"
 )
 
@@ -66,7 +67,12 @@ func (s *SchemaSigningWorkflow) GetPublicKeyPEM() (string, error) {
 	return s.keyManager.ExportPublicKeyPEM(&s.privateKey.PublicKey)
 }
 
-// SchemaVerificationWorkflow provides high-level verification operations
+// SchemaVerificationWorkflow provides high-level verification operations.
+//
+// Deprecated: built on the legacy pinning.KeyPinning store. Prefer
+// verification.VerifySchemaWithResolver with a verification.KeyPinStore, which
+// pins by fingerprint only after a successful verification and returns a
+// structured VerificationResult.
 type SchemaVerificationWorkflow struct {
 	pinning          *pinning.KeyPinning
 	discovery        *discovery.PublicKeyDiscovery
@@ -124,7 +130,7 @@ func (s *SchemaVerificationWorkflow) Close() error {
 }
 
 // VerifySchema verifies a signed schema with optional auto-pinning
-func (s *SchemaVerificationWorkflow) VerifySchema(ctx context.Context, schema map[string]interface{}, signatureB64, toolID, domain string, autoPin bool) (*VerificationResult, error) {
+func (s *SchemaVerificationWorkflow) VerifySchema(ctx context.Context, schema map[string]interface{}, signatureB64, toolID, domainName string, autoPin bool) (*VerificationResult, error) {
 	result := &VerificationResult{
 		Valid:    false,
 		Pinned:   false,
@@ -145,8 +151,15 @@ func (s *SchemaVerificationWorkflow) VerifySchema(ctx context.Context, schema ma
 		return result, nil
 	}
 
-	// Check for pinned key
-	pinnedKeyPEM, err := s.pinning.GetPinnedKey(toolID)
+	normalized, err := domain.ValidateDomain(domainName)
+	if err != nil {
+		result.Error = fmt.Sprintf("invalid domain: %v", err)
+		return result, nil
+	}
+	domainName = normalized
+
+	// Check for a key pinned for this tool at this domain
+	pinnedKeyPEM, err := s.pinning.GetPinnedKeyForDomain(toolID, domainName)
 	if err != nil {
 		result.Error = fmt.Sprintf("failed to check pinned key: %v", err)
 		return result, nil
@@ -154,11 +167,12 @@ func (s *SchemaVerificationWorkflow) VerifySchema(ctx context.Context, schema ma
 
 	var publicKeyPEM string
 	var publicKey *ecdsa.PublicKey
+	shouldPin := false
 
 	if pinnedKeyPEM != "" {
 		// Use pinned key, but check if it's been revoked (fail-closed: an
 		// unreachable revocation source is a verification failure).
-		isNotRevoked, err := s.discovery.ValidateKeyNotRevoked(ctx, pinnedKeyPEM, domain)
+		isNotRevoked, err := s.discovery.ValidateKeyNotRevoked(ctx, pinnedKeyPEM, domainName)
 		if err != nil {
 			result.Error = fmt.Sprintf("revocation status unavailable: %v", err)
 			return result, nil
@@ -179,14 +193,14 @@ func (s *SchemaVerificationWorkflow) VerifySchema(ctx context.Context, schema ma
 		result.Pinned = true
 	} else {
 		// First use - discover key
-		discoveredKeyPEM, err := s.discovery.GetPublicKeyPEM(ctx, domain)
+		discoveredKeyPEM, err := s.discovery.GetPublicKeyPEM(ctx, domainName)
 		if err != nil {
 			result.Error = fmt.Sprintf("could not discover public key: %v", err)
 			return result, nil
 		}
 
 		// Check if key is revoked (fail-closed)
-		isNotRevoked, err := s.discovery.ValidateKeyNotRevoked(ctx, discoveredKeyPEM, domain)
+		isNotRevoked, err := s.discovery.ValidateKeyNotRevoked(ctx, discoveredKeyPEM, domainName)
 		if err != nil {
 			result.Error = fmt.Sprintf("revocation status unavailable: %v", err)
 			return result, nil
@@ -207,39 +221,39 @@ func (s *SchemaVerificationWorkflow) VerifySchema(ctx context.Context, schema ma
 		result.FirstUse = true
 
 		// Get developer info
-		developerInfo, err := s.discovery.GetDeveloperInfo(ctx, domain)
+		developerInfo, err := s.discovery.GetDeveloperInfo(ctx, domainName)
 		if err == nil {
 			result.DeveloperInfo = developerInfo
 		}
+		shouldPin = autoPin
+	}
 
-		// Auto-pin if requested
-		if autoPin {
-			developerName := ""
-			if result.DeveloperInfo != nil {
-				if name, ok := result.DeveloperInfo["developer_name"]; ok {
-					developerName = name
-				}
-			}
+	// Verify signature before anything is pinned
+	result.Valid = s.signatureManager.VerifySchemaSignature(schemaHash, signatureB64, publicKey)
 
-			if err := s.pinning.PinKey(toolID, publicKeyPEM, domain, developerName); err == nil {
-				result.Pinned = true
+	// Auto-pin only after a successful verification
+	if result.Valid && shouldPin {
+		developerName := ""
+		if result.DeveloperInfo != nil {
+			if name, ok := result.DeveloperInfo["developer_name"]; ok {
+				developerName = name
 			}
+		}
+		if err := s.pinning.PinKey(toolID, publicKeyPEM, domainName, developerName); err == nil {
+			result.Pinned = true
 		}
 	}
 
-	// Verify signature
-	result.Valid = s.signatureManager.VerifySchemaSignature(schemaHash, signatureB64, publicKey)
-
 	// Update verification timestamp if valid and pinned
 	if result.Valid && result.Pinned {
-		_ = s.pinning.UpdateLastVerified(toolID)
+		_ = s.pinning.UpdateLastVerifiedForDomain(toolID, domainName)
 	}
 
 	// Add metadata
 	if fingerprint, err := s.keyManager.CalculateKeyFingerprintFromPEM(publicKeyPEM); err == nil {
 		result.Metadata["key_fingerprint"] = fingerprint
 	}
-	result.Metadata["domain"] = domain
+	result.Metadata["domain"] = domainName
 	result.Metadata["tool_id"] = toolID
 
 	return result, nil

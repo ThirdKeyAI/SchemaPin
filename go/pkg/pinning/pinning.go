@@ -1,4 +1,14 @@
 // Package pinning provides TOFU key storage and management using BoltDB.
+//
+// Deprecated: KeyPinning is the legacy PEM-by-tool store used by
+// utils.SchemaVerificationWorkflow. New code should use verification.KeyPinStore
+// (fingerprint pins keyed by tool_id@domain) with verification.VerifySchemaOffline;
+// this package is retained as a persistence backend for existing deployments.
+//
+// Pins are keyed by toolID@domain. A pin made for one domain is never returned
+// for another, so a key pinned for evil.com cannot satisfy a verification for
+// good.com that happens to reuse the same tool id. Stores written by earlier
+// releases (keyed by tool id only) are migrated in place on open.
 package pinning
 
 import (
@@ -6,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.etcd.io/bbolt"
@@ -106,15 +117,16 @@ func NewKeyPinning(dbPath string, mode PinningMode, handler interactive.Interact
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Create buckets
+	// Create buckets and migrate legacy tool-id-only keys to toolID@domain.
 	err = db.Update(func(tx *bbolt.Tx) error {
-		if _, err := tx.CreateBucketIfNotExists(pinnedKeysBucket); err != nil {
+		bucket, err := tx.CreateBucketIfNotExists(pinnedKeysBucket)
+		if err != nil {
 			return fmt.Errorf("failed to create pinned_keys bucket: %w", err)
 		}
 		if _, err := tx.CreateBucketIfNotExists(domainPoliciesBucket); err != nil {
 			return fmt.Errorf("failed to create domain_policies bucket: %w", err)
 		}
-		return nil
+		return migrateLegacyKeys(bucket)
 	})
 	if err != nil {
 		_ = db.Close()
@@ -133,6 +145,75 @@ func NewKeyPinning(dbPath string, mode PinningMode, handler interactive.Interact
 		interactiveManager: interactiveManager,
 		discovery:          discovery.NewPublicKeyDiscovery(),
 	}, nil
+}
+
+func compositeKey(toolID, domain string) []byte {
+	return []byte(toolID + "@" + domain)
+}
+
+// migrateLegacyKeys rewrites entries stored under a bare tool id (pre-1.4
+// layout) to the composite toolID@domain key.
+func migrateLegacyKeys(bucket *bbolt.Bucket) error {
+	type legacyEntry struct {
+		key  []byte
+		info PinnedKeyInfo
+	}
+	var legacy []legacyEntry
+	err := bucket.ForEach(func(key, value []byte) error {
+		if strings.Contains(string(key), "@") {
+			return nil
+		}
+		var info PinnedKeyInfo
+		if err := json.Unmarshal(value, &info); err != nil {
+			return fmt.Errorf("pin store entry %q is corrupt: %w", string(key), err)
+		}
+		legacy = append(legacy, legacyEntry{key: append([]byte(nil), key...), info: info})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, e := range legacy {
+		if e.info.ToolID == "" {
+			e.info.ToolID = string(e.key)
+		}
+		data, err := json.Marshal(e.info)
+		if err != nil {
+			return err
+		}
+		if err := bucket.Put(compositeKey(e.info.ToolID, e.info.Domain), data); err != nil {
+			return err
+		}
+		if err := bucket.Delete(e.key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// lookupKey resolves the store key for a tool. With an empty domain the
+// deprecated tool-id-only lookup is performed; it returns nil when the tool id
+// is pinned for more than one domain.
+func (k *KeyPinning) lookupKey(bucket *bbolt.Bucket, toolID, domain string) []byte {
+	if domain != "" {
+		key := compositeKey(toolID, domain)
+		if bucket.Get(key) != nil {
+			return key
+		}
+		return nil
+	}
+	prefix := []byte(toolID + "@")
+	var found []byte
+	count := 0
+	c := bucket.Cursor()
+	for key, _ := c.Seek(prefix); key != nil && strings.HasPrefix(string(key), string(prefix)); key, _ = c.Next() {
+		found = append([]byte(nil), key...)
+		count++
+	}
+	if count != 1 {
+		return nil
+	}
+	return found
 }
 
 // Close closes the database connection
@@ -160,19 +241,29 @@ func (k *KeyPinning) PinKey(toolID, publicKeyPEM, domain, developerName string) 
 
 	return k.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(pinnedKeysBucket)
-		return bucket.Put([]byte(toolID), data)
+		return bucket.Put(compositeKey(toolID, domain), data)
 	})
 }
 
-// GetPinnedKey retrieves the pinned public key for a tool
+// GetPinnedKey retrieves the pinned public key for a tool.
+//
+// Deprecated: use GetPinnedKeyForDomain so that a pin recorded for a different
+// domain is never returned. This lookup fails when the tool id is pinned for
+// more than one domain.
 func (k *KeyPinning) GetPinnedKey(toolID string) (string, error) {
+	return k.GetPinnedKeyForDomain(toolID, "")
+}
+
+// GetPinnedKeyForDomain retrieves the public key pinned for toolID at domain.
+func (k *KeyPinning) GetPinnedKeyForDomain(toolID, domain string) (string, error) {
 	var publicKeyPEM string
 	err := k.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(pinnedKeysBucket)
-		data := bucket.Get([]byte(toolID))
-		if data == nil {
+		key := k.lookupKey(bucket, toolID, domain)
+		if key == nil {
 			return nil // Not found
 		}
+		data := bucket.Get(key)
 
 		var keyInfo PinnedKeyInfo
 		if err := json.Unmarshal(data, &keyInfo); err != nil {
@@ -193,20 +284,36 @@ func (k *KeyPinning) GetPinnedKey(toolID string) (string, error) {
 	return publicKeyPEM, nil
 }
 
-// IsKeyPinned checks if a key is pinned for a tool
+// IsKeyPinned checks if a key is pinned for a tool.
+//
+// Deprecated: use IsKeyPinnedForDomain.
 func (k *KeyPinning) IsKeyPinned(toolID string) bool {
-	key, err := k.GetPinnedKey(toolID)
+	return k.IsKeyPinnedForDomain(toolID, "")
+}
+
+// IsKeyPinnedForDomain checks if a key is pinned for toolID at domain.
+func (k *KeyPinning) IsKeyPinnedForDomain(toolID, domain string) bool {
+	key, err := k.GetPinnedKeyForDomain(toolID, domain)
 	return err == nil && key != ""
 }
 
-// UpdateLastVerified updates the last verification timestamp
+// UpdateLastVerified updates the last verification timestamp.
+//
+// Deprecated: use UpdateLastVerifiedForDomain.
 func (k *KeyPinning) UpdateLastVerified(toolID string) error {
+	return k.UpdateLastVerifiedForDomain(toolID, "")
+}
+
+// UpdateLastVerifiedForDomain updates the last verification timestamp for
+// toolID at domain.
+func (k *KeyPinning) UpdateLastVerifiedForDomain(toolID, domain string) error {
 	return k.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(pinnedKeysBucket)
-		data := bucket.Get([]byte(toolID))
-		if data == nil {
+		key := k.lookupKey(bucket, toolID, domain)
+		if key == nil {
 			return fmt.Errorf("tool not found: %s", toolID)
 		}
+		data := bucket.Get(key)
 
 		var keyInfo PinnedKeyInfo
 		if err := json.Unmarshal(data, &keyInfo); err != nil {
@@ -220,7 +327,7 @@ func (k *KeyPinning) UpdateLastVerified(toolID string) error {
 			return fmt.Errorf("failed to marshal updated key info: %w", err)
 		}
 
-		return bucket.Put([]byte(toolID), updatedData)
+		return bucket.Put(key, updatedData)
 	})
 }
 
@@ -266,15 +373,24 @@ func (k *KeyPinning) GetDomainPolicy(domain string) PinningPolicy {
 	return policy
 }
 
-// GetKeyInfo retrieves complete information about a pinned key
+// GetKeyInfo retrieves complete information about a pinned key.
+//
+// Deprecated: use GetKeyInfoForDomain.
 func (k *KeyPinning) GetKeyInfo(toolID string) (*PinnedKeyInfo, error) {
+	return k.GetKeyInfoForDomain(toolID, "")
+}
+
+// GetKeyInfoForDomain retrieves complete information about the key pinned for
+// toolID at domain.
+func (k *KeyPinning) GetKeyInfoForDomain(toolID, domain string) (*PinnedKeyInfo, error) {
 	var keyInfo *PinnedKeyInfo
 	err := k.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(pinnedKeysBucket)
-		data := bucket.Get([]byte(toolID))
-		if data == nil {
+		key := k.lookupKey(bucket, toolID, domain)
+		if key == nil {
 			return nil // Not found
 		}
+		data := bucket.Get(key)
 
 		var info PinnedKeyInfo
 		if err := json.Unmarshal(data, &info); err != nil {
@@ -319,11 +435,22 @@ func (k *KeyPinning) ListPinnedKeys() ([]map[string]interface{}, error) {
 	return keys, err
 }
 
-// RemovePinnedKey removes a pinned key for a tool
+// RemovePinnedKey removes a pinned key for a tool.
+//
+// Deprecated: use RemovePinnedKeyForDomain.
 func (k *KeyPinning) RemovePinnedKey(toolID string) error {
+	return k.RemovePinnedKeyForDomain(toolID, "")
+}
+
+// RemovePinnedKeyForDomain removes the key pinned for toolID at domain.
+func (k *KeyPinning) RemovePinnedKeyForDomain(toolID, domain string) error {
 	return k.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(pinnedKeysBucket)
-		return bucket.Delete([]byte(toolID))
+		key := k.lookupKey(bucket, toolID, domain)
+		if key == nil {
+			return nil
+		}
+		return bucket.Delete(key)
 	})
 }
 
@@ -364,12 +491,12 @@ func (k *KeyPinning) ImportPinnedKeys(jsonData string, overwrite bool) (int, err
 
 	imported := 0
 	for _, keyInfo := range keys {
-		if !overwrite && k.IsKeyPinned(keyInfo.ToolID) {
+		if !overwrite && k.IsKeyPinnedForDomain(keyInfo.ToolID, keyInfo.Domain) {
 			continue
 		}
 
 		if overwrite {
-			_ = k.RemovePinnedKey(keyInfo.ToolID)
+			_ = k.RemovePinnedKeyForDomain(keyInfo.ToolID, keyInfo.Domain)
 		}
 
 		if err := k.PinKey(keyInfo.ToolID, keyInfo.PublicKeyPEM, keyInfo.Domain, keyInfo.DeveloperName); err == nil {
@@ -396,8 +523,8 @@ func (k *KeyPinning) interactivePinKeyWithOptions(toolID, publicKeyPEM, domain, 
 		return k.PinKey(toolID, publicKeyPEM, domain, developerName) == nil, nil
 	}
 
-	// Check if key is already pinned
-	existingKey, err := k.GetPinnedKey(toolID)
+	// Check if key is already pinned for this tool at this domain
+	existingKey, err := k.GetPinnedKeyForDomain(toolID, domain)
 	if err != nil {
 		return false, fmt.Errorf("failed to check existing key: %w", err)
 	}
@@ -405,7 +532,7 @@ func (k *KeyPinning) interactivePinKeyWithOptions(toolID, publicKeyPEM, domain, 
 	if existingKey != "" {
 		if existingKey == publicKeyPEM {
 			// Same key, just update verification time
-			_ = k.UpdateLastVerified(toolID)
+			_ = k.UpdateLastVerifiedForDomain(toolID, domain)
 			return true, nil
 		} else {
 			// Different key - handle key change
@@ -505,7 +632,7 @@ func (k *KeyPinning) handleKeyChange(toolID, domain, currentKeyPEM, newKeyPEM, d
 
 	// Interactive prompt for key change
 	if k.interactiveManager != nil {
-		currentKeyInfo, _ := k.GetKeyInfo(toolID)
+		currentKeyInfo, _ := k.GetKeyInfoForDomain(toolID, domain)
 		currentKeyInfoMap := make(map[string]interface{})
 		if currentKeyInfo != nil {
 			currentKeyInfoMap["tool_id"] = currentKeyInfo.ToolID
@@ -533,11 +660,11 @@ func (k *KeyPinning) handleKeyChange(toolID, domain, currentKeyPEM, newKeyPEM, d
 		switch decision {
 		case interactive.UserDecisionAccept:
 			// Remove old key and pin new one
-			_ = k.RemovePinnedKey(toolID)
+			_ = k.RemovePinnedKeyForDomain(toolID, domain)
 			return k.PinKey(toolID, newKeyPEM, domain, developerName) == nil, nil
 		case interactive.UserDecisionAlwaysTrust:
 			_ = k.SetDomainPolicy(domain, PinningPolicyAlwaysTrust)
-			_ = k.RemovePinnedKey(toolID)
+			_ = k.RemovePinnedKeyForDomain(toolID, domain)
 			return k.PinKey(toolID, newKeyPEM, domain, developerName) == nil, nil
 		case interactive.UserDecisionNeverTrust:
 			_ = k.SetDomainPolicy(domain, PinningPolicyNeverTrust)

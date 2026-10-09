@@ -82,7 +82,7 @@ def verify_with_discovery(
         interactive_manager = InteractivePinningManager()
 
         # Check if key is already pinned
-        pinned_key = workflow.pinning.get_pinned_key(tool_id)
+        pinned_key = workflow.pinning.get_pinned_key(tool_id, domain)
 
         if not pinned_key:
             # First time - prompt user
