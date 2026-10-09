@@ -4,12 +4,37 @@ use serde_json::Value;
 use crate::canonicalize::canonicalize_and_hash;
 use crate::crypto;
 use crate::discovery::validate_well_known_response;
+use crate::dns::{verify_dns_match, DnsTxtRecord};
+use crate::domain::validate_domain;
 use crate::error::ErrorCode;
-use crate::pinning::{check_pinning, KeyPinStore, PinningResult};
+use crate::pinning::{check_pinning_no_write, KeyPinStore, PinningResult};
 use crate::resolver::SchemaResolver;
 use crate::revocation::check_revocation_combined;
 use crate::types::discovery::WellKnownResponse;
 use crate::types::revocation::RevocationDocument;
+
+/// Clock-skew tolerance applied to `expires_at` comparisons (seconds).
+pub const EXPIRATION_SKEW_SECONDS: i64 = 300;
+
+/// Parse a strict RFC 3339 timestamp (`T` separator, mandatory offset).
+///
+/// chrono's `parse_from_rfc3339` also accepts a space separator and a
+/// lowercase `t`; the other SDKs do not, so they are rejected here.
+pub fn parse_rfc3339_strict(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let bytes = raw.as_bytes();
+    if bytes.len() < 20 || bytes[10] != b'T' {
+        return None;
+    }
+    if !(raw.ends_with('Z')
+        || raw.as_bytes().get(raw.len() - 6) == Some(&b'+')
+        || raw.as_bytes().get(raw.len() - 6) == Some(&b'-'))
+    {
+        return None;
+    }
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|ts| ts.with_timezone(&chrono::Utc))
+}
 
 /// Structured verification result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,29 +132,55 @@ impl VerificationResult {
         self
     }
 
-    /// Apply a signature `expires_at` check to a successful result.
+    /// Apply a signature `expires_at` check to a successful result
+    /// (fail-closed). Equivalent to `with_expiration_policy(expires_at, false)`.
+    pub fn with_expiration_check(self, expires_at: Option<&str>) -> Self {
+        self.with_expiration_policy(expires_at, false)
+    }
+
+    /// Apply a signature `expires_at` check:
     ///
-    /// - If `expires_at` is `None`, the result is unchanged.
-    /// - If parseable and in the past, marks `expired = true`, copies
-    ///   `expires_at`, and pushes a `signature_expired` warning. `valid` is
-    ///   left intact (degraded, not failed).
-    /// - If parseable and in the future, just records `expires_at`.
-    /// - If unparseable, pushes a `signature_expires_at_unparseable` warning.
-    pub fn with_expiration_check(mut self, expires_at: Option<&str>) -> Self {
+    /// - `None` leaves the result unchanged.
+    /// - A value that is not strict RFC 3339 fails with
+    ///   [`ErrorCode::SignatureExpired`] (`allow_expired` downgrades this to a
+    ///   `signature_expires_at_unparseable` warning).
+    /// - A timestamp more than [`EXPIRATION_SKEW_SECONDS`] in the past fails
+    ///   with [`ErrorCode::SignatureExpired`] and sets `expired`. With
+    ///   `allow_expired` the result stays valid but is marked `expired` and
+    ///   carries a `signature_expired` warning (the pre-1.4.0 "degraded, not
+    ///   failed" behavior).
+    /// - A future timestamp just records `expires_at`.
+    pub fn with_expiration_policy(mut self, expires_at: Option<&str>, allow_expired: bool) -> Self {
         let Some(raw) = expires_at else {
             return self;
         };
-        match chrono::DateTime::parse_from_rfc3339(raw) {
-            Ok(ts) => {
+        match parse_rfc3339_strict(raw) {
+            Some(ts) => {
                 self.expires_at = Some(raw.to_string());
-                if chrono::Utc::now() > ts.with_timezone(&chrono::Utc) {
+                let deadline = ts + chrono::Duration::seconds(EXPIRATION_SKEW_SECONDS);
+                if chrono::Utc::now() > deadline {
                     self.expired = true;
-                    self.warnings.push("signature_expired".to_string());
+                    if allow_expired {
+                        self.warnings.push("signature_expired".to_string());
+                    } else {
+                        self.valid = false;
+                        self.error_code = Some(ErrorCode::SignatureExpired);
+                        self.error_message = Some(format!("signature expired at {}", raw));
+                    }
                 }
             }
-            Err(_) => {
-                self.warnings
-                    .push("signature_expires_at_unparseable".to_string());
+            None => {
+                if allow_expired {
+                    self.warnings
+                        .push("signature_expires_at_unparseable".to_string());
+                } else {
+                    self.valid = false;
+                    self.error_code = Some(ErrorCode::SignatureExpired);
+                    self.error_message = Some(format!(
+                        "expires_at is not a valid RFC 3339 timestamp: {:?}",
+                        raw
+                    ));
+                }
             }
         }
         self
@@ -174,6 +225,16 @@ pub fn verify_schema_offline(
 /// `.schemapin.sig` documents. `None` or `Some("schemapin-v1")` are
 /// equivalent and accepted; any other value fails with
 /// `CANONICALIZATION_UNSUPPORTED`.
+///
+/// Verification flow:
+/// 1. Validate the canonicalization identifier and the domain syntax
+/// 2. Validate discovery document
+/// 3. Extract public key and compute fingerprint
+/// 4. Check revocation (simple list + standalone document)
+/// 5. TOFU pin check (read-only)
+/// 6. Canonicalize schema, compute hash, verify ECDSA signature
+/// 7. Pin the key on first use (only after a successful verification)
+/// 8. Return result
 #[allow(clippy::too_many_arguments)]
 pub fn verify_schema_offline_with_canonicalization(
     schema: &Value,
@@ -185,16 +246,20 @@ pub fn verify_schema_offline_with_canonicalization(
     pin_store: &mut KeyPinStore,
     canonicalization: Option<&str>,
 ) -> VerificationResult {
-    // Step 0 (v1.4): Reject unknown canonicalization algorithms before any
-    // discovery / crypto work.
+    // Step 1: canonicalization identifier + domain syntax.
     if let Err(declared) = crate::canonicalize::check_canonicalization(canonicalization) {
         return VerificationResult::failure(
             ErrorCode::CanonicalizationUnsupported,
             &format!("Unsupported canonicalization algorithm: {}", declared),
         );
     }
+    let domain = match validate_domain(domain) {
+        Ok(d) => d,
+        Err(e) => return VerificationResult::failure(ErrorCode::DomainInvalid, &e.to_string()),
+    };
+    let domain = domain.as_str();
 
-    // Step 1: Validate discovery document
+    // Step 2: Validate discovery document
     if let Err(e) = validate_well_known_response(discovery) {
         return VerificationResult::failure(
             ErrorCode::DiscoveryInvalid,
@@ -202,7 +267,7 @@ pub fn verify_schema_offline_with_canonicalization(
         );
     }
 
-    // Step 2: Extract public key and compute fingerprint
+    // Step 3: Extract public key and compute fingerprint
     let fingerprint = match crypto::calculate_key_id(&discovery.public_key_pem) {
         Ok(fp) => fp,
         Err(e) => {
@@ -213,7 +278,7 @@ pub fn verify_schema_offline_with_canonicalization(
         }
     };
 
-    // Step 3: Check revocation (both simple list and standalone doc)
+    // Step 4: Check revocation (both simple list and standalone doc)
     if let Err(e) = check_revocation_combined(&discovery.revoked_keys, revocation, &fingerprint) {
         let code = match &e {
             crate::error::Error::Verification { code, .. } => *code,
@@ -222,15 +287,15 @@ pub fn verify_schema_offline_with_canonicalization(
         return VerificationResult::failure(code, &e.to_string());
     }
 
-    // Step 4: TOFU key pinning
-    let pin_result = match check_pinning(pin_store, tool_id, domain, &fingerprint) {
+    // Step 5: TOFU pin check (no write yet)
+    let pin_result = match check_pinning_no_write(pin_store, tool_id, domain, &fingerprint) {
         Ok(r) => r,
         Err(e) => {
             return VerificationResult::failure(ErrorCode::KeyPinMismatch, &e.to_string());
         }
     };
 
-    // Step 5: Canonicalize schema and compute hash
+    // Step 6: Canonicalize, hash, verify
     let schema_hash = match canonicalize_and_hash(schema) {
         Ok(h) => h,
         Err(e) => {
@@ -241,7 +306,6 @@ pub fn verify_schema_offline_with_canonicalization(
         }
     };
 
-    // Step 6: Verify ECDSA signature
     let valid =
         match crypto::verify_signature(&discovery.public_key_pem, &schema_hash, signature_b64) {
             Ok(v) => v,
@@ -260,7 +324,12 @@ pub fn verify_schema_offline_with_canonicalization(
         );
     }
 
-    // Step 7: Build success result
+    // Step 7: Pin only after the signature verified
+    if pin_result == PinningResult::FirstUse {
+        pin_store.pin(tool_id, domain, &fingerprint);
+    }
+
+    // Step 8: Build success result
     let pin_status = match pin_result {
         PinningResult::FirstUse => KeyPinningStatus {
             status: "first_use".to_string(),
@@ -282,10 +351,63 @@ pub fn verify_schema_offline_with_canonicalization(
     VerificationResult::success(domain, discovery.developer_name.as_deref(), pin_status)
 }
 
+/// [`verify_schema_offline`] plus a DNS TXT second-channel check.
+///
+/// When `dns_txt` is `Some`, the discovery key's fingerprint must match the
+/// TXT record or the result is a hard [`ErrorCode::DomainMismatch`] failure.
+/// The DNS check runs before anything is pinned.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_schema_offline_with_dns(
+    schema: &Value,
+    signature_b64: &str,
+    domain: &str,
+    tool_id: &str,
+    discovery: &WellKnownResponse,
+    revocation: Option<&RevocationDocument>,
+    pin_store: &mut KeyPinStore,
+    dns_txt: Option<&DnsTxtRecord>,
+    canonicalization: Option<&str>,
+) -> VerificationResult {
+    if let Some(txt) = dns_txt {
+        match verify_dns_match(discovery, txt) {
+            Ok(()) => {}
+            Err(crate::error::Error::Verification { code, message }) => {
+                return VerificationResult::failure(code, &message)
+            }
+            Err(e) => {
+                return VerificationResult::failure(ErrorCode::DomainMismatch, &e.to_string())
+            }
+        }
+    }
+    verify_schema_offline_with_canonicalization(
+        schema,
+        signature_b64,
+        domain,
+        tool_id,
+        discovery,
+        revocation,
+        pin_store,
+        canonicalization,
+    )
+}
+
+/// Policy knobs for the resolver-based verification flows.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResolverOptions {
+    /// Treat a revocation fetch failure as "no revocations" instead of failing
+    /// closed with `DISCOVERY_FETCH_FAILED`.
+    pub allow_unreachable_revocation: bool,
+    /// Accept expired skill signatures (degraded) instead of failing with
+    /// `SIGNATURE_EXPIRED`. Ignored for schema signatures.
+    pub allow_expired: bool,
+}
+
 /// Verify a schema using a sync [`SchemaResolver`].
 ///
 /// Resolves discovery and revocation documents from the resolver, then
-/// delegates to [`verify_schema_offline`].
+/// delegates to [`verify_schema_offline`]. Revocation is fail-closed: a
+/// declared `revocation_endpoint` that cannot be fetched fails with
+/// `DISCOVERY_FETCH_FAILED` (see [`verify_schema_with_resolver_opts`]).
 pub fn verify_schema_with_resolver(
     schema: &Value,
     signature_b64: &str,
@@ -294,7 +416,33 @@ pub fn verify_schema_with_resolver(
     resolver: &dyn SchemaResolver,
     pin_store: &mut KeyPinStore,
 ) -> VerificationResult {
-    let discovery = match resolver.resolve_discovery(domain) {
+    verify_schema_with_resolver_opts(
+        schema,
+        signature_b64,
+        domain,
+        tool_id,
+        resolver,
+        pin_store,
+        ResolverOptions::default(),
+    )
+}
+
+/// [`verify_schema_with_resolver`] with explicit policy knobs.
+pub fn verify_schema_with_resolver_opts(
+    schema: &Value,
+    signature_b64: &str,
+    domain: &str,
+    tool_id: &str,
+    resolver: &dyn SchemaResolver,
+    pin_store: &mut KeyPinStore,
+    opts: ResolverOptions,
+) -> VerificationResult {
+    let domain = match validate_domain(domain) {
+        Ok(d) => d,
+        Err(e) => return VerificationResult::failure(ErrorCode::DomainInvalid, &e.to_string()),
+    };
+
+    let discovery = match resolver.resolve_discovery(&domain) {
         Ok(doc) => doc,
         Err(e) => {
             return VerificationResult::failure(
@@ -304,20 +452,23 @@ pub fn verify_schema_with_resolver(
         }
     };
 
-    let revocation = match resolver.resolve_revocation(domain, &discovery) {
+    let revocation = match resolver.resolve_revocation(&domain, &discovery) {
         Ok(doc) => doc,
-        Err(_) => {
-            return VerificationResult::failure(
-                ErrorCode::DiscoveryFetchFailed,
-                "Revocation document unreachable (fail-closed)",
-            );
+        Err(e) => {
+            if !opts.allow_unreachable_revocation {
+                return VerificationResult::failure(
+                    ErrorCode::DiscoveryFetchFailed,
+                    &format!("Revocation document unreachable (fail-closed): {}", e),
+                );
+            }
+            None
         }
     };
 
     verify_schema_offline(
         schema,
         signature_b64,
-        domain,
+        &domain,
         tool_id,
         &discovery,
         revocation.as_ref(),

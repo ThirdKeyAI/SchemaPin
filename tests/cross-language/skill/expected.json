@@ -1,0 +1,43 @@
+{
+  "description": "Skill-directory fixtures. fixture-skill carries a v1.4 signed signature document (skill canonicalization v2); legacy-v13-skill carries a pre-1.4 root-hash-only signature (v1 hashing). Both must verify in every SDK; editing any field of the v1.4 document must invalidate it.",
+  "domain": "fixtures.schemapin.test",
+  "discovery": {
+    "schema_version": "1.4",
+    "developer_name": "Fixture Developer",
+    "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdaZK0oMLh47IvVYYe8bP2g2ko4c0\nJUmPmN2ecEQreZ9u8oTd0dzrdZRiFDuKcYPGqjSJNCIl/aE5ebj7SRXxjQ==\n-----END PUBLIC KEY-----\n",
+    "revoked_keys": []
+  },
+  "v14": {
+    "skill_dir": "fixture-skill",
+    "skill_hash": "sha256:35ee31a82b9caf07c5ad373ed7928c8dad9f8eaa459c799e74ed665cf7e34c2b",
+    "file_manifest": {
+      "README.md": "sha256:5ac0c74b485cddc378f412149d41693dcf9eb1e31a1c8a8e96b3bfc2b16ecf63",
+      "SKILL.md": "sha256:a028d613cb73203e3932440c780ed6a6582a7b2ef490e67ef8a8e98061a346f8",
+      "data/config.json": "sha256:a8fd70f74a8025da09711056c9b84c9ace8f44f05382c6789210a79e33ae15c1",
+      "nested/deep/bin.dat": "sha256:0be60061d17ec759d7683fc0b4a3d0d919181ddc269ccc8e75b2dfcb663309f9",
+      "nested/deep/empty.txt": "sha256:9c927c56efa29d4c87b3af8755674353d7131e0c79e010675da47f2223d7cd6d",
+      "scripts/run.sh": "sha256:10f97a3b8e1bf5f017803241627c5afe3b0c9f95cffa52a978c895ffe4fdd4b0"
+    },
+    "signed_fields_tamper_must_fail": [
+      "schema_version",
+      "skill_name",
+      "domain",
+      "signed_at",
+      "signer_kid",
+      "skill_hash",
+      "canonicalization"
+    ]
+  },
+  "legacy_v13": {
+    "skill_dir": "legacy-v13-skill",
+    "skill_hash": "sha256:bc48bbb9c4b889644ec3cfb445afa822935a39da60979c5d9131e3ba73afe562",
+    "file_manifest": {
+      "README.md": "sha256:845a7665fc65107467bd9fe46ca750eacc5d9a08b270a521c017a7e1d8d6ef40",
+      "SKILL.md": "sha256:eb0d357b92d06cc7e57b5a7126f1f664b6668cf82c1c0226e479c0531a4919c1",
+      "data/config.json": "sha256:e3e958a82c2f57f99731b6ae1bc37bb9523d9a34ce67e71647eabfd5e4d542d8",
+      "nested/deep/bin.dat": "sha256:7735528cfab0c6173fcfbc56eaeba3a51becb5b8ef45aa312e5f52a1dc8fc89e",
+      "nested/deep/empty.txt": "sha256:1dd65c3871143fedcf69c39e7634ca8683c8f887f588366edfb073902a221fbb",
+      "scripts/run.sh": "sha256:df734fd75d4d1621eda9d7e9bad7c7b686c79a4b35ed3f5cc608b2709fa8c5ea"
+    }
+  }
+}

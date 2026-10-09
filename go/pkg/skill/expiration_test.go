@@ -51,8 +51,8 @@ func TestSignWithTTLWritesExpiresAt(t *testing.T) {
 	}
 }
 
-// TestSignWithoutTTLOmitsExpiresAt ensures that the v1.3 default behaviour
-// is byte-compatible: no expires_at field, schemapin_version stays at "1.3".
+// TestSignWithoutTTLOmitsExpiresAt ensures that the default signature writes
+// no expires_at field and uses the signed-document format ("1.4").
 func TestSignWithoutTTLOmitsExpiresAt(t *testing.T) {
 	privPEM, _ := makeKeypair(t)
 	dir := createSkillDir(t, map[string]string{
@@ -66,8 +66,8 @@ func TestSignWithoutTTLOmitsExpiresAt(t *testing.T) {
 	if sig.ExpiresAt != "" {
 		t.Errorf("expected ExpiresAt to be empty, got %q", sig.ExpiresAt)
 	}
-	if sig.SchemapinVersion != "1.3" {
-		t.Errorf("expected schemapin_version '1.3', got %q", sig.SchemapinVersion)
+	if sig.SchemapinVersion != "1.4" {
+		t.Errorf("expected schemapin_version '1.4', got %q", sig.SchemapinVersion)
 	}
 
 	raw, err := os.ReadFile(filepath.Join(dir, SignatureFilename))
@@ -114,97 +114,95 @@ func TestVerifyWithFutureTTLPassesNoWarnings(t *testing.T) {
 	}
 }
 
-// TestVerifyWithPastTTLPassesWithExpiredWarning rewrites a fresh signature
-// on disk with a past expires_at and confirms the verifier degrades:
-// Valid stays true, Expired becomes true, and a "signature_expired"
-// warning is emitted.
-func TestVerifyWithPastTTLPassesWithExpiredWarning(t *testing.T) {
+// TestVerifyWithPastTTLFailsClosed signs with a TTL already in the past and
+// confirms the verifier fails closed with ErrSignatureExpired by default, and
+// degrades (Valid, Expired, warning) only when AllowExpired is set.
+func TestVerifyWithPastTTLFailsClosed(t *testing.T) {
 	privPEM, pubPEM := makeKeypair(t)
 	dir := createSkillDir(t, map[string]string{
 		"SKILL.md": "---\nname: past\n---\n",
 	})
 
-	sig, err := SignSkill(dir, privPEM, "example.com", "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Mutate to past expiration and rewrite the .schemapin.sig.
-	sig.ExpiresAt = time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
-	sig.SchemapinVersion = "1.4"
-	data, err := json.MarshalIndent(sig, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, SignatureFilename), append(data, '\n'), 0600); err != nil {
+	if _, err := SignSkillWithOptions(dir, privPEM, "example.com", SignOptions{ExpiresIn: -24 * time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 
 	disc := makeDiscovery(pubPEM)
 	result := VerifySkillOffline(dir, disc, nil, nil, nil, "past")
-
-	if !result.Valid {
-		t.Errorf("expired signatures should degrade, not fail; got error: %s", result.ErrorMessage)
+	if result.Valid {
+		t.Fatal("expired signatures must fail closed by default")
+	}
+	if result.ErrorCode != verification.ErrSignatureExpired {
+		t.Errorf("expected ErrSignatureExpired, got %q", result.ErrorCode)
 	}
 	if !result.Expired {
-		t.Error("expected Expired=true for past ttl")
-	}
-	if result.ExpiresAt == "" {
-		t.Error("expected ExpiresAt to be populated on the result")
+		t.Error("expected Expired=true")
 	}
 
+	degraded := VerifySkillOfflineWithOptions(dir, disc, nil, nil, nil, VerifyOptions{ToolID: "past", AllowExpired: true})
+	if !degraded.Valid || !degraded.Expired {
+		t.Fatalf("AllowExpired should degrade, not fail: %+v", degraded)
+	}
 	found := false
-	for _, w := range result.Warnings {
+	for _, w := range degraded.Warnings {
 		if w == verification.WarningSignatureExpired {
 			found = true
-			break
 		}
 	}
 	if !found {
-		t.Errorf("expected warnings to contain %q; got %v", verification.WarningSignatureExpired, result.Warnings)
+		t.Errorf("expected warnings to contain %q; got %v", verification.WarningSignatureExpired, degraded.Warnings)
 	}
 }
 
-// TestVerifyWithUnparseableExpiresAtWarns confirms fail-open semantics:
-// a malformed expires_at is reported as a warning, not a hard failure or
-// an Expired flag.
-func TestVerifyWithUnparseableExpiresAtWarns(t *testing.T) {
+// TestUnparseableExpiresAtFailsClosed confirms that a malformed or
+// non-RFC-3339 expires_at is a hard failure unless AllowExpired is set.
+func TestUnparseableExpiresAtFailsClosed(t *testing.T) {
+	for _, bad := range []string{"not-a-timestamp", "2020-01-01", "2020-01-01T00:00:00", "2020-01-01 00:00:00Z"} {
+		r := (&verification.VerificationResult{Valid: true}).WithExpirationPolicy(bad, false)
+		if r.Valid || r.ErrorCode != verification.ErrSignatureExpired {
+			t.Errorf("%q: expected ErrSignatureExpired, got %+v", bad, r)
+		}
+		lenient := (&verification.VerificationResult{Valid: true}).WithExpirationPolicy(bad, true)
+		if !lenient.Valid || len(lenient.Warnings) == 0 || lenient.Warnings[0] != verification.WarningSignatureExpiresAtUnparseable {
+			t.Errorf("%q: expected unparseable warning with AllowExpired, got %+v", bad, lenient)
+		}
+	}
+	justNow := time.Now().UTC().Add(-60 * time.Second).Format(time.RFC3339)
+	if r := (&verification.VerificationResult{Valid: true}).WithExpirationPolicy(justNow, false); !r.Valid || r.Expired {
+		t.Errorf("timestamp inside the skew window must not be expired: %+v", r)
+	}
+}
+
+// TestExpiresAtIsCoveredBySignature is the SP-1 regression: deleting
+// expires_at (and downgrading the version) after signing must invalidate.
+func TestExpiresAtIsCoveredBySignature(t *testing.T) {
 	privPEM, pubPEM := makeKeypair(t)
 	dir := createSkillDir(t, map[string]string{
-		"SKILL.md": "---\nname: bad\n---\n",
+		"SKILL.md": "---\nname: strip\n---\n",
 	})
-
-	sig, err := SignSkill(dir, privPEM, "example.com", "", "")
+	sig, err := SignSkillWithOptions(dir, privPEM, "example.com", SignOptions{ExpiresIn: -24 * time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig.ExpiresAt = "not-a-timestamp"
+	sig.ExpiresAt = ""
+	writeSig(t, dir, sig)
+	if r := VerifySkillOffline(dir, makeDiscovery(pubPEM), nil, nil, nil, "strip"); r.Valid || r.ErrorCode != verification.ErrSignatureInvalid {
+		t.Fatalf("stripping expires_at must invalidate: %+v", r)
+	}
+	sig.SchemapinVersion = "1.3"
+	writeSig(t, dir, sig)
+	if r := VerifySkillOffline(dir, makeDiscovery(pubPEM), nil, nil, nil, "strip"); r.Valid {
+		t.Fatalf("downgrade to 1.3 must invalidate: %+v", r)
+	}
+}
+
+func writeSig(t *testing.T, dir string, sig *SkillSignature) {
+	t.Helper()
 	data, err := json.MarshalIndent(sig, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, SignatureFilename), append(data, '\n'), 0600); err != nil {
 		t.Fatal(err)
-	}
-
-	disc := makeDiscovery(pubPEM)
-	result := VerifySkillOffline(dir, disc, nil, nil, nil, "bad")
-
-	if !result.Valid {
-		t.Errorf("expected valid (fail-open) for unparseable expires_at; got error: %s", result.ErrorMessage)
-	}
-	if result.Expired {
-		t.Error("expected Expired=false for unparseable expires_at")
-	}
-
-	found := false
-	for _, w := range result.Warnings {
-		if w == verification.WarningSignatureExpiresAtUnparseable {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected warning %q; got %v", verification.WarningSignatureExpiresAtUnparseable, result.Warnings)
 	}
 }

@@ -7,13 +7,18 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import * as nodeCrypto from 'node:crypto';
 import { KeyManager } from '../src/crypto.js';
 import { buildRevocationDocument, addRevokedKey, RevocationReason } from '../src/revocation.js';
-import { ErrorCode, KeyPinStore } from '../src/verification.js';
+import { ErrorCode, KeyPinStore, applyExpirationCheck } from '../src/verification.js';
+import { SchemaResolver } from '../src/resolver.js';
+import { KeyManager as KM, SignatureManager } from '../src/crypto.js';
+import { symlinkSync } from 'node:fs';
 import {
-    SIGNATURE_FILENAME, canonicalizeSkill, parseSkillName, loadSignature,
+    SIGNATURE_FILENAME, canonicalizeSkill, canonicalizeSkillV1, parseSkillName, loadSignature,
     signSkill, signSkillWithOptions, verifySkillOffline, verifySkillOfflineWithDns,
-    detectTamperedFiles, verifyChain, ChainError
+    verifySkillWithResolver, detectTamperedFiles, verifyChain, ChainError,
+    SkillCanonicalizationError
 } from '../src/skill.js';
 
 // ---------------------------------------------------------------------------
@@ -304,7 +309,7 @@ describe('Sign and Verify', () => {
                 'SKILL.md': '---\nname: test-skill\n---\n# Hello'
             });
             const sig = signSkill(skillDir, privateKey, 'example.com');
-            assert.equal(sig.schemapin_version, '1.3');
+            assert.equal(sig.schemapin_version, '1.4');
             assert.equal(sig.skill_name, 'test-skill');
             assert.ok(sig.skill_hash.startsWith('sha256:'));
             assert.equal(typeof sig.signature, 'string');
@@ -602,7 +607,7 @@ describe('Signature Expiration (v1.4)', () => {
             const skillDir = join(dir, 'skill');
             createSkillDir(skillDir, { 'SKILL.md': '---\nname: no-ttl\n---\n# hi' });
             const sig = signSkill(skillDir, privateKey, 'example.com');
-            assert.equal(sig.schemapin_version, '1.3');
+            assert.equal(sig.schemapin_version, '1.4');
             assert.equal(sig.expires_at, undefined);
 
             const raw = readFileSync(join(skillDir, SIGNATURE_FILENAME), 'utf-8');
@@ -641,48 +646,54 @@ describe('Signature Expiration (v1.4)', () => {
             const skillDir = join(dir, 'skill');
             createSkillDir(skillDir, { 'SKILL.md': '---\nname: past\n---\n# hi' });
 
-            // Sign normally, then rewrite the .schemapin.sig with a past expires_at.
-            const sig = signSkill(skillDir, privateKey, 'example.com');
-            const past = new Date(Date.now() - ONE_DAY_MS);
-            const expiredSig = {
-                ...sig,
-                schemapin_version: '1.4',
-                expires_at: past.toISOString().replace(/\.\d{3}Z$/, 'Z')
-            };
-            writeFileSync(
-                join(skillDir, SIGNATURE_FILENAME),
-                JSON.stringify(expiredSig, null, 2) + '\n',
-                'utf-8'
-            );
+            // Sign with a TTL that is already in the past (allowed at sign time).
+            signSkillWithOptions(skillDir, privateKey, 'example.com', { expiresIn: -ONE_DAY_MS });
 
             const result = verifySkillOffline(skillDir, makeDiscovery(publicKey));
-            assert.equal(result.valid, true, 'expired sigs are degraded, not failed');
+            assert.equal(result.valid, false, 'expired signatures fail closed by default');
+            assert.equal(result.error_code, ErrorCode.SIGNATURE_EXPIRED);
             assert.equal(result.expired, true);
-            assert.ok(result.warnings.includes('signature_expired'));
+
+            const degraded = verifySkillOffline(skillDir, makeDiscovery(publicKey), null, null, null, null, null, true);
+            assert.equal(degraded.valid, true, 'allowExpired restores degraded-not-failed');
+            assert.equal(degraded.expired, true);
+            assert.ok(degraded.warnings.includes('signature_expired'));
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
     });
 
-    it('should warn (not fail) when expires_at is unparseable', () => {
+    it('should fail closed when expires_at is unparseable (and warn with allowExpired)', () => {
+        for (const bad of ['not-a-timestamp', '2020-01-01', '2020-01-01T00:00:00', '2020-01-01 00:00:00Z']) {
+            const strict = applyExpirationCheck({ valid: true, warnings: [] }, bad);
+            assert.equal(strict.valid, false, bad);
+            assert.equal(strict.error_code, ErrorCode.SIGNATURE_EXPIRED);
+            const lenient = applyExpirationCheck({ valid: true, warnings: [] }, bad, true);
+            assert.equal(lenient.valid, true);
+            assert.ok(lenient.warnings.includes('signature_expires_at_unparseable'));
+        }
+        // Inside the skew window is not expired.
+        const justNow = new Date(Date.now() - 60 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+        assert.equal(applyExpirationCheck({ valid: true, warnings: [] }, justNow).valid, true);
+    });
+
+    it('covers expires_at with the signature: stripping it invalidates (SP-1)', () => {
         const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
         try {
             const { privateKey, publicKey } = makeKeypair();
             const skillDir = join(dir, 'skill');
-            createSkillDir(skillDir, { 'SKILL.md': '---\nname: bad\n---\n# hi' });
-
-            const sig = signSkill(skillDir, privateKey, 'example.com');
-            const badSig = { ...sig, expires_at: 'not-a-timestamp' };
-            writeFileSync(
-                join(skillDir, SIGNATURE_FILENAME),
-                JSON.stringify(badSig, null, 2) + '\n',
-                'utf-8'
-            );
-
-            const result = verifySkillOffline(skillDir, makeDiscovery(publicKey));
-            assert.equal(result.valid, true);
-            assert.notEqual(result.expired, true);
-            assert.ok(result.warnings.includes('signature_expires_at_unparseable'));
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: strip\n---\n# hi' });
+            const sig = signSkillWithOptions(skillDir, privateKey, 'example.com', { expiresIn: -ONE_DAY_MS });
+            const stripped = { ...sig };
+            delete stripped.expires_at;
+            writeFileSync(join(skillDir, SIGNATURE_FILENAME), JSON.stringify(stripped), 'utf-8');
+            let r = verifySkillOffline(skillDir, makeDiscovery(publicKey));
+            assert.equal(r.valid, false);
+            assert.equal(r.error_code, ErrorCode.SIGNATURE_INVALID);
+            stripped.schemapin_version = '1.3';
+            writeFileSync(join(skillDir, SIGNATURE_FILENAME), JSON.stringify(stripped), 'utf-8');
+            r = verifySkillOffline(skillDir, makeDiscovery(publicKey));
+            assert.equal(r.valid, false);
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
@@ -913,4 +924,227 @@ describe('Schema version binding (v1.4 alpha.2)', () => {
             rmSync(dir, { recursive: true, force: true });
         }
     });
+});
+
+
+// ---------------------------------------------------------------------------
+// Signed signature document, domain binding, hashing v2 (SP-1, 8, 12, 13, 14)
+// ---------------------------------------------------------------------------
+
+function signLegacyV13(skillDir, privateKey, domain) {
+    const { rootHash, manifest } = canonicalizeSkillV1(skillDir);
+    const publicKeyPem = nodeCrypto.createPublicKey(privateKey).export({ type: 'spki', format: 'pem' });
+    const sig = {
+        schemapin_version: '1.3',
+        skill_name: 'legacy',
+        skill_hash: `sha256:${rootHash.toString('hex')}`,
+        signature: SignatureManager.signHash(rootHash, privateKey),
+        signed_at: '2026-01-01T00:00:00Z',
+        domain,
+        signer_kid: KM.calculateKeyFingerprint(publicKeyPem),
+        file_manifest: manifest
+    };
+    writeFileSync(join(skillDir, SIGNATURE_FILENAME), JSON.stringify(sig), 'utf-8');
+    return sig;
+}
+
+function withTmp(fn) {
+    const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+    try {
+        return fn(dir);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+}
+
+describe('signed signature document (SP-1)', () => {
+    for (const [field, value] of [
+        ['schema_version', '9.9.9'],
+        ['previous_hash', 'sha256:' + 'ab'.repeat(32)],
+        ['skill_name', 'payments-tool'],
+        ['domain', 'good.example.com'],
+        ['signer_kid', 'sha256:' + '00'.repeat(32)],
+        ['signed_at', '2030-01-01T00:00:00Z'],
+        ['canonicalization', 'schemapin-v1']
+    ]) {
+        it(`tampering ${field} invalidates the signature`, () => withTmp((dir) => {
+            const { privateKey, publicKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '---\nname: s\n---\n# hi' });
+            signSkillWithOptions(skillDir, privateKey, 'example.com', { schemaVersion: '1.0.0' });
+            const sig = loadSignature(skillDir);
+            sig[field] = value;
+            writeFileSync(join(skillDir, SIGNATURE_FILENAME), JSON.stringify(sig), 'utf-8');
+            const r = verifySkillOffline(skillDir, makeDiscovery(publicKey));
+            assert.equal(r.valid, false);
+        }));
+    }
+
+    it('verifies skill_hash against the directory (SP-14)', () => withTmp((dir) => {
+        const { privateKey, publicKey } = makeKeypair();
+        const skillDir = join(dir, 'skill');
+        createSkillDir(skillDir, { 'SKILL.md': '# hi' });
+        const sig = signSkill(skillDir, privateKey, 'example.com');
+        assert.equal(sig.skill_hash, `sha256:${canonicalizeSkill(skillDir).rootHash.toString('hex')}`);
+        const other = join(dir, 'other');
+        createSkillDir(other, { 'SKILL.md': '# other' });
+        signSkill(other, privateKey, 'example.com');
+        writeFileSync(join(skillDir, SIGNATURE_FILENAME), JSON.stringify(loadSignature(other)), 'utf-8');
+        const r = verifySkillOffline(skillDir, makeDiscovery(publicKey));
+        assert.equal(r.valid, false);
+        assert.match(r.error_message, /skill_hash/);
+    }));
+
+    it('still verifies legacy 1.3 documents with a warning', () => withTmp((dir) => {
+        const { privateKey, publicKey } = makeKeypair();
+        const skillDir = join(dir, 'skill');
+        createSkillDir(skillDir, { 'SKILL.md': '# hi', 'sub/x.txt': 'x' });
+        signLegacyV13(skillDir, privateKey, 'example.com');
+        const r = verifySkillOffline(skillDir, makeDiscovery(publicKey), null, null, null, null, 'example.com');
+        assert.equal(r.valid, true);
+        assert.ok(r.warnings.includes('legacy_signature_format'));
+        const sig = loadSignature(skillDir);
+        sig.schemapin_version = '1.4';
+        writeFileSync(join(skillDir, SIGNATURE_FILENAME), JSON.stringify(sig), 'utf-8');
+        assert.equal(verifySkillOffline(skillDir, makeDiscovery(publicKey)).valid, false);
+    }));
+
+    it('verifyChain rejects legacy documents', () => {
+        assert.throws(
+            () => verifyChain({ schemapin_version: '1.4', previous_hash: 'sha256:aa' }, { schemapin_version: '1.3', skill_hash: 'sha256:aa' }),
+            (e) => e instanceof ChainError && e.kind === 'legacy'
+        );
+    });
+});
+
+describe('domain binding (SP-8)', () => {
+    it('offline: mismatch fails and nothing is pinned', () => withTmp((dir) => {
+        const { privateKey, publicKey } = makeKeypair();
+        const skillDir = join(dir, 'skill');
+        createSkillDir(skillDir, { 'SKILL.md': '# hi' });
+        signSkill(skillDir, privateKey, 'evil.example.com');
+        const store = new KeyPinStore();
+        const r = verifySkillOffline(skillDir, makeDiscovery(publicKey), null, null, store, 'calc', 'good.example.com');
+        assert.equal(r.valid, false);
+        assert.equal(r.error_code, ErrorCode.DOMAIN_MISMATCH);
+        assert.equal(store.getPinned('calc', 'good.example.com'), null);
+        assert.equal(store.getPinned('calc', 'evil.example.com'), null);
+    }));
+
+    it('offline: bound domain is reported, unbound is warned', () => withTmp((dir) => {
+        const { privateKey, publicKey } = makeKeypair();
+        const skillDir = join(dir, 'skill');
+        createSkillDir(skillDir, { 'SKILL.md': '# hi' });
+        signSkill(skillDir, privateKey, 'Example.COM');
+        const r = verifySkillOffline(skillDir, makeDiscovery(publicKey), null, null, null, null, 'example.com');
+        assert.equal(r.valid, true);
+        assert.equal(r.domain, 'example.com');
+        assert.ok(!r.warnings.includes('domain_unbound'));
+        const r2 = verifySkillOffline(skillDir, makeDiscovery(publicKey));
+        assert.ok(r2.warnings.includes('domain_unbound'));
+    }));
+
+    it('resolver path binds the domain before any network access', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'skill-test-'));
+        try {
+            const { privateKey } = makeKeypair();
+            const skillDir = join(dir, 'skill');
+            createSkillDir(skillDir, { 'SKILL.md': '# hi' });
+            signSkill(skillDir, privateKey, 'good.example.com');
+            class Exploding extends SchemaResolver {
+                async resolveDiscovery() { throw new Error('network must not be touched'); }
+                async resolveRevocation() { throw new Error('unreachable'); }
+            }
+            const r = await verifySkillWithResolver(skillDir, 'evil.example.com', new Exploding());
+            assert.equal(r.valid, false);
+            assert.equal(r.error_code, ErrorCode.DOMAIN_MISMATCH);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it('rejects invalid domains', () => withTmp((dir) => {
+        const { privateKey, publicKey } = makeKeypair();
+        const skillDir = join(dir, 'skill');
+        createSkillDir(skillDir, { 'SKILL.md': '# hi' });
+        signSkill(skillDir, privateKey, 'example.com');
+        for (const bad of ['../skills/evil/key', 'localhost', 'http://example.com', '10.0.0.1']) {
+            const r = verifySkillOffline(skillDir, makeDiscovery(publicKey), null, null, null, null, bad);
+            assert.equal(r.valid, false, bad);
+            assert.equal(r.error_code, ErrorCode.DOMAIN_INVALID, bad);
+        }
+    }));
+});
+
+describe('pin after verify', () => {
+    it('a failed signature never leaves a pin behind', () => withTmp((dir) => {
+        const { privateKey, publicKey } = makeKeypair();
+        const other = makeKeypair();
+        const skillDir = join(dir, 'skill');
+        createSkillDir(skillDir, { 'SKILL.md': '# hi' });
+        signSkill(skillDir, privateKey, 'example.com');
+        const store = new KeyPinStore();
+        let r = verifySkillOffline(skillDir, makeDiscovery(other.publicKey), null, null, store, 't', 'example.com');
+        assert.equal(r.valid, false);
+        assert.equal(store.getPinned('t', 'example.com'), null);
+        r = verifySkillOffline(skillDir, makeDiscovery(publicKey), null, null, store, 't', 'example.com');
+        assert.equal(r.valid, true);
+        assert.equal(r.key_pinning.status, 'first_use');
+        assert.notEqual(store.getPinned('t', 'example.com'), null);
+    }));
+
+    it('an expired signature never leaves a pin behind', () => withTmp((dir) => {
+        const { privateKey, publicKey } = makeKeypair();
+        const skillDir = join(dir, 'skill');
+        createSkillDir(skillDir, { 'SKILL.md': '# hi' });
+        signSkillWithOptions(skillDir, privateKey, 'example.com', { expiresIn: -ONE_DAY_MS });
+        const store = new KeyPinStore();
+        const r = verifySkillOffline(skillDir, makeDiscovery(publicKey), null, null, store, 't', 'example.com');
+        assert.equal(r.valid, false);
+        assert.equal(store.getPinned('t', 'example.com'), null);
+    }));
+});
+
+describe('skill hashing v2 (SP-12 / SP-13)', () => {
+    it('rejects symlinked files and directories', () => withTmp((dir) => {
+        const skillDir = join(dir, 'skill');
+        createSkillDir(skillDir, { 'SKILL.md': '# hi' });
+        writeFileSync(join(dir, 'outside.txt'), 'unsigned');
+        symlinkSync(join(dir, 'outside.txt'), join(skillDir, 'link.txt'));
+        assert.throws(() => canonicalizeSkill(skillDir), SkillCanonicalizationError);
+        rmSync(join(skillDir, 'link.txt'));
+        mkdirSync(join(dir, 'other'));
+        symlinkSync(join(dir, 'other'), join(skillDir, 'examples'), 'dir');
+        assert.throws(() => canonicalizeSkill(skillDir), SkillCanonicalizationError);
+    }));
+
+    it('a symlink added after signing fails verification', () => withTmp((dir) => {
+        const { privateKey, publicKey } = makeKeypair();
+        const skillDir = join(dir, 'skill');
+        createSkillDir(skillDir, { 'SKILL.md': '# hi' });
+        signSkill(skillDir, privateKey, 'example.com');
+        writeFileSync(join(dir, 'outside.txt'), 'unsigned');
+        symlinkSync(join(dir, 'outside.txt'), join(skillDir, 'helper.sh'));
+        const r = verifySkillOffline(skillDir, makeDiscovery(publicKey));
+        assert.equal(r.valid, false);
+        assert.equal(r.error_code, ErrorCode.SCHEMA_CANONICALIZATION_FAILED);
+    }));
+
+    it('path/content boundary is not malleable', () => withTmp((dir) => {
+        const a = join(dir, 'a');
+        const b = join(dir, 'b');
+        createSkillDir(a, { 'run.sh.disabled': '\necho hi' });
+        createSkillDir(b, { 'run.sh': '.disabled\necho hi' });
+        assert.notDeepEqual(canonicalizeSkill(a).rootHash, canonicalizeSkill(b).rootHash);
+        // The legacy algorithm collides on exactly this re-split.
+        assert.deepEqual(canonicalizeSkillV1(a).rootHash, canonicalizeSkillV1(b).rootHash);
+    }));
+
+    it('a nested .schemapin.sig is content, the top-level one is not', () => withTmp((dir) => {
+        const skillDir = join(dir, 'skill');
+        createSkillDir(skillDir, { 'SKILL.md': '# hi', 'nested/.schemapin.sig': '{}' });
+        const { manifest } = canonicalizeSkill(skillDir);
+        assert.ok('nested/.schemapin.sig' in manifest);
+        assert.ok(!('.schemapin.sig' in manifest));
+    }));
 });

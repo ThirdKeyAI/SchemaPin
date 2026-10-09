@@ -1,13 +1,16 @@
 """Offline and resolver-based schema verification for SchemaPin v1.2."""
 
 import json
+import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from .core import SchemaPinCore
 from .crypto import KeyManager, SignatureManager
+from .dns import DnsTxtRecord, verify_dns_match
+from .domain import InvalidDomainError, validate_domain
 from .resolver import SchemaResolver
 from .revocation import RevocationDocument, check_revocation_combined
 
@@ -35,6 +38,18 @@ class ErrorCode(Enum):
     BUNDLE_UNSIGNED = "bundle_unsigned"
     # v1.4: a signed trust bundle's expires_at is in the past (or unparseable).
     BUNDLE_EXPIRED = "bundle_expired"
+    # A signature's ``expires_at`` is in the past (or unparseable) and the
+    # caller did not opt in with ``allow_expired=True``. Hard failure.
+    SIGNATURE_EXPIRED = "signature_expired"
+    # The caller-supplied domain is not a valid RFC 1123 hostname.
+    DOMAIN_INVALID = "domain_invalid"
+    # A trust bundle's authority key is not pre-seeded in the authority store
+    # and the caller did not opt in to first-use trust.
+    BUNDLE_AUTHORITY_UNTRUSTED = "bundle_authority_untrusted"
+
+
+#: Clock-skew tolerance applied to ``expires_at`` comparisons (seconds).
+EXPIRATION_SKEW_SECONDS = 300
 
 
 # v1.4 alpha.3: canonicalization algorithm identifier
@@ -122,19 +137,25 @@ class VerificationResult:
         return d
 
     def with_expiration_check(
-        self, expires_at: Optional[str]
+        self,
+        expires_at: Optional[str],
+        allow_expired: bool = False,
+        skew_seconds: int = EXPIRATION_SKEW_SECONDS,
     ) -> "VerificationResult":
         """Apply a signature ``expires_at`` check to this result.
 
-        Semantics (mirrors the Rust ``VerificationResult::with_expiration_check``):
+        Expiration is **fail-closed** by default:
 
-        - If ``expires_at`` is ``None``, the result is returned unchanged.
-        - If parseable (RFC 3339) and in the past, sets ``expired = True``,
-          copies ``expires_at``, and appends a ``signature_expired`` warning.
-          ``valid`` is left intact (degraded, not failed).
-        - If parseable and in the future, just records ``expires_at``.
-        - If unparseable, appends ``signature_expires_at_unparseable`` and
-          does not mark the result expired (fail-open on parse).
+        - ``expires_at`` of ``None`` leaves the result unchanged.
+        - A value that is not strict RFC 3339 fails with
+          ``SIGNATURE_EXPIRED`` (``allow_expired=True`` downgrades this to a
+          ``signature_expires_at_unparseable`` warning).
+        - A timestamp more than ``skew_seconds`` in the past fails with
+          ``SIGNATURE_EXPIRED`` and sets ``expired = True``. With
+          ``allow_expired=True`` the result stays valid but is marked
+          ``expired`` and carries a ``signature_expired`` warning
+          (the pre-1.4.0 "degraded, not failed" behavior).
+        - A future timestamp just records ``expires_at``.
 
         Returns ``self`` for chaining.
         """
@@ -142,12 +163,22 @@ class VerificationResult:
             return self
         ts = _parse_rfc3339(expires_at)
         if ts is None:
-            self.warnings.append("signature_expires_at_unparseable")
+            if allow_expired:
+                self.warnings.append("signature_expires_at_unparseable")
+                return self
+            self.valid = False
+            self.error_code = ErrorCode.SIGNATURE_EXPIRED
+            self.error_message = f"expires_at is not a valid RFC 3339 timestamp: {expires_at!r}"
             return self
         self.expires_at = expires_at
-        if datetime.now(timezone.utc) > ts:
+        if datetime.now(timezone.utc) > ts + timedelta(seconds=skew_seconds):
             self.expired = True
-            self.warnings.append("signature_expired")
+            if allow_expired:
+                self.warnings.append("signature_expired")
+            else:
+                self.valid = False
+                self.error_code = ErrorCode.SIGNATURE_EXPIRED
+                self.error_message = f"signature expired at {expires_at}"
         return self
 
     def with_lineage_metadata(
@@ -170,22 +201,25 @@ class VerificationResult:
         return self
 
 
-def _parse_rfc3339(value: str) -> Optional[datetime]:
-    """Parse an RFC 3339 timestamp.
+_RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$"
+)
 
-    Accepts both ``...Z`` and ``...+HH:MM`` forms. Returns ``None`` on any
-    parse failure so callers can branch on success.
+
+def _parse_rfc3339(value: str) -> Optional[datetime]:
+    """Parse a strict RFC 3339 timestamp (``T`` separator, mandatory offset).
+
+    Accepts ``...Z`` and ``...+HH:MM`` forms only. Date-only strings, local
+    times without an offset and other ISO 8601 variants return ``None``.
     """
+    if not isinstance(value, str) or not _RFC3339_RE.match(value):
+        return None
     try:
-        # Python 3.11+ accepts trailing Z; for 3.8-3.10 normalize manually.
-        normalized = value.strip()
-        if normalized.endswith("Z"):
-            normalized = normalized[:-1] + "+00:00"
+        normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
         ts = datetime.fromisoformat(normalized)
     except (TypeError, ValueError):
         return None
     if ts.tzinfo is None:
-        # RFC 3339 requires a TZ offset; treat naive timestamps as malformed.
         return None
     return ts.astimezone(timezone.utc)
 
@@ -193,7 +227,10 @@ def _parse_rfc3339(value: str) -> Optional[datetime]:
 class KeyPinStore:
     """Lightweight in-memory fingerprint-based pin store.
 
-    Keys are stored by tool_id@domain.
+    Keys are stored by ``tool_id@domain``. Verification flows use
+    :meth:`check` before the signature check and :meth:`pin` only after it
+    succeeds, so a failed verification never leaves a pin behind. Operators
+    can pre-seed expected fingerprints with :meth:`seed`.
     """
 
     def __init__(self) -> None:
@@ -202,24 +239,44 @@ class KeyPinStore:
     def _key(self, tool_id: str, domain: str) -> str:
         return f"{tool_id}@{domain}"
 
+    def check(self, tool_id: str, domain: str, fingerprint: str) -> str:
+        """Compare ``fingerprint`` with the pinned value without mutating.
+
+        Returns:
+            "first_use" if nothing is pinned for this tool@domain,
+            "pinned" if the fingerprint matches,
+            "changed" if a different fingerprint is pinned.
+        """
+        existing = self._pins.get(self._key(tool_id, domain))
+        if existing is None:
+            return "first_use"
+        return "pinned" if existing == fingerprint else "changed"
+
+    def pin(self, tool_id: str, domain: str, fingerprint: str) -> None:
+        """Pin ``fingerprint`` for ``tool_id@domain`` (overwrites)."""
+        self._pins[self._key(tool_id, domain)] = fingerprint
+
+    def seed(self, tool_id: str, domain: str, fingerprint: str) -> None:
+        """Pre-seed an expected fingerprint (out-of-band trust establishment)."""
+        self.pin(tool_id, domain, fingerprint)
+
     def check_and_pin(
         self, tool_id: str, domain: str, fingerprint: str
     ) -> str:
-        """Check and optionally pin a key fingerprint.
+        """Check and pin on first use in one step.
+
+        Prefer :meth:`check` + :meth:`pin` so that pinning can be deferred
+        until after signature verification.
 
         Returns:
             "first_use" if this is a new tool@domain (key is pinned).
             "pinned" if the fingerprint matches the pinned key.
             "changed" if the fingerprint differs from the pinned key.
         """
-        k = self._key(tool_id, domain)
-        existing = self._pins.get(k)
-        if existing is None:
-            self._pins[k] = fingerprint
-            return "first_use"
-        if existing == fingerprint:
-            return "pinned"
-        return "changed"
+        result = self.check(tool_id, domain, fingerprint)
+        if result == "first_use":
+            self.pin(tool_id, domain, fingerprint)
+        return result
 
     def get_pinned(self, tool_id: str, domain: str) -> Optional[str]:
         """Get the pinned fingerprint for a tool@domain, or None."""
@@ -233,7 +290,12 @@ class KeyPinStore:
     def from_json(cls, json_str: str) -> "KeyPinStore":
         """Deserialize a pin store from JSON."""
         store = cls()
-        store._pins = json.loads(json_str)
+        data = json.loads(json_str)
+        if not isinstance(data, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in data.items()
+        ):
+            raise ValueError("pin store JSON must be an object of string fingerprints")
+        store._pins = data
         return store
 
 
@@ -249,22 +311,22 @@ def verify_schema_offline(
 ) -> VerificationResult:
     """Verify a schema offline using pre-fetched discovery and revocation data.
 
-    7-step verification flow:
-    1. Validate discovery document
-    2. Extract public key and compute fingerprint
-    3. Check revocation (both simple list + standalone doc)
-    4. TOFU key pinning check
-    5. Canonicalize schema and compute hash
-    6. Verify ECDSA signature against hash
-    7. Return structured result
+    Verification flow:
+    1. Validate the canonicalization identifier and the domain syntax
+    2. Validate discovery document
+    3. Extract public key and compute fingerprint
+    4. Check revocation (both simple list + standalone doc)
+    5. TOFU pin check (read-only)
+    6. Canonicalize schema, compute hash, verify ECDSA signature
+    7. Pin the key on first use (only after a successful verification)
+    8. Return structured result
 
-    ``canonicalization`` is a v1.4 alpha.3 addition: when the signature
-    carries a ``canonicalization`` field, the caller passes the value through
-    to this function. ``None`` or ``"schemapin-v1"`` are equivalent and
-    accepted; any other value fails with ``CANONICALIZATION_UNSUPPORTED``
-    before any crypto work.
+    ``canonicalization`` is a v1.4 addition: when the signature carries a
+    ``canonicalization`` field, the caller passes the value through.
+    ``None`` or ``"schemapin-v1"`` are equivalent and accepted; any other
+    value fails with ``CANONICALIZATION_UNSUPPORTED`` before any crypto work.
     """
-    # Step 0 (v1.4): canonicalization algorithm check
+    # Step 1: canonicalization algorithm + domain syntax
     unsupported = check_canonicalization(canonicalization)
     if unsupported is not None:
         return VerificationResult(
@@ -273,8 +335,17 @@ def verify_schema_offline(
             error_code=ErrorCode.CANONICALIZATION_UNSUPPORTED,
             error_message=f"Unsupported canonicalization algorithm: {unsupported}",
         )
+    try:
+        domain = validate_domain(domain)
+    except InvalidDomainError as e:
+        return VerificationResult(
+            valid=False,
+            domain=domain,
+            error_code=ErrorCode.DOMAIN_INVALID,
+            error_message=str(e),
+        )
 
-    # Step 1: Validate discovery document
+    # Step 2: Validate discovery document
     public_key_pem = discovery.get("public_key_pem")
     if not public_key_pem or "-----BEGIN PUBLIC KEY-----" not in public_key_pem:
         return VerificationResult(
@@ -284,7 +355,7 @@ def verify_schema_offline(
             error_message="Discovery document missing or invalid public_key_pem",
         )
 
-    # Step 2: Extract public key and compute fingerprint
+    # Step 3: Extract public key and compute fingerprint
     try:
         public_key = KeyManager.load_public_key_pem(public_key_pem)
         fingerprint = KeyManager.calculate_key_fingerprint(public_key)
@@ -296,7 +367,7 @@ def verify_schema_offline(
             error_message=f"Failed to load public key: {e}",
         )
 
-    # Step 3: Check revocation
+    # Step 4: Check revocation
     simple_revoked = discovery.get("revoked_keys", [])
     try:
         check_revocation_combined(simple_revoked, revocation, fingerprint)
@@ -308,8 +379,8 @@ def verify_schema_offline(
             error_message=str(e),
         )
 
-    # Step 4: TOFU key pinning
-    pin_result = pin_store.check_and_pin(tool_id, domain, fingerprint)
+    # Step 5: TOFU pin check (no write yet)
+    pin_result = pin_store.check(tool_id, domain, fingerprint)
     if pin_result == "changed":
         return VerificationResult(
             valid=False,
@@ -318,7 +389,7 @@ def verify_schema_offline(
             error_message="Key fingerprint changed since last use",
         )
 
-    # Step 5: Canonicalize and hash
+    # Step 6: Canonicalize, hash, verify
     try:
         schema_hash = SchemaPinCore.canonicalize_and_hash(schema)
     except Exception as e:
@@ -329,7 +400,6 @@ def verify_schema_offline(
             error_message=f"Failed to canonicalize schema: {e}",
         )
 
-    # Step 6: Verify signature
     valid = SignatureManager.verify_schema_signature(
         schema_hash, signature_b64, public_key
     )
@@ -342,7 +412,11 @@ def verify_schema_offline(
             error_message="Signature verification failed",
         )
 
-    # Step 7: Return success
+    # Step 7: Pin only after the signature verified
+    if pin_result == "first_use":
+        pin_store.pin(tool_id, domain, fingerprint)
+
+    # Step 8: Return success
     developer_name = discovery.get("developer_name")
     pinning_status = KeyPinningStatus(
         status=pin_result,
@@ -366,6 +440,46 @@ def verify_schema_offline(
     return result
 
 
+def verify_schema_offline_with_dns(
+    schema: Dict[str, Any],
+    signature_b64: str,
+    domain: str,
+    tool_id: str,
+    discovery: Dict[str, Any],
+    revocation: Optional[RevocationDocument],
+    pin_store: KeyPinStore,
+    dns_txt: Optional[DnsTxtRecord],
+    canonicalization: Optional[str] = None,
+) -> VerificationResult:
+    """:func:`verify_schema_offline` plus a DNS TXT second-channel check.
+
+    When ``dns_txt`` is given (see :func:`schemapin.dns.fetch_dns_txt`), the
+    discovery key's fingerprint must match the TXT record or the result is a
+    hard ``DOMAIN_MISMATCH`` failure. The DNS check runs *before* the pin is
+    written so a mismatching key is never pinned.
+    """
+    if dns_txt is not None:
+        try:
+            verify_dns_match(discovery, dns_txt)
+        except ValueError as e:
+            return VerificationResult(
+                valid=False,
+                domain=domain,
+                error_code=ErrorCode.DOMAIN_MISMATCH,
+                error_message=str(e),
+            )
+    return verify_schema_offline(
+        schema,
+        signature_b64,
+        domain,
+        tool_id,
+        discovery,
+        revocation,
+        pin_store,
+        canonicalization,
+    )
+
+
 def verify_schema_with_resolver(
     schema: Dict[str, Any],
     signature_b64: str,
@@ -373,8 +487,26 @@ def verify_schema_with_resolver(
     tool_id: str,
     resolver: SchemaResolver,
     pin_store: KeyPinStore,
+    allow_unreachable_revocation: bool = False,
 ) -> VerificationResult:
-    """Verify a schema using a resolver for discovery and revocation."""
+    """Verify a schema using a resolver for discovery and revocation.
+
+    Revocation is fail-closed: if the discovery document declares a
+    ``revocation_endpoint`` that cannot be fetched, verification fails with
+    ``DISCOVERY_FETCH_FAILED`` unless ``allow_unreachable_revocation=True``.
+    """
+    from .revocation import RevocationFetchError
+
+    try:
+        domain = validate_domain(domain)
+    except InvalidDomainError as e:
+        return VerificationResult(
+            valid=False,
+            domain=domain,
+            error_code=ErrorCode.DOMAIN_INVALID,
+            error_message=str(e),
+        )
+
     # Resolve discovery
     discovery = resolver.resolve_discovery(domain)
     if discovery is None:
@@ -385,8 +517,18 @@ def verify_schema_with_resolver(
             error_message=f"Could not resolve discovery for domain: {domain}",
         )
 
-    # Resolve revocation
-    revocation = resolver.resolve_revocation(domain, discovery)
+    # Resolve revocation (fail-closed)
+    try:
+        revocation = resolver.resolve_revocation(domain, discovery)
+    except RevocationFetchError as e:
+        if not allow_unreachable_revocation:
+            return VerificationResult(
+                valid=False,
+                domain=domain,
+                error_code=ErrorCode.DISCOVERY_FETCH_FAILED,
+                error_message=f"Revocation document unreachable (fail-closed): {e}",
+            )
+        revocation = None
 
     return verify_schema_offline(
         schema, signature_b64, domain, tool_id, discovery, revocation, pin_store

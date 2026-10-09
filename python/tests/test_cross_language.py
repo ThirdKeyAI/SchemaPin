@@ -90,3 +90,65 @@ def test_non_p256_public_keys_rejected(name):
         KeyManager.load_public_key_pem(pem)
     with pytest.raises(ValueError):
         KeyManager.calculate_key_fingerprint_from_pem(pem)
+
+
+# ---------------------------------------------------------------------------
+# Skill-directory fixtures (SP-1, SP-12, SP-13, SP-14)
+# ---------------------------------------------------------------------------
+
+SKILL_FIXTURES = os.path.join(ROOT, "tests", "cross-language", "skill")
+
+
+@pytest.fixture
+def skill_expected():
+    return _load_json(os.path.join(SKILL_FIXTURES, "expected.json"))
+
+
+def test_skill_fixture_v14_hashes_and_verifies(skill_expected):
+    from schemapin.skill import SkillSigner
+
+    skill_dir = os.path.join(SKILL_FIXTURES, skill_expected["v14"]["skill_dir"])
+    root_hash, manifest = SkillSigner.canonicalize_skill(skill_dir)
+    assert f"sha256:{root_hash.hex()}" == skill_expected["v14"]["skill_hash"]
+    assert manifest == skill_expected["v14"]["file_manifest"]
+    result = SkillSigner.verify_skill_offline(
+        skill_dir, skill_expected["discovery"], domain=skill_expected["domain"]
+    )
+    assert result.valid is True, result
+    assert "legacy_signature_format" not in result.warnings
+    assert result.schema_version == "1.0.0"
+
+
+def test_skill_fixture_v14_tampered_fields_fail(skill_expected, tmp_path):
+    import shutil
+
+    from schemapin.skill import SIGNATURE_FILENAME, SkillSigner
+
+    src = os.path.join(SKILL_FIXTURES, skill_expected["v14"]["skill_dir"])
+    for field in skill_expected["v14"]["signed_fields_tamper_must_fail"]:
+        dst = tmp_path / field
+        shutil.copytree(src, dst)
+        sig = SkillSigner.load_signature(dst)
+        sig[field] = "tampered" if field != "skill_hash" else "sha256:" + "00" * 32
+        (dst / SIGNATURE_FILENAME).write_text(json.dumps(sig), encoding="utf-8")
+        result = SkillSigner.verify_skill_offline(dst, skill_expected["discovery"])
+        assert result.valid is False, field
+    # Content tamper
+    dst = tmp_path / "content"
+    shutil.copytree(src, dst)
+    (dst / "scripts" / "run.sh").write_text("#!/bin/sh\nrm -rf /\n")
+    assert SkillSigner.verify_skill_offline(dst, skill_expected["discovery"]).valid is False
+
+
+def test_skill_fixture_legacy_v13_verifies(skill_expected):
+    from schemapin.skill import SkillSigner
+
+    skill_dir = os.path.join(SKILL_FIXTURES, skill_expected["legacy_v13"]["skill_dir"])
+    root_hash, manifest = SkillSigner.canonicalize_skill_v1(skill_dir)
+    assert f"sha256:{root_hash.hex()}" == skill_expected["legacy_v13"]["skill_hash"]
+    assert manifest == skill_expected["legacy_v13"]["file_manifest"]
+    result = SkillSigner.verify_skill_offline(
+        skill_dir, skill_expected["discovery"], domain=skill_expected["domain"]
+    )
+    assert result.valid is True, result
+    assert "legacy_signature_format" in result.warnings

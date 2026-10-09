@@ -259,6 +259,11 @@ Examples:
     )
 
     parser.add_argument(
+        '--allow-expired',
+        action='store_true',
+        help='Accept skill signatures whose expires_at has passed (degraded, not failed)'
+    )
+    parser.add_argument(
         '--auto-pin',
         action='store_true',
         help='Automatically pin keys on first use'
@@ -335,21 +340,27 @@ Examples:
         elif args.skill:
             # Verify skill directory
             if args.public_key:
-                # Direct key verification
-                root_hash, _manifest = SkillSigner.canonicalize_skill(args.skill)
+                # Direct key verification: the v1.4 signature covers the whole
+                # signature document, so run the full offline flow against a
+                # synthetic discovery document built from the supplied key.
+                public_key_pem = args.public_key.read_text()
                 public_key = load_public_key(args.public_key)
                 sig_data = SkillSigner.load_signature(args.skill)
-                is_valid = SignatureManager.verify_signature(
-                    root_hash, sig_data.get("signature", ""), public_key
+                vr = SkillSigner.verify_skill_offline(
+                    args.skill,
+                    {"schema_version": "1.4", "public_key_pem": public_key_pem},
+                    signature_data=sig_data,
+                    tool_id=args.tool_id,
+                    domain=args.domain,
+                    allow_expired=args.allow_expired,
                 )
-                fingerprint = KeyManager.calculate_key_fingerprint(public_key)
-                result = {
-                    'valid': is_valid,
+                result = vr.to_dict()
+                result.update({
                     'verification_method': 'public_key',
-                    'key_fingerprint': fingerprint,
+                    'key_fingerprint': KeyManager.calculate_key_fingerprint(public_key),
                     'key_source': str(args.public_key),
                     'skill_name': sig_data.get('skill_name', ''),
-                }
+                })
             elif args.domain:
                 # Resolver-based verification
                 from schemapin.resolver import WellKnownResolver
@@ -363,6 +374,7 @@ Examples:
                     resolver=resolver,
                     pin_store=pin_store,
                     tool_id=args.tool_id,
+                    allow_expired=args.allow_expired,
                 )
                 result = vr.to_dict()
                 result['verification_method'] = 'discovery'

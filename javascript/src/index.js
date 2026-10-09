@@ -2,7 +2,9 @@
  * SchemaPin: Cryptographic schema integrity verification for AI tools.
  */
 
-export { SchemaPinCore } from './core.js';
+export { SchemaPinCore, CanonicalizationError, compareCodePoints } from './core.js';
+export { InvalidDomainError, validateDomain, isValidDomain } from './domain.js';
+export { TransportError, fetchJson, requireHttps, MAX_RESPONSE_BYTES } from './transport.js';
 export { KeyManager, SignatureManager } from './crypto.js';
 export { PublicKeyDiscovery } from './discovery.js';
 export { KeyPinning, PinningMode, PinningPolicy } from './pinning.js';
@@ -25,6 +27,7 @@ export {
 // v1.2.0 new modules
 export {
     RevocationReason,
+    RevocationFetchError,
     buildRevocationDocument,
     addRevokedKey,
     checkRevocation,
@@ -58,8 +61,11 @@ export {
     ErrorCode,
     KeyPinStore,
     verifySchemaOffline,
+    verifySchemaOfflineWithDns,
     verifySchemaWithResolver,
     applyExpirationCheck,
+    parseRfc3339,
+    EXPIRATION_SKEW_SECONDS,
     // v1.4 alpha.3
     CANONICALIZATION_V1,
     checkCanonicalization,
@@ -78,7 +84,14 @@ export {
 // v1.3.0 new module
 export {
     SIGNATURE_FILENAME,
+    SCHEMAPIN_VERSION,
+    SCHEMAPIN_VERSION_LEGACY,
+    SkillCanonicalizationError,
+    ChainError,
+    verifyChain,
+    signingInput,
     canonicalizeSkill,
+    canonicalizeSkillV1,
     parseSkillName,
     loadSignature,
     signSkill,

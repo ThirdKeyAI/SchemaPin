@@ -1,33 +1,57 @@
 // Package skill provides skill folder signing and verification for SchemaPin
-// v1.3 with v1.4-alpha additions.
+// v1.3 / v1.4.
 //
 // Extends SchemaPin's ECDSA P-256 signing to cover file-based skill folders
 // (AgentSkills spec). Same keys, same .well-known discovery, new canonicalization
 // target.
 //
-// v1.4-alpha additions:
-//   - Optional signature expiration (expires_at) on .schemapin.sig --
-//     written via SignSkillWithOptions. Verifiers degrade past expires_at
-//     instead of failing.
-//   - Optional DNS TXT cross-verification via VerifySkillOfflineWithDNS;
-//     see the dns subpackage for the parser and lookup helpers.
+// # Wire formats
+//
+// schemapin_version "1.4" (the default for every new signature):
+//
+//   - The directory is canonicalized with CanonicalizeSkill (skill
+//     canonicalization v2, spec section 4b): every entry is hashed as
+//     SHA-256("f" || be64(len(path)) || path || be64(len(content)) || content)
+//     and the root hash is SHA-256 over be64(len(path)) || path || digest for
+//     every entry in code-point path order. Symlinks are rejected.
+//   - skill_hash is "sha256:" + hex(root_hash).
+//   - The signature covers the entire signature document: the document is
+//     built with signature "", canonicalized with schemapin-v1 and signed as
+//     ECDSA-P256(SHA-256(canonical_bytes)). expires_at, schema_version,
+//     previous_hash, canonicalization, domain, skill_name, signer_kid,
+//     signed_at and file_manifest are therefore all integrity-protected.
+//
+// schemapin_version "1.3" (legacy, verify-only):
+//
+//   - Entries hashed as SHA-256(path || content), root hash SHA-256 of the
+//     concatenated hex digests, symlinks silently skipped, and the signature
+//     covers only the 32-byte root hash. None of the metadata fields are
+//     signed; verifiers surface a legacy_signature_format warning.
+//
+// Verification is fail-closed on expiration and on domain mismatch.
 package skill
 
 import (
 	"crypto/ecdsa"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/ThirdKeyAi/schemapin/go/pkg/core"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/crypto"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/discovery"
+	"github.com/ThirdKeyAi/schemapin/go/pkg/domain"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/resolver"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/revocation"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/verification"
@@ -36,19 +60,36 @@ import (
 // SignatureFilename is the name of the signature file written into skill directories.
 const SignatureFilename = ".schemapin.sig"
 
-// Version constants written into the SchemapinVersion field of new
-// signatures. v1.3 signatures lack expires_at; v1.4 signatures may carry
-// it. Verifiers handle both transparently.
+// Version constants written into the SchemapinVersion field.
 const (
-	schemapinVersionV13 = "1.3"
-	schemapinVersionV14 = "1.4"
+	// SchemapinVersion is written on every new signature (signed-document format).
+	SchemapinVersion = "1.4"
+	// SchemapinVersionLegacy is the root-hash-only format; accepted on
+	// verification, never written.
+	SchemapinVersionLegacy = "1.3"
+
+	schemapinVersionV13 = SchemapinVersionLegacy
+	schemapinVersionV14 = SchemapinVersion
 )
+
+// Caps enforced by CanonicalizeSkill.
+const (
+	MaxSkillFiles      = 10000
+	MaxSkillTotalBytes = 256 * 1024 * 1024
+)
+
+// ErrSkillCanonicalization wraps every canonicalization failure.
+var ErrSkillCanonicalization = errors.New("skill canonicalization error")
+
+func canonErr(format string, args ...interface{}) error {
+	return fmt.Errorf("%w: %s", ErrSkillCanonicalization, fmt.Sprintf(format, args...))
+}
 
 // SkillSignature represents the JSON structure of a .schemapin.sig file.
 //
 // Optional v1.4 fields:
-//   - ExpiresAt: when present, verifiers treat signatures past the expiration
-//     as degraded (warning) rather than a hard failure -- see VerifySkillOffline.
+//   - ExpiresAt: verification fails with ErrSignatureExpired past this unless
+//     the caller allows expired signatures.
 //   - SchemaVersion: caller-supplied semver string identifying *this* version
 //     of the signed artifact. Surfaced via VerificationResult for policy use.
 //   - PreviousHash: sha256:<hex> of the prior signed version's SkillHash,
@@ -62,8 +103,8 @@ type SkillSignature struct {
 	ExpiresAt        string `json:"expires_at,omitempty"`
 	SchemaVersion    string `json:"schema_version,omitempty"`
 	PreviousHash     string `json:"previous_hash,omitempty"`
-	// Canonicalization (v1.4 alpha.3) names the algorithm used to produce
-	// the signing input. Absence is wire-equivalent to "schemapin-v1".
+	// Canonicalization (v1.4) names the algorithm used to produce the
+	// signing input. Absence is wire-equivalent to "schemapin-v1".
 	// Verifiers MUST reject any other value as ErrCanonicalizationUnsupported.
 	Canonicalization string            `json:"canonicalization,omitempty"`
 	Domain           string            `json:"domain"`
@@ -72,10 +113,6 @@ type SkillSignature struct {
 }
 
 // SignOptions are optional sign-time parameters for SignSkillWithOptions.
-//
-// All fields are optional and default to "absent": empty strings derive the
-// value from the key/SKILL.md/dirname, and a zero ExpiresIn omits the
-// expires_at field entirely.
 type SignOptions struct {
 	// SignerKid overrides the kid written into the signature. When empty,
 	// the kid is derived from the public key fingerprint.
@@ -84,22 +121,35 @@ type SignOptions struct {
 	// empty, it is parsed from SKILL.md frontmatter or falls back to the
 	// directory basename.
 	SkillName string
-	// ExpiresIn sets a TTL relative to signing time. When > 0, the
-	// signature carries an RFC 3339 expires_at field and the version is
-	// bumped to "1.4". A zero value (the default) writes no expires_at and
-	// keeps the version at "1.3".
+	// ExpiresIn sets a TTL relative to signing time. When non-zero, the
+	// signature carries an RFC 3339 expires_at field (a negative value is
+	// permitted and yields an already-expired signature, useful for tests).
 	ExpiresIn time.Duration
 	// SchemaVersion is a caller-supplied semver string identifying *this*
-	// version of the signed artifact (v1.4 alpha.2). Empty omits the field.
+	// version of the signed artifact. Empty omits the field.
 	SchemaVersion string
 	// PreviousHash is sha256:<hex> of the prior signed version's SkillHash,
-	// forming a hash chain (v1.4 alpha.2). Pair with VerifyChain at verify
-	// time. Empty omits the field.
+	// forming a hash chain. Pair with VerifyChain at verify time.
 	PreviousHash string
-	// Canonicalization (v1.4 alpha.3) is the algorithm identifier to write
-	// into the signature. Empty omits the field on the wire (== implicit
+	// Canonicalization is the algorithm identifier to write into the
+	// signature. Empty omits the field on the wire (== implicit
 	// "schemapin-v1"); pass "schemapin-v1" to declare it explicitly.
 	Canonicalization string
+}
+
+// VerifyOptions tunes VerifySkillOfflineWithOptions.
+type VerifyOptions struct {
+	// Domain binds the skill to an expected domain: the signature's domain
+	// field must equal it (ErrDomainMismatch otherwise). Pass it whenever you
+	// know which domain the discovery document belongs to -- the signature's
+	// own domain field is display-only. When empty the signature's domain is
+	// used and a domain_unbound warning is surfaced.
+	Domain string
+	// ToolID is the pin-store key; defaults to the signature's skill_name.
+	ToolID string
+	// AllowExpired accepts expired signatures (degraded) instead of failing
+	// with ErrSignatureExpired.
+	AllowExpired bool
 }
 
 // TamperedFiles holds the result of comparing two file manifests.
@@ -109,113 +159,198 @@ type TamperedFiles struct {
 	Removed  []string
 }
 
-// walkSorted recursively walks a directory in sorted order, building the manifest.
-func walkSorted(dir, baseDir string, manifest map[string]string) error {
-	entries, err := os.ReadDir(dir)
+type manifestEntry struct {
+	path   string
+	digest []byte
+}
+
+func be64(n int) []byte {
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], uint64(n)) // #nosec G115 -- n is a non-negative length
+	return b[:]
+}
+
+// walkV2 implements skill canonicalization v2.
+func walkV2(dir, baseDir string, entries *[]manifestEntry, total *int64) error {
+	dirEntries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("failed to read directory %s: %w", dir, err)
+		return canonErr("failed to read directory %s: %v", dir, err)
 	}
-
-	// os.ReadDir returns entries sorted by name already, but let's be explicit
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name() < entries[j].Name()
-	})
-
-	for _, entry := range entries {
+	for _, entry := range dirEntries {
 		fullPath := filepath.Join(dir, entry.Name())
-
-		// Check for symlinks using Lstat
 		info, err := os.Lstat(fullPath)
 		if err != nil {
-			return fmt.Errorf("failed to stat %s: %w", fullPath, err)
+			return canonErr("failed to stat %s: %v", fullPath, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			continue
+			return canonErr("symlink not permitted in skill directory: %s", fullPath)
 		}
-
 		if info.IsDir() {
-			if err := walkSorted(fullPath, baseDir, manifest); err != nil {
+			if err := walkV2(fullPath, baseDir, entries, total); err != nil {
 				return err
 			}
 			continue
 		}
-
-		// Regular file
-		if entry.Name() == SignatureFilename {
+		if !info.Mode().IsRegular() {
+			return canonErr("non-regular file in skill directory: %s", fullPath)
+		}
+		if dir == baseDir && entry.Name() == SignatureFilename {
 			continue
 		}
-
 		relPath, err := filepath.Rel(baseDir, fullPath)
 		if err != nil {
-			return fmt.Errorf("failed to compute relative path: %w", err)
+			return canonErr("failed to compute relative path: %v", err)
 		}
-		// Normalize to forward slashes
 		relStr := filepath.ToSlash(relPath)
-
-		fileBytes, err := os.ReadFile(fullPath) // #nosec G304 -- path constructed from trusted directory walk
-		if err != nil {
-			return fmt.Errorf("failed to read file %s: %w", fullPath, err)
+		if !utf8.ValidString(relStr) {
+			return canonErr("path is not valid UTF-8: %q", relStr)
 		}
-
+		data, err := os.ReadFile(fullPath) // #nosec G304 -- path constructed from the directory walk
+		if err != nil {
+			return canonErr("failed to read file %s: %v", fullPath, err)
+		}
+		*total += int64(len(data))
+		if len(*entries)+1 > MaxSkillFiles {
+			return canonErr("skill exceeds %d files", MaxSkillFiles)
+		}
+		if *total > MaxSkillTotalBytes {
+			return canonErr("skill exceeds %d bytes", MaxSkillTotalBytes)
+		}
 		h := sha256.New()
+		h.Write([]byte{'f'})
+		h.Write(be64(len(relStr)))
 		h.Write([]byte(relStr))
-		h.Write(fileBytes)
-		digest := hex.EncodeToString(h.Sum(nil))
-		manifest[relStr] = "sha256:" + digest
+		h.Write(be64(len(data)))
+		h.Write(data)
+		*entries = append(*entries, manifestEntry{path: relStr, digest: h.Sum(nil)})
 	}
-
 	return nil
 }
 
-// CanonicalizeSkill walks a skill directory deterministically and computes a root hash.
+// CanonicalizeSkill walks a skill directory deterministically and computes the
+// v2 root hash.
 //
-// Algorithm:
-//  1. Recursive sorted directory walk
-//  2. Skip .schemapin.sig and symlinks
-//  3. Normalize paths to forward slashes
-//  4. Per-file: SHA-256(relative_path_utf8 + file_bytes) -> hex -> "sha256:<hex>"
-//  5. Root: sort manifest keys, extract hex digests, concatenate, SHA-256 -> raw bytes
+// Algorithm (spec section 4b):
+//  1. Walk the tree; directories are not entries. The top-level .schemapin.sig
+//     is excluded.
+//  2. Any symlink (file or directory) or non-regular file aborts
+//     canonicalization -- unsigned content must not be reachable from a
+//     signed skill.
+//  3. Paths are relative, forward-slash separated, UTF-8, sorted by code point.
+//  4. Per entry: SHA-256(0x66 || be64(len(path)) || path || be64(len(content)) || content).
+//  5. Root: SHA-256 over be64(len(path)) || path || entry_digest for every
+//     entry in sorted order.
 //
-// Returns (root_hash_bytes, manifest, error). Returns error if directory is empty.
+// Returns (root_hash_bytes, manifest, error).
 func CanonicalizeSkill(skillDir string) ([]byte, map[string]string, error) {
 	absDir, err := filepath.Abs(skillDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to resolve skill directory: %w", err)
+		return nil, nil, canonErr("failed to resolve skill directory: %v", err)
 	}
-
-	// Resolve any symlinks in the base directory itself
 	absDir, err = filepath.EvalSymlinks(absDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to eval symlinks: %w", err)
+		return nil, nil, canonErr("failed to resolve skill directory: %v", err)
+	}
+	info, err := os.Stat(absDir)
+	if err != nil || !info.IsDir() {
+		return nil, nil, canonErr("not a directory: %s", skillDir)
 	}
 
-	manifest := make(map[string]string)
-	if err := walkSorted(absDir, absDir, manifest); err != nil {
+	var entries []manifestEntry
+	var total int64
+	if err := walkV2(absDir, absDir, &entries, &total); err != nil {
 		return nil, nil, err
 	}
-
-	if len(manifest) == 0 {
-		return nil, nil, fmt.Errorf("skill directory is empty or contains no signable files: %s", skillDir)
+	if len(entries) == 0 {
+		return nil, nil, canonErr("skill directory is empty or contains no signable files: %s", skillDir)
 	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
 
-	// Collect sorted keys
+	root := sha256.New()
+	manifest := make(map[string]string, len(entries))
+	for _, e := range entries {
+		root.Write(be64(len(e.path)))
+		root.Write([]byte(e.path))
+		root.Write(e.digest)
+		manifest[e.path] = "sha256:" + hex.EncodeToString(e.digest)
+	}
+	return root.Sum(nil), manifest, nil
+}
+
+// walkV1 is the legacy (schemapin_version "1.3") walk.
+func walkV1(dir, baseDir string, manifest map[string]string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return canonErr("failed to read directory %s: %v", dir, err)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+	for _, entry := range entries {
+		fullPath := filepath.Join(dir, entry.Name())
+		info, err := os.Lstat(fullPath)
+		if err != nil {
+			return canonErr("failed to stat %s: %v", fullPath, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if info.IsDir() {
+			if err := walkV1(fullPath, baseDir, manifest); err != nil {
+				return err
+			}
+			continue
+		}
+		if entry.Name() == SignatureFilename {
+			continue
+		}
+		relPath, err := filepath.Rel(baseDir, fullPath)
+		if err != nil {
+			return canonErr("failed to compute relative path: %v", err)
+		}
+		relStr := filepath.ToSlash(relPath)
+		fileBytes, err := os.ReadFile(fullPath) // #nosec G304 -- path constructed from the directory walk
+		if err != nil {
+			return canonErr("failed to read file %s: %v", fullPath, err)
+		}
+		h := sha256.New()
+		h.Write([]byte(relStr))
+		h.Write(fileBytes)
+		manifest[relStr] = "sha256:" + hex.EncodeToString(h.Sum(nil))
+	}
+	return nil
+}
+
+// CanonicalizeSkillV1 is the legacy (schemapin_version "1.3") skill
+// canonicalization. Kept only so that pre-1.4 signatures still verify. Per-file
+// digest is SHA-256(path || content), the root hash is SHA-256 of the
+// concatenated hex digests, symlinks are skipped and .schemapin.sig is
+// excluded at any depth. Do not use for new signatures.
+func CanonicalizeSkillV1(skillDir string) ([]byte, map[string]string, error) {
+	absDir, err := filepath.Abs(skillDir)
+	if err != nil {
+		return nil, nil, canonErr("failed to resolve skill directory: %v", err)
+	}
+	absDir, err = filepath.EvalSymlinks(absDir)
+	if err != nil {
+		return nil, nil, canonErr("failed to resolve skill directory: %v", err)
+	}
+	manifest := make(map[string]string)
+	if err := walkV1(absDir, absDir, manifest); err != nil {
+		return nil, nil, err
+	}
+	if len(manifest) == 0 {
+		return nil, nil, canonErr("skill directory is empty or contains no signable files: %s", skillDir)
+	}
 	keys := make([]string, 0, len(manifest))
 	for k := range manifest {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-
-	// Extract hex digests and concatenate
 	var builder strings.Builder
 	for _, k := range keys {
-		val := manifest[k]
-		// Split on ":" and take the hex part
-		parts := strings.SplitN(val, ":", 2)
-		if len(parts) == 2 {
-			builder.WriteString(parts[1])
-		}
+		builder.WriteString(strings.TrimPrefix(manifest[k], "sha256:"))
 	}
-
 	rootHash := sha256.Sum256([]byte(builder.String()))
 	return rootHash[:], manifest, nil
 }
@@ -235,27 +370,25 @@ func ParseSkillName(skillDir string) string {
 	}
 
 	text := string(data)
-
-	// Match frontmatter block: --- ... ---
 	fmRe := regexp.MustCompile(`(?s)^---\s*\n(.*?)\n---`)
 	fmMatch := fmRe.FindStringSubmatch(text)
 	if fmMatch == nil {
 		return filepath.Base(absDir)
 	}
-
 	frontmatter := fmMatch[1]
-
-	// Match name: value in frontmatter (with optional quotes)
 	nameRe := regexp.MustCompile(`(?m)^name:\s*['"]?([^'"#\n]+?)['"]?\s*$`)
 	nameMatch := nameRe.FindStringSubmatch(frontmatter)
 	if nameMatch == nil {
 		return filepath.Base(absDir)
 	}
-
 	return strings.TrimSpace(nameMatch[1])
 }
 
 // LoadSignature reads and parses the .schemapin.sig file from a skill directory.
+//
+// An explicitly empty "canonicalization" field is rejected: the empty string
+// is not a supported algorithm identifier, and the Go struct cannot otherwise
+// distinguish it from an absent field.
 func LoadSignature(skillDir string) (*SkillSignature, error) {
 	sigPath := filepath.Join(skillDir, SignatureFilename)
 	data, err := os.ReadFile(sigPath) // #nosec G304 -- path constructed from user-provided skill directory
@@ -263,38 +396,93 @@ func LoadSignature(skillDir string) (*SkillSignature, error) {
 		return nil, fmt.Errorf("failed to read signature file: %w", err)
 	}
 
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse signature file: %w", err)
+	}
+	if v, ok := raw["canonicalization"]; ok && string(v) == `""` {
+		return nil, fmt.Errorf("failed to parse signature file: canonicalization must not be empty")
+	}
+
 	var sig SkillSignature
 	if err := json.Unmarshal(data, &sig); err != nil {
 		return nil, fmt.Errorf("failed to parse signature file: %w", err)
 	}
-
 	return &sig, nil
+}
+
+// SigningInput builds the canonical bytes a v1.4 signature covers: the known
+// signature fields (unknown fields are ignored and therefore unprotected) with
+// absent / empty optional fields dropped, signature forced to "" and the
+// whole document canonicalized with schemapin-v1.
+func SigningInput(sig *SkillSignature) ([]byte, error) {
+	if sig == nil {
+		return nil, fmt.Errorf("signature document is nil")
+	}
+	required := map[string]string{
+		"schemapin_version": sig.SchemapinVersion,
+		"skill_name":        sig.SkillName,
+		"skill_hash":        sig.SkillHash,
+		"signed_at":         sig.SignedAt,
+		"domain":            sig.Domain,
+		"signer_kid":        sig.SignerKid,
+	}
+	doc := make(map[string]interface{}, 12)
+	for k, v := range required {
+		if v == "" {
+			return nil, fmt.Errorf("signature document field %q is missing", k)
+		}
+		doc[k] = v
+	}
+	if sig.FileManifest == nil {
+		return nil, fmt.Errorf("file_manifest must be an object")
+	}
+	manifest := make(map[string]interface{}, len(sig.FileManifest))
+	for k, v := range sig.FileManifest {
+		manifest[k] = v
+	}
+	doc["file_manifest"] = manifest
+	for k, v := range map[string]string{
+		"expires_at":       sig.ExpiresAt,
+		"schema_version":   sig.SchemaVersion,
+		"previous_hash":    sig.PreviousHash,
+		"canonicalization": sig.Canonicalization,
+	} {
+		if v != "" {
+			doc[k] = v
+		}
+	}
+	doc["signature"] = ""
+	canonical, err := core.CanonicalizeValue(doc)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(canonical), nil
 }
 
 // SignSkill canonicalizes a skill directory, signs it, and writes .schemapin.sig.
 //
 // If signerKid is empty, it is auto-computed from the public key.
 // If skillName is empty, it is parsed from SKILL.md (or falls back to dir name).
-//
-// Preserved as a thin wrapper over SignSkillWithOptions for backward
-// compatibility with v1.3 callers.
-func SignSkill(skillDir, privateKeyPEM, domain string, signerKid, skillName string) (*SkillSignature, error) {
-	return SignSkillWithOptions(skillDir, privateKeyPEM, domain, SignOptions{
+func SignSkill(skillDir, privateKeyPEM, domainName string, signerKid, skillName string) (*SkillSignature, error) {
+	return SignSkillWithOptions(skillDir, privateKeyPEM, domainName, SignOptions{
 		SignerKid: signerKid,
 		SkillName: skillName,
 	})
 }
 
-// SignSkillWithOptions canonicalizes a skill directory, signs it, and writes
-// .schemapin.sig. Mirrors the v1.4 Rust API sign_skill_with_options.
-//
-// When options.ExpiresIn > 0, an RFC 3339 expires_at timestamp is written
-// (truncated to seconds, UTC, "Z" suffix) and the schemapin_version is
-// bumped to "1.4". When ExpiresIn is zero, expires_at is omitted and the
-// version stays at "1.3" -- bytewise-identical to the v1.3 wire format.
-func SignSkillWithOptions(skillDir, privateKeyPEM, domain string, options SignOptions) (*SkillSignature, error) {
-	keyManager := crypto.NewKeyManager()
+// SignSkillWithOptions canonicalizes a skill directory, signs it, and writes a
+// v1.4 signature document. The whole document (including expires_at when
+// options.ExpiresIn is non-zero, written as RFC 3339 "Z" with second
+// precision) is covered by the signature.
+func SignSkillWithOptions(skillDir, privateKeyPEM, domainName string, options SignOptions) (*SkillSignature, error) {
+	normalized, err := domain.ValidateDomain(domainName)
+	if err != nil {
+		return nil, err
+	}
+	domainName = normalized
 
+	keyManager := crypto.NewKeyManager()
 	privateKey, err := keyManager.LoadPrivateKeyPEM(privateKeyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load private key: %w", err)
@@ -323,55 +511,77 @@ func SignSkillWithOptions(skillDir, privateKeyPEM, domain string, options SignOp
 		}
 	}
 
-	sigManager := crypto.NewSignatureManager()
-	signatureB64, err := sigManager.SignHash(rootHash, privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign hash: %w", err)
-	}
-
 	now := time.Now().UTC().Truncate(time.Second)
 	expiresAt := ""
-	if options.ExpiresIn > 0 {
+	if options.ExpiresIn != 0 {
 		expiresAt = now.Add(options.ExpiresIn).UTC().Format(time.RFC3339)
 	}
 
-	// Any v1.4 optional field bumps the version stamp; pure v1.3 sigs stay
-	// "1.3" for byte-stable backward compatibility.
-	version := schemapinVersionV13
-	if expiresAt != "" || options.SchemaVersion != "" || options.PreviousHash != "" || options.Canonicalization != "" {
-		version = schemapinVersionV14
-	}
-
 	sig := &SkillSignature{
-		SchemapinVersion: version,
+		SchemapinVersion: SchemapinVersion,
 		SkillName:        skillName,
-		SkillHash:        fmt.Sprintf("sha256:%s", hex.EncodeToString(rootHash)),
-		Signature:        signatureB64,
+		SkillHash:        "sha256:" + hex.EncodeToString(rootHash),
 		SignedAt:         now.Format(time.RFC3339),
 		ExpiresAt:        expiresAt,
 		SchemaVersion:    options.SchemaVersion,
 		PreviousHash:     options.PreviousHash,
 		Canonicalization: options.Canonicalization,
-		Domain:           domain,
+		Domain:           domainName,
 		SignerKid:        signerKid,
 		FileManifest:     manifest,
+	}
+
+	input, err := SigningInput(sig)
+	if err != nil {
+		return nil, err
+	}
+	sig.Signature, err = crypto.NewSignatureManager().SignHash(input, privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign: %w", err)
 	}
 
 	sigJSON, err := json.MarshalIndent(sig, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal signature: %w", err)
 	}
-
 	sigPath := filepath.Join(skillDir, SignatureFilename)
 	if err := os.WriteFile(sigPath, append(sigJSON, '\n'), 0600); err != nil { // #nosec G306
 		return nil, fmt.Errorf("failed to write signature file: %w", err)
 	}
-
 	return sig, nil
 }
 
+func versionTuple(version string) (int, int, bool) {
+	parts := strings.Split(version, ".")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	major, err1 := strconv.Atoi(parts[0])
+	minor, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil || major < 0 || minor < 0 {
+		return 0, 0, false
+	}
+	return major, minor, true
+}
+
+func isLegacyVersion(version string) bool {
+	major, minor, ok := versionTuple(version)
+	return ok && (major < 1 || (major == 1 && minor < 4))
+}
+
+func failure(domainName string, code verification.ErrorCode, msg string) *verification.VerificationResult {
+	return &verification.VerificationResult{
+		Valid:        false,
+		Domain:       domainName,
+		ErrorCode:    code,
+		ErrorMessage: msg,
+	}
+}
+
 // VerifySkillOffline verifies a signed skill folder offline using pre-fetched
-// discovery and revocation data. Follows the 7-step verification flow.
+// discovery and revocation data. The signature's own domain field is used for
+// pinning and reporting with a domain_unbound warning; prefer
+// VerifySkillOfflineWithOptions and bind the expected domain.
 func VerifySkillOffline(
 	skillDir string,
 	disc *discovery.WellKnownResponse,
@@ -380,20 +590,40 @@ func VerifySkillOffline(
 	pinStore *verification.KeyPinStore,
 	toolID string,
 ) *verification.VerificationResult {
+	return VerifySkillOfflineWithOptions(skillDir, disc, sig, rev, pinStore, VerifyOptions{ToolID: toolID})
+}
+
+// VerifySkillOfflineWithOptions verifies a signed skill folder offline.
+//
+// Steps:
+//  1. Load or accept signature data; check canonicalization
+//  2. Bind the domain (opts.Domain must equal the signature's domain)
+//  3. Validate discovery document, load key, compute fingerprint
+//  4. Check revocation
+//  5. TOFU pin check (read-only)
+//  6. Recompute the root hash, require skill_hash to match, verify the
+//     signature (over the whole document for 1.4, over the root hash for
+//     legacy 1.3)
+//  7. Expiration check (fail-closed unless opts.AllowExpired)
+//  8. Pin on first use, return the result with lineage metadata
+func VerifySkillOfflineWithOptions(
+	skillDir string,
+	disc *discovery.WellKnownResponse,
+	sig *SkillSignature,
+	rev *revocation.RevocationDocument,
+	pinStore *verification.KeyPinStore,
+	opts VerifyOptions,
+) *verification.VerificationResult {
 	// Step 1: Load signature if nil
 	if sig == nil {
 		var err error
 		sig, err = LoadSignature(skillDir)
 		if err != nil {
-			return &verification.VerificationResult{
-				Valid:        false,
-				ErrorCode:    verification.ErrSignatureInvalid,
-				ErrorMessage: "No .schemapin.sig found in skill directory",
-			}
+			return failure("", verification.ErrSignatureInvalid, "No usable .schemapin.sig found in skill directory: "+err.Error())
 		}
 	}
 
-	domain := sig.Domain
+	toolID := opts.ToolID
 	if toolID == "" {
 		toolID = sig.SkillName
 		if toolID == "" {
@@ -401,150 +631,187 @@ func VerifySkillOffline(
 		}
 	}
 
-	// Step 1a (v1.4 alpha.3): canonicalization algorithm check.
 	if bad := verification.CheckCanonicalization(sig.Canonicalization); bad != "" {
-		return &verification.VerificationResult{
-			Valid:        false,
-			Domain:       domain,
-			ErrorCode:    verification.ErrCanonicalizationUnsupported,
-			ErrorMessage: fmt.Sprintf("Unsupported canonicalization algorithm: %s", bad),
-		}
+		return failure(opts.Domain, verification.ErrCanonicalizationUnsupported,
+			fmt.Sprintf("Unsupported canonicalization algorithm: %s", bad))
 	}
 
-	// Step 2: Validate discovery document
+	// Step 2: Domain binding
+	var warnings []string
+	var domainName string
+	if opts.Domain != "" {
+		normalized, err := domain.ValidateDomain(opts.Domain)
+		if err != nil {
+			return failure(opts.Domain, verification.ErrDomainInvalid, err.Error())
+		}
+		domainName = normalized
+		if strings.ToLower(sig.Domain) != domainName {
+			return failure(domainName, verification.ErrDomainMismatch,
+				fmt.Sprintf("signature domain %q does not match expected domain %q", sig.Domain, domainName))
+		}
+	} else {
+		normalized, err := domain.ValidateDomain(sig.Domain)
+		if err != nil {
+			return failure("", verification.ErrDomainInvalid, "signature domain is invalid: "+err.Error())
+		}
+		domainName = normalized
+		warnings = append(warnings, verification.WarningDomainUnbound)
+	}
+
+	// Step 3: Validate discovery document
 	if disc == nil || disc.PublicKeyPEM == "" || !strings.Contains(disc.PublicKeyPEM, "-----BEGIN PUBLIC KEY-----") {
-		return &verification.VerificationResult{
-			Valid:        false,
-			Domain:       domain,
-			ErrorCode:    verification.ErrDiscoveryInvalid,
-			ErrorMessage: "Discovery document missing or invalid public_key_pem",
-		}
+		return failure(domainName, verification.ErrDiscoveryInvalid, "Discovery document missing or invalid public_key_pem")
 	}
-
-	// Step 3: Extract public key and compute fingerprint
 	keyManager := crypto.NewKeyManager()
 	publicKey, err := keyManager.LoadPublicKeyPEM(disc.PublicKeyPEM)
 	if err != nil {
-		return &verification.VerificationResult{
-			Valid:        false,
-			Domain:       domain,
-			ErrorCode:    verification.ErrKeyNotFound,
-			ErrorMessage: fmt.Sprintf("Failed to load public key: %v", err),
-		}
+		return failure(domainName, verification.ErrKeyNotFound, fmt.Sprintf("Failed to load public key: %v", err))
 	}
-
 	fingerprint, err := keyManager.CalculateKeyFingerprintFromPEM(disc.PublicKeyPEM)
 	if err != nil {
-		return &verification.VerificationResult{
-			Valid:        false,
-			Domain:       domain,
-			ErrorCode:    verification.ErrKeyNotFound,
-			ErrorMessage: fmt.Sprintf("Failed to calculate fingerprint: %v", err),
-		}
+		return failure(domainName, verification.ErrKeyNotFound, fmt.Sprintf("Failed to calculate fingerprint: %v", err))
 	}
 
 	// Step 4: Check revocation
 	if err := revocation.CheckRevocationCombined(disc.RevokedKeys, rev, fingerprint); err != nil {
-		return &verification.VerificationResult{
-			Valid:        false,
-			Domain:       domain,
-			ErrorCode:    verification.ErrKeyRevoked,
-			ErrorMessage: err.Error(),
-		}
+		return failure(domainName, verification.ErrKeyRevoked, err.Error())
 	}
 
-	// Step 5: TOFU key pinning
+	// Step 5: TOFU pin check (read-only until the signature verifies)
 	var pinResult verification.PinResult
 	if pinStore != nil {
-		pinResult = pinStore.CheckAndPin(toolID, domain, fingerprint)
+		pinResult = pinStore.Check(toolID, domainName, fingerprint)
 		if pinResult == verification.PinChanged {
-			return &verification.VerificationResult{
-				Valid:        false,
-				Domain:       domain,
-				ErrorCode:    verification.ErrKeyPinMismatch,
-				ErrorMessage: "Key fingerprint changed since last use",
-			}
+			return failure(domainName, verification.ErrKeyPinMismatch, "Key fingerprint changed since last use")
 		}
 	}
 
-	// Step 6: Canonicalize and verify signature
-	rootHash, _, err := CanonicalizeSkill(skillDir)
+	// Step 6: Canonicalize and verify
+	if _, _, ok := versionTuple(sig.SchemapinVersion); !ok {
+		return failure(domainName, verification.ErrSignatureInvalid,
+			fmt.Sprintf("unsupported schemapin_version %q", sig.SchemapinVersion))
+	}
+	legacy := isLegacyVersion(sig.SchemapinVersion)
+	var rootHash []byte
+	if legacy {
+		rootHash, _, err = CanonicalizeSkillV1(skillDir)
+	} else {
+		rootHash, _, err = CanonicalizeSkill(skillDir)
+	}
 	if err != nil {
-		return &verification.VerificationResult{
-			Valid:        false,
-			Domain:       domain,
-			ErrorCode:    verification.ErrSchemaCanonicalizationFailed,
-			ErrorMessage: fmt.Sprintf("Failed to canonicalize skill: %v", err),
-		}
+		return failure(domainName, verification.ErrSchemaCanonicalizationFailed, fmt.Sprintf("Failed to canonicalize skill: %v", err))
 	}
 
 	sigManager := crypto.NewSignatureManager()
-	valid := sigManager.VerifySignature(rootHash, sig.Signature, publicKey)
-
-	if !valid {
-		return &verification.VerificationResult{
-			Valid:        false,
-			Domain:       domain,
-			ErrorCode:    verification.ErrSignatureInvalid,
-			ErrorMessage: "Signature verification failed",
+	var valid bool
+	if legacy {
+		valid = sigManager.VerifySignature(rootHash, sig.Signature, publicKey)
+		warnings = append(warnings, verification.WarningLegacySignatureFormat)
+	} else {
+		if sig.SkillHash != "sha256:"+hex.EncodeToString(rootHash) {
+			return failure(domainName, verification.ErrSignatureInvalid, "skill_hash does not match the directory contents")
 		}
+		input, err := SigningInput(sig)
+		if err != nil {
+			return failure(domainName, verification.ErrSignatureInvalid, "malformed signature document: "+err.Error())
+		}
+		valid = sigManager.VerifySignature(input, sig.Signature, publicKey)
+	}
+	if !valid {
+		return failure(domainName, verification.ErrSignatureInvalid, "Signature verification failed")
 	}
 
-	// Step 7: Return success
+	// Step 7: Expiration (fail-closed by default)
+	if warnings == nil {
+		warnings = []string{}
+	}
 	result := &verification.VerificationResult{
 		Valid:         true,
-		Domain:        domain,
+		Domain:        domainName,
 		DeveloperName: disc.DeveloperName,
-		Warnings:      []string{},
+		Warnings:      warnings,
+	}
+	result = result.WithExpirationPolicy(sig.ExpiresAt, opts.AllowExpired)
+	if !result.Valid {
+		return result
 	}
 
+	// Step 8: Pin only now, then surface lineage metadata
 	if pinStore != nil {
-		result.KeyPinning = &verification.KeyPinningStatus{
-			Status: string(pinResult),
+		if pinResult == verification.PinFirstUse {
+			pinStore.Pin(toolID, domainName, fingerprint)
 		}
+		result.KeyPinning = &verification.KeyPinningStatus{Status: string(pinResult)}
 	}
-
-	// v1.4: apply optional signature expiration check. No-op when ExpiresAt
-	// is empty; otherwise may set Expired/ExpiresAt and append a warning.
-	result = result.WithExpirationCheck(sig.ExpiresAt)
-	// v1.4 alpha.2: surface lineage metadata (informational; chain enforcement
-	// is opt-in via VerifyChain).
 	return result.WithLineageMetadata(sig.SchemaVersion, sig.PreviousHash)
 }
 
-// VerifySkillWithResolver verifies a signed skill folder using a resolver
-// for discovery and revocation.
+// VerifySkillWithResolver verifies a signed skill folder using a resolver for
+// discovery and revocation. The signature's domain must equal domainName
+// (checked before any network I/O) and revocation is fail-closed.
 func VerifySkillWithResolver(
-	skillDir, domain string,
+	skillDir, domainName string,
 	r resolver.SchemaResolver,
 	pinStore *verification.KeyPinStore,
 	toolID string,
 ) *verification.VerificationResult {
-	disc, err := r.ResolveDiscovery(domain)
+	return VerifySkillWithResolverOptions(skillDir, domainName, r, pinStore, toolID, verification.ResolverOptions{})
+}
+
+// VerifySkillWithResolverOptions is VerifySkillWithResolver with explicit
+// policy knobs.
+func VerifySkillWithResolverOptions(
+	skillDir, domainName string,
+	r resolver.SchemaResolver,
+	pinStore *verification.KeyPinStore,
+	toolID string,
+	ropts verification.ResolverOptions,
+) *verification.VerificationResult {
+	normalized, err := domain.ValidateDomain(domainName)
 	if err != nil {
-		return &verification.VerificationResult{
-			Valid:        false,
-			Domain:       domain,
-			ErrorCode:    verification.ErrDiscoveryFetchFailed,
-			ErrorMessage: fmt.Sprintf("Could not resolve discovery for domain: %s", domain),
-		}
+		return failure(domainName, verification.ErrDomainInvalid, err.Error())
+	}
+	domainName = normalized
+
+	sig, err := LoadSignature(skillDir)
+	if err != nil {
+		return failure(domainName, verification.ErrSignatureInvalid, "No usable .schemapin.sig found in skill directory: "+err.Error())
+	}
+	if strings.ToLower(sig.Domain) != domainName {
+		return failure(domainName, verification.ErrDomainMismatch,
+			fmt.Sprintf("signature domain %q does not match expected domain %q", sig.Domain, domainName))
 	}
 
-	rev, _ := r.ResolveRevocation(domain, disc)
+	disc, err := r.ResolveDiscovery(domainName)
+	if err != nil {
+		return failure(domainName, verification.ErrDiscoveryFetchFailed, fmt.Sprintf("Could not resolve discovery for domain: %s", domainName))
+	}
 
-	return VerifySkillOffline(skillDir, disc, nil, rev, pinStore, toolID)
+	rev, err := r.ResolveRevocation(domainName, disc)
+	if err != nil {
+		if !ropts.AllowUnreachableRevocation {
+			return failure(domainName, verification.ErrDiscoveryFetchFailed, fmt.Sprintf("Revocation document unreachable (fail-closed): %v", err))
+		}
+		rev = nil
+	}
+
+	return VerifySkillOfflineWithOptions(skillDir, disc, sig, rev, pinStore, VerifyOptions{
+		Domain:       domainName,
+		ToolID:       toolID,
+		AllowExpired: ropts.AllowExpired,
+	})
 }
 
 // DetectTamperedFiles compares a current file manifest against a signed manifest.
-// Returns a TamperedFiles struct with sorted Modified, Added, and Removed slices.
+// Only meaningful for schemapin_version >= "1.4" documents, whose file_manifest
+// is covered by the signature; for legacy 1.3 documents the manifest is
+// unsigned and this is a diagnostic aid only.
 func DetectTamperedFiles(current, signed map[string]string) *TamperedFiles {
 	result := &TamperedFiles{
 		Modified: []string{},
 		Added:    []string{},
 		Removed:  []string{},
 	}
-
-	// Find added and modified
 	for k, v := range current {
 		if sv, ok := signed[k]; !ok {
 			result.Added = append(result.Added, k)
@@ -552,18 +819,14 @@ func DetectTamperedFiles(current, signed map[string]string) *TamperedFiles {
 			result.Modified = append(result.Modified, k)
 		}
 	}
-
-	// Find removed
 	for k := range signed {
 		if _, ok := current[k]; !ok {
 			result.Removed = append(result.Removed, k)
 		}
 	}
-
 	sort.Strings(result.Modified)
 	sort.Strings(result.Added)
 	sort.Strings(result.Removed)
-
 	return result
 }
 
@@ -575,6 +838,9 @@ const (
 	ChainErrorNoPreviousHash ChainErrorKind = iota + 1
 	// ChainErrorMismatch indicates current.PreviousHash != previous.SkillHash.
 	ChainErrorMismatch
+	// ChainErrorLegacy indicates one of the documents is a legacy 1.3
+	// signature whose skill_hash is not covered by its signature.
+	ChainErrorLegacy
 )
 
 // ChainError is returned by VerifyChain on lineage failure.
@@ -593,25 +859,25 @@ func (e *ChainError) Error() string {
 			"previous_hash mismatch: current.previous_hash = %s, previous.skill_hash = %s",
 			e.Got, e.Expected,
 		)
+	case ChainErrorLegacy:
+		return "legacy 1.3 signature documents carry an unsigned skill_hash and cannot anchor a chain"
 	default:
 		return "unknown chain error"
 	}
 }
 
 // VerifyChain verifies that current is the legitimate successor of previous
-// via the previous_hash lineage chain (v1.4 alpha.2).
+// via the previous_hash lineage chain.
 //
-// Checks current.PreviousHash == previous.SkillHash.
-//
-// This is a pure-metadata check -- no cryptography is re-evaluated. Both
-// signatures must already be cryptographically verified separately via
-// VerifySkillOffline for the chain check to be meaningful.
-//
-// Use this to defend against rug-pull attacks where an attacker substitutes
-// a schema/skill out-of-band: a legitimate update declares the prior version's
-// hash; an unauthorized substitution either omits previous_hash or points at
-// a hash the verifier has not accepted as a valid ancestor.
+// Checks current.PreviousHash == previous.SkillHash. This is a pure-metadata
+// check -- no cryptography is re-evaluated. Both signatures must already be
+// cryptographically verified separately via VerifySkillOffline, and both must
+// be schemapin_version >= "1.4" documents so that skill_hash / previous_hash
+// are covered by their signatures (legacy 1.3 documents are rejected).
 func VerifyChain(current, previous *SkillSignature) error {
+	if isLegacyVersion(current.SchemapinVersion) || isLegacyVersion(previous.SchemapinVersion) {
+		return &ChainError{Kind: ChainErrorLegacy}
+	}
 	if current.PreviousHash == "" {
 		return &ChainError{Kind: ChainErrorNoPreviousHash}
 	}

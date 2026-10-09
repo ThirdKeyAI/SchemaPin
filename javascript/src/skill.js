@@ -5,26 +5,67 @@
  * (AgentSkills spec). Same keys, same .well-known discovery, new canonicalization
  * target.
  *
- * v1.4 additions (additive, optional, backward-compatible):
- *   - `expires_at` field on `.schemapin.sig` via {@link signSkillWithOptions}.
- *   - DNS TXT cross-verification via {@link verifySkillOfflineWithDns}.
+ * ## Wire formats
+ *
+ * `schemapin_version: "1.4"` (the default for every new signature):
+ *
+ * - The directory is canonicalized with {@link canonicalizeSkill} (skill
+ *   canonicalization v2, spec section 4b): every entry is hashed as
+ *   `SHA-256("f" || be64(len(path)) || path || be64(len(content)) || content)`
+ *   and the root hash is SHA-256 over `be64(len(path)) || path || digest` for
+ *   every entry in code-point path order. Symlinks are rejected.
+ * - `skill_hash` is `"sha256:" + hex(root_hash)`.
+ * - The signature covers the **entire signature document**: the document is
+ *   built with `signature: ""`, canonicalized with `schemapin-v1` and signed
+ *   as `ECDSA-P256(SHA-256(canonical_bytes))`. `expires_at`, `schema_version`,
+ *   `previous_hash`, `canonicalization`, `domain`, `skill_name`, `signer_kid`,
+ *   `signed_at` and `file_manifest` are therefore all integrity-protected.
+ *
+ * `schemapin_version: "1.3"` (legacy, verify-only):
+ *
+ * - Entries hashed as `SHA-256(path || content)`, root hash SHA-256 of the
+ *   concatenated hex digests, symlinks silently skipped, and the signature
+ *   covers only the 32-byte root hash. None of the metadata fields are
+ *   signed; verifiers surface a `legacy_signature_format` warning.
+ *
+ * Verification is fail-closed on expiration and on domain mismatch.
  */
 
 import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
 import { readFileSync, readdirSync, writeFileSync, lstatSync, existsSync } from 'node:fs';
 import { join, relative, basename, resolve } from 'node:path';
+import { SchemaPinCore, compareCodePoints } from './core.js';
 import { KeyManager, SignatureManager } from './crypto.js';
-import { checkRevocationCombined } from './revocation.js';
-import { ErrorCode, applyExpirationCheck, checkCanonicalization } from './verification.js';
+import { InvalidDomainError, validateDomain } from './domain.js';
+import { checkRevocationCombined, RevocationFetchError } from './revocation.js';
+import { ErrorCode, EXPIRATION_SKEW_SECONDS, applyExpirationCheck, checkCanonicalization } from './verification.js';
 import { verifyDnsMatch } from './dns.js';
 
 export const SIGNATURE_FILENAME = '.schemapin.sig';
-const SCHEMAPIN_VERSION_V13 = '1.3';
-const SCHEMAPIN_VERSION_V14 = '1.4';
+/** `schemapin_version` written on every new signature (signed-document format). */
+export const SCHEMAPIN_VERSION = '1.4';
+/** Legacy root-hash-only format; accepted on verification, never written. */
+export const SCHEMAPIN_VERSION_LEGACY = '1.3';
+
+/** Caps enforced by {@link canonicalizeSkill}. */
+export const MAX_SKILL_FILES = 10000;
+export const MAX_SKILL_TOTAL_BYTES = 256 * 1024 * 1024;
+
+const REQUIRED_FIELDS = ['schemapin_version', 'skill_name', 'skill_hash', 'signature', 'signed_at', 'domain', 'signer_kid', 'file_manifest'];
+const OPTIONAL_FIELDS = ['expires_at', 'schema_version', 'previous_hash', 'canonicalization'];
+
+/**
+ * Thrown when a skill directory cannot be canonicalized.
+ */
+export class SkillCanonicalizationError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'SkillCanonicalizationError';
+    }
+}
 
 /**
  * Format a Date as RFC 3339 UTC with seconds precision and `Z` suffix.
- * Mirrors Rust's `chrono::SecondsFormat::Secs` rendering.
  *
  * @param {Date} date
  * @returns {string} e.g. `2026-04-30T21:41:50Z`
@@ -34,16 +75,119 @@ function toRfc3339Seconds(date) {
     return iso.replace(/\.\d{3}Z$/, 'Z');
 }
 
+function be64(n) {
+    const buf = Buffer.alloc(8);
+    buf.writeBigUInt64BE(BigInt(n));
+    return buf;
+}
+
+function versionTuple(version) {
+    if (typeof version !== 'string') {
+        return null;
+    }
+    const m = /^(\d+)\.(\d+)$/.exec(version);
+    return m ? [Number(m[1]), Number(m[2])] : null;
+}
+
+function isLegacyVersion(version) {
+    const t = versionTuple(version);
+    return t !== null && (t[0] < 1 || (t[0] === 1 && t[1] < 4));
+}
+
 /**
- * Recursively walk a directory in sorted order, collecting file entries.
+ * Recursive walk for skill canonicalization v2.
  *
- * @param {string} dir - Current directory to walk
- * @param {string} baseDir - Root skill directory for computing relative paths
- * @param {Object} manifest - Accumulator for manifest entries
+ * @param {string} dir
+ * @param {string} baseDir
+ * @param {Array<[string, Buffer]>} entries
+ * @param {{ total: number }} state
  */
-function walkSorted(dir, baseDir, manifest) {
+function walkV2(dir, baseDir, entries, state) {
+    const names = readdirSync(dir);
+    for (const name of names) {
+        const fullPath = join(dir, name);
+        const stats = lstatSync(fullPath);
+        if (stats.isSymbolicLink()) {
+            throw new SkillCanonicalizationError(`symlink not permitted in skill directory: ${fullPath}`);
+        }
+        if (stats.isDirectory()) {
+            walkV2(fullPath, baseDir, entries, state);
+            continue;
+        }
+        if (!stats.isFile()) {
+            throw new SkillCanonicalizationError(`non-regular file in skill directory: ${fullPath}`);
+        }
+        if (dir === baseDir && name === SIGNATURE_FILENAME) {
+            continue;
+        }
+        const relPath = relative(baseDir, fullPath).split('\\').join('/');
+        const pathBytes = Buffer.from(relPath, 'utf-8');
+        if (pathBytes.toString('utf-8') !== relPath || relPath.includes('\uFFFD')) {
+            throw new SkillCanonicalizationError(`path is not valid UTF-8: ${relPath}`);
+        }
+        const data = readFileSync(fullPath);
+        state.total += data.length;
+        if (entries.length + 1 > MAX_SKILL_FILES) {
+            throw new SkillCanonicalizationError(`skill exceeds ${MAX_SKILL_FILES} files`);
+        }
+        if (state.total > MAX_SKILL_TOTAL_BYTES) {
+            throw new SkillCanonicalizationError(`skill exceeds ${MAX_SKILL_TOTAL_BYTES} bytes`);
+        }
+        const digest = createHash('sha256')
+            .update('f')
+            .update(be64(pathBytes.length))
+            .update(pathBytes)
+            .update(be64(data.length))
+            .update(data)
+            .digest();
+        entries.push([relPath, digest]);
+    }
+}
+
+/**
+ * Canonicalize a skill directory deterministically and compute the v2 root hash.
+ *
+ * Algorithm (spec section 4b):
+ *   1. Walk the tree; directories are not entries. The top-level
+ *      `.schemapin.sig` is excluded.
+ *   2. Any symlink (file or directory) or non-regular file aborts
+ *      canonicalization -- unsigned content must not be reachable from a
+ *      signed skill.
+ *   3. Paths are relative, forward-slash separated, UTF-8, sorted by code point.
+ *   4. Per entry: `SHA-256(0x66 || be64(len(path)) || path || be64(len(content)) || content)`.
+ *   5. Root: SHA-256 over `be64(len(path)) || path || entry_digest` for every
+ *      entry in sorted order.
+ *
+ * @param {string} skillDir - Path to skill directory
+ * @returns {{ rootHash: Buffer, manifest: Object }} Root hash and file manifest
+ * @throws {SkillCanonicalizationError}
+ */
+export function canonicalizeSkill(skillDir) {
+    const skillPath = resolve(skillDir);
+    const entries = [];
+    walkV2(skillPath, skillPath, entries, { total: 0 });
+
+    if (entries.length === 0) {
+        throw new SkillCanonicalizationError(`Skill directory is empty or contains no signable files: ${skillDir}`);
+    }
+    entries.sort((a, b) => compareCodePoints(a[0], b[0]));
+
+    const root = createHash('sha256');
+    const manifest = {};
+    for (const [relPath, digest] of entries) {
+        const pathBytes = Buffer.from(relPath, 'utf-8');
+        root.update(be64(pathBytes.length)).update(pathBytes).update(digest);
+        manifest[relPath] = `sha256:${digest.toString('hex')}`;
+    }
+    return { rootHash: root.digest(), manifest };
+}
+
+/**
+ * Legacy (`schemapin_version: "1.3"`) walk: files first, then directories,
+ * symlinks and `.schemapin.sig` skipped at any depth.
+ */
+function walkV1(dir, baseDir, manifest) {
     const entries = readdirSync(dir, { withFileTypes: true });
-    // Separate dirs and files, sort each by name
     const dirs = [];
     const files = [];
     for (const entry of entries) {
@@ -56,73 +200,52 @@ function walkSorted(dir, baseDir, manifest) {
     dirs.sort();
     files.sort();
 
-    // Process files first (matching Python os.walk behavior within each directory)
     for (const fname of files) {
         if (fname === SIGNATURE_FILENAME) {
             continue;
         }
         const fullPath = join(dir, fname);
-        // Skip symlinks
-        const lstats = lstatSync(fullPath);
-        if (lstats.isSymbolicLink()) {
+        if (lstatSync(fullPath).isSymbolicLink()) {
             continue;
         }
         const relPath = relative(baseDir, fullPath).split('\\').join('/');
-        const fileBytes = readFileSync(fullPath);
-        const pathBytes = Buffer.from(relPath, 'utf-8');
         const digest = createHash('sha256')
-            .update(pathBytes)
-            .update(fileBytes)
+            .update(Buffer.from(relPath, 'utf-8'))
+            .update(readFileSync(fullPath))
             .digest('hex');
         manifest[relPath] = `sha256:${digest}`;
     }
 
-    // Recurse into subdirectories in sorted order
     for (const dname of dirs) {
         const subdir = join(dir, dname);
-        // Skip symlinked directories
-        const lstats = lstatSync(subdir);
-        if (lstats.isSymbolicLink()) {
+        if (lstatSync(subdir).isSymbolicLink()) {
             continue;
         }
-        walkSorted(subdir, baseDir, manifest);
+        walkV1(subdir, baseDir, manifest);
     }
 }
 
 /**
- * Canonicalize a skill directory deterministically and compute a root hash.
+ * Legacy (`schemapin_version: "1.3"`) skill canonicalization.
  *
- * Algorithm:
- *   1. Recursive sorted walk via readdirSync
- *   2. Skip .schemapin.sig and symlinks
- *   3. Normalize paths to forward slashes
- *   4. Per-file: sha256(rel_path_utf8 + file_bytes).hexdigest()
- *   5. Root: sha256(concat of all hexdigests, sorted by rel_path).digest()
+ * Kept only so that pre-1.4 signatures still verify. Per-file digest is
+ * `SHA-256(path || content)`, the root hash is SHA-256 of the concatenated
+ * hex digests, symlinks are skipped and `.schemapin.sig` is excluded at any
+ * depth. Do not use for new signatures.
  *
- * @param {string} skillDir - Path to skill directory
- * @returns {{ rootHash: Buffer, manifest: Object }} Root hash and file manifest
- * @throws {Error} If directory is empty or contains no signable files
+ * @param {string} skillDir
+ * @returns {{ rootHash: Buffer, manifest: Object }}
  */
-export function canonicalizeSkill(skillDir) {
+export function canonicalizeSkillV1(skillDir) {
     const skillPath = resolve(skillDir);
     const manifest = {};
-
-    walkSorted(skillPath, skillPath, manifest);
-
+    walkV1(skillPath, skillPath, manifest);
     if (Object.keys(manifest).length === 0) {
-        throw new Error(`Skill directory is empty or contains no signable files: ${skillDir}`);
+        throw new SkillCanonicalizationError(`Skill directory is empty or contains no signable files: ${skillDir}`);
     }
-
-    // Root hash: sort manifest keys, extract hex digests, concatenate, sha256
-    const sortedKeys = Object.keys(manifest).sort();
-    const sortedDigests = sortedKeys.map(k => {
-        const parts = manifest[k].split(':');
-        return parts.slice(1).join(':');
-    });
-    const rootHash = createHash('sha256')
-        .update(sortedDigests.join(''), 'utf-8')
-        .digest();
-
+    const sortedKeys = Object.keys(manifest).sort(compareCodePoints);
+    const sortedDigests = sortedKeys.map(k => manifest[k].slice('sha256:'.length));
+    const rootHash = createHash('sha256').update(sortedDigests.join(''), 'utf-8').digest();
     return { rootHash, manifest };
 }
 
@@ -163,7 +286,7 @@ export function parseSkillName(skillDir) {
  *
  * @param {string} skillDir - Path to skill directory
  * @returns {Object} Parsed signature document
- * @throws {Error} If .schemapin.sig does not exist
+ * @throws {Error} If .schemapin.sig does not exist or is not a JSON object
  */
 export function loadSignature(skillDir) {
     const sigPath = join(resolve(skillDir), SIGNATURE_FILENAME);
@@ -171,14 +294,58 @@ export function loadSignature(skillDir) {
         throw new Error(`Signature file not found: ${sigPath}`);
     }
     const text = readFileSync(sigPath, 'utf-8');
-    return JSON.parse(text);
+    const data = JSON.parse(text);
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('.schemapin.sig must contain a JSON object');
+    }
+    return data;
+}
+
+/**
+ * Build the canonical bytes a v1.4 signature covers.
+ *
+ * Takes the known signature fields (unknown fields are ignored and therefore
+ * unprotected), drops absent / empty optional fields, forces `signature` to
+ * `""` and canonicalizes with `schemapin-v1`.
+ *
+ * @param {Object} signatureData
+ * @returns {Buffer}
+ * @throws {Error} if a required field is missing or has the wrong type
+ */
+export function signingInput(signatureData) {
+    const doc = {};
+    for (const key of REQUIRED_FIELDS) {
+        if (key === 'signature') {
+            continue;
+        }
+        const value = signatureData[key];
+        if (key === 'file_manifest') {
+            if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+                throw new Error('file_manifest must be an object');
+            }
+        } else if (typeof value !== 'string') {
+            throw new Error(`signature document field ${JSON.stringify(key)} is missing`);
+        }
+        doc[key] = value;
+    }
+    for (const key of OPTIONAL_FIELDS) {
+        const value = signatureData[key];
+        if (value === null || value === undefined || value === '') {
+            continue;
+        }
+        if (typeof value !== 'string') {
+            throw new Error(`signature document field ${JSON.stringify(key)} must be a string`);
+        }
+        doc[key] = value;
+    }
+    doc.signature = '';
+    return Buffer.from(SchemaPinCore.canonicalizeSchema(doc), 'utf-8');
 }
 
 /**
  * Canonicalize a skill directory, sign, and write .schemapin.sig.
  *
- * v1.3 entry point. Preserved for backward compatibility — internally this is
- * a thin wrapper over {@link signSkillWithOptions}.
+ * Thin wrapper over {@link signSkillWithOptions}.
  *
  * @param {string} skillDir - Path to the skill folder
  * @param {string} privateKeyPem - PEM-encoded ECDSA P-256 private key
@@ -195,15 +362,17 @@ export function signSkill(skillDir, privateKeyPem, domain, signerKid = null, ski
 }
 
 /**
- * v1.4 alpha.2 chain check error.
+ * Chain check error.
  *
  * Subclass of Error. Distinguish via the `kind` property:
  *   - `'no_previous_hash'` — current signature has no `previous_hash` field
  *   - `'mismatch'` — current.previous_hash !== previous.skill_hash
+ *   - `'legacy'` — one of the documents is a legacy 1.3 signature whose
+ *     `skill_hash` is not covered by its signature
  */
 export class ChainError extends Error {
     /**
-     * @param {string} kind - 'no_previous_hash' | 'mismatch'
+     * @param {string} kind - 'no_previous_hash' | 'mismatch' | 'legacy'
      * @param {string} message
      */
     constructor(kind, message) {
@@ -215,24 +384,26 @@ export class ChainError extends Error {
 
 /**
  * Verify that `current` is the legitimate successor of `previous` via the
- * `previous_hash` lineage chain (v1.4 alpha.2).
+ * `previous_hash` lineage chain.
  *
  * Checks `current.previous_hash === previous.skill_hash`.
  *
  * This is a pure-metadata check — no cryptography is re-evaluated. Both
  * signatures must already be cryptographically verified separately via
- * {@link verifySkillOffline} for the chain check to be meaningful.
- *
- * Use this to defend against rug-pull attacks where an attacker substitutes
- * a schema/skill out-of-band: a legitimate update declares the prior version's
- * hash; an unauthorized substitution either omits `previous_hash` or points
- * at a hash the verifier has not accepted as a valid ancestor.
+ * {@link verifySkillOffline}, and both must be `schemapin_version >= "1.4"`
+ * documents so that `skill_hash` / `previous_hash` are covered by their
+ * signatures (legacy 1.3 documents are rejected).
  *
  * @param {Object} current - The new signature dict (must have `previous_hash`)
  * @param {Object} previous - The prior signature dict (must have `skill_hash`)
- * @throws {ChainError} On chain mismatch or missing `previous_hash`
+ * @throws {ChainError}
  */
 export function verifyChain(current, previous) {
+    for (const [label, doc] of [['current', current], ['previous', previous]]) {
+        if (isLegacyVersion(doc.schemapin_version)) {
+            throw new ChainError('legacy', `${label} signature is a legacy 1.3 document; its skill_hash is unsigned`);
+        }
+    }
     const claimed = current.previous_hash;
     if (claimed === null || claimed === undefined) {
         throw new ChainError(
@@ -250,47 +421,41 @@ export function verifyChain(current, previous) {
 }
 
 /**
- * Canonicalize a skill directory, sign, and write .schemapin.sig with extended
- * options (v1.4+).
+ * Canonicalize a skill directory, sign, and write a v1.4 signature document.
  *
- * When `options.expiresIn` is set (milliseconds), an `expires_at` ISO 8601
- * timestamp (RFC 3339 with `Z` suffix, second precision) is written and the
- * `schemapin_version` field is bumped from `"1.3"` to `"1.4"`. Verifiers past
- * that timestamp emit a `signature_expired` warning instead of failing — see
- * {@link verifySkillOffline}.
+ * The whole document (including `expires_at` when `options.expiresIn` is
+ * set, written as RFC 3339 `Z` with second precision) is covered by the
+ * signature. See the module docs.
  *
  * Options:
  *   - `signerKid` - Override the signer key id (KID). Defaults to the
  *     discovery fingerprint of the public key.
  *   - `skillName` - Override the skill name. Defaults to the SKILL.md
  *     frontmatter `name:` or directory basename.
- *   - `expiresIn` - Time-to-live for the signature, in milliseconds. When set,
- *     an `expires_at` field is written.
+ *   - `expiresIn` - Time-to-live for the signature, in milliseconds.
+ *   - `schemaVersion` - semver string identifying this version of the artifact.
+ *   - `previousHash` - `sha256:<hex>` of the prior version's `skill_hash`.
+ *   - `canonicalization` - algorithm identifier (`'schemapin-v1'`).
  *
  * @param {string} skillDir - Path to the skill folder
  * @param {string} privateKeyPem - PEM-encoded ECDSA P-256 private key
  * @param {string} domain - Signing domain
- * @param {{ signerKid?: string|null, skillName?: string|null, expiresIn?: number|null }} [options]
+ * @param {{ signerKid?: string|null, skillName?: string|null, expiresIn?: number|null, schemaVersion?: string|null, previousHash?: string|null, canonicalization?: string|null }} [options]
  * @returns {Object} The signature document that was written
+ * @throws {InvalidDomainError|SkillCanonicalizationError}
  */
 export function signSkillWithOptions(skillDir, privateKeyPem, domain, options = {}) {
     const {
         signerKid: optSignerKid = null,
         skillName: optSkillName = null,
         expiresIn = null,
-        // v1.4 alpha.2: caller-supplied semver string identifying *this* version
-        // of the signed artifact. Surfaced via VerificationResult for policy use.
         schemaVersion = null,
-        // v1.4 alpha.2: `sha256:<hex>` of the prior signed version's
-        // `skill_hash`, forming a hash chain. Pair with `verifyChain`.
         previousHash = null,
-        // v1.4 alpha.3: canonicalization algorithm identifier written to the
-        // signature. `null` is wire-equivalent to the implicit "schemapin-v1"
-        // default; pass `'schemapin-v1'` to declare it explicitly.
         canonicalization = null
     } = options;
 
     const skillPath = resolve(skillDir);
+    domain = validateDomain(domain);
     const privateKey = KeyManager.loadPrivateKeyPem(privateKeyPem);
 
     // Derive public key PEM from private key
@@ -308,30 +473,17 @@ export function signSkillWithOptions(skillDir, privateKeyPem, domain, options = 
         ? KeyManager.calculateKeyFingerprint(publicKeyPem)
         : optSignerKid;
 
-    const signatureB64 = SignatureManager.signHash(rootHash, privateKey);
-
     const now = new Date();
     let expiresAt = null;
     if (expiresIn !== null && expiresIn !== undefined) {
         expiresAt = toRfc3339Seconds(new Date(now.getTime() + expiresIn));
     }
 
-    // Any v1.4 optional field bumps the version stamp; pure v1.3 sigs stay
-    // "1.3" for byte-stable backward compatibility.
-    const usesV14Field =
-        expiresAt !== null
-        || (schemaVersion !== null && schemaVersion !== undefined)
-        || (previousHash !== null && previousHash !== undefined)
-        || (canonicalization !== null && canonicalization !== undefined);
-    const version = usesV14Field ? SCHEMAPIN_VERSION_V14 : SCHEMAPIN_VERSION_V13;
-
-    // Build the document in canonical field order. Optional v1.4 fields slot
-    // between `signed_at` and `domain`.
     const ordered = {
-        schemapin_version: version,
+        schemapin_version: SCHEMAPIN_VERSION,
         skill_name: skillName,
         skill_hash: `sha256:${rootHash.toString('hex')}`,
-        signature: signatureB64,
+        signature: '',
         signed_at: toRfc3339Seconds(now)
     };
     if (expiresAt !== null) {
@@ -350,22 +502,34 @@ export function signSkillWithOptions(skillDir, privateKeyPem, domain, options = 
     ordered.signer_kid = signerKid;
     ordered.file_manifest = manifest;
 
+    ordered.signature = SignatureManager.signHash(signingInput(ordered), privateKey);
+
     const sigPath = join(skillPath, SIGNATURE_FILENAME);
     writeFileSync(sigPath, JSON.stringify(ordered, null, 2) + '\n', 'utf-8');
     return ordered;
 }
 
+function failure(domain, code, message) {
+    return { valid: false, domain, error_code: code, error_message: message };
+}
+
 /**
- * Verify a signed skill folder offline (7-step flow).
+ * Verify a signed skill folder offline.
  *
- * Mirrors verifySchemaOffline():
- *   1. Load or accept signature data
- *   2. Validate discovery document
- *   3. Extract public key and compute fingerprint
+ * Steps:
+ *   1. Load or accept signature data; check `canonicalization`
+ *   2. Bind the domain: when `expectedDomain` is given it must equal the
+ *      signature's `domain` (`DOMAIN_MISMATCH` otherwise). Pass it whenever
+ *      you know which domain the discovery document belongs to -- the
+ *      signature's own `domain` field is display-only.
+ *   3. Validate discovery document, load key, compute fingerprint
  *   4. Check revocation
- *   5. TOFU key pinning
- *   6. Canonicalize skill and verify ECDSA signature
- *   7. Return structured result
+ *   5. TOFU pin check (read-only)
+ *   6. Recompute the root hash, require `skill_hash` to match, verify the
+ *      signature (over the whole document for 1.4, over the root hash for
+ *      legacy 1.3)
+ *   7. Expiration check (fail-closed unless `allowExpired`)
+ *   8. Pin on first use, return the result with lineage metadata
  *
  * @param {string} skillDir - Path to skill directory
  * @param {Object} discovery - Well-known discovery document
@@ -373,63 +537,76 @@ export function signSkillWithOptions(skillDir, privateKeyPem, domain, options = 
  * @param {Object|null} revocationDoc - Standalone revocation document
  * @param {KeyPinStore|null} pinStore - TOFU pin store
  * @param {string|null} toolId - Tool identifier for pinning
+ * @param {string|null} [expectedDomain=null] - Domain to bind the skill to
+ * @param {boolean} [allowExpired=false] - Accept expired signatures (degraded)
  * @returns {Object} Verification result
  */
-export function verifySkillOffline(skillDir, discovery, signatureData = null, revocationDoc = null, pinStore = null, toolId = null) {
+export function verifySkillOffline(skillDir, discovery, signatureData = null, revocationDoc = null, pinStore = null, toolId = null, expectedDomain = null, allowExpired = false) {
     const skillPath = resolve(skillDir);
 
     // Step 1: Load signature data
     if (signatureData === null || signatureData === undefined) {
         try {
             signatureData = loadSignature(skillPath);
-        } catch {
+        } catch (e) {
             return {
                 valid: false,
                 error_code: ErrorCode.SIGNATURE_INVALID,
-                error_message: 'No .schemapin.sig found in skill directory'
+                error_message: `No usable .schemapin.sig found in skill directory: ${e.message}`
             };
         }
     }
 
-    const domain = signatureData.domain || '';
+    const sigDomain = signatureData.domain;
     if (toolId === null || toolId === undefined) {
         toolId = signatureData.skill_name || basename(skillPath);
     }
 
-    // Step 1a (v1.4 alpha.3): canonicalization algorithm check.
     const unsupportedAlgo = checkCanonicalization(signatureData.canonicalization);
     if (unsupportedAlgo !== null) {
-        return {
-            valid: false,
-            domain,
-            error_code: ErrorCode.CANONICALIZATION_UNSUPPORTED,
-            error_message: `Unsupported canonicalization algorithm: ${unsupportedAlgo}`
-        };
+        return failure(expectedDomain, ErrorCode.CANONICALIZATION_UNSUPPORTED, `Unsupported canonicalization algorithm: ${unsupportedAlgo}`);
     }
 
-    // Step 2: Validate discovery document
+    // Step 2: Domain binding
+    const warnings = [];
+    let domain;
+    if (expectedDomain !== null && expectedDomain !== undefined) {
+        try {
+            domain = validateDomain(expectedDomain);
+        } catch (e) {
+            if (e instanceof InvalidDomainError) {
+                return failure(expectedDomain, ErrorCode.DOMAIN_INVALID, e.message);
+            }
+            throw e;
+        }
+        if (typeof sigDomain !== 'string' || sigDomain.toLowerCase() !== domain) {
+            return failure(domain, ErrorCode.DOMAIN_MISMATCH,
+                `signature domain ${JSON.stringify(sigDomain)} does not match expected domain ${JSON.stringify(domain)}`);
+        }
+    } else {
+        try {
+            domain = validateDomain(typeof sigDomain === 'string' ? sigDomain : '');
+        } catch (e) {
+            if (e instanceof InvalidDomainError) {
+                return { valid: false, error_code: ErrorCode.DOMAIN_INVALID, error_message: `signature domain is invalid: ${e.message}` };
+            }
+            throw e;
+        }
+        warnings.push('domain_unbound');
+    }
+
+    // Step 3: Validate discovery document
     const publicKeyPem = discovery?.public_key_pem;
     if (!publicKeyPem || !publicKeyPem.includes('-----BEGIN PUBLIC KEY-----')) {
-        return {
-            valid: false,
-            domain,
-            error_code: ErrorCode.DISCOVERY_INVALID,
-            error_message: 'Discovery document missing or invalid public_key_pem'
-        };
+        return failure(domain, ErrorCode.DISCOVERY_INVALID, 'Discovery document missing or invalid public_key_pem');
     }
 
-    // Step 3: Extract public key and compute fingerprint
     let publicKey, fingerprint;
     try {
         publicKey = KeyManager.loadPublicKeyPem(publicKeyPem);
         fingerprint = KeyManager.calculateKeyFingerprint(publicKeyPem);
     } catch (e) {
-        return {
-            valid: false,
-            domain,
-            error_code: ErrorCode.KEY_NOT_FOUND,
-            error_message: `Failed to load public key: ${e.message}`
-        };
+        return failure(domain, ErrorCode.KEY_NOT_FOUND, `Failed to load public key: ${e.message}`);
     }
 
     // Step 4: Check revocation
@@ -437,70 +614,74 @@ export function verifySkillOffline(skillDir, discovery, signatureData = null, re
     try {
         checkRevocationCombined(simpleRevoked, revocationDoc, fingerprint);
     } catch (e) {
-        return {
-            valid: false,
-            domain,
-            error_code: ErrorCode.KEY_REVOKED,
-            error_message: e.message
-        };
+        return failure(domain, ErrorCode.KEY_REVOKED, e.message);
     }
 
-    // Step 5: TOFU key pinning
+    // Step 5: TOFU pin check (read-only until the signature verifies)
     let pinResult = null;
     if (pinStore !== null && pinStore !== undefined) {
-        pinResult = pinStore.checkAndPin(toolId, domain, fingerprint);
+        pinResult = pinStore.check(toolId, domain, fingerprint);
         if (pinResult === 'changed') {
-            return {
-                valid: false,
-                domain,
-                error_code: ErrorCode.KEY_PIN_MISMATCH,
-                error_message: 'Key fingerprint changed since last use'
-            };
+            return failure(domain, ErrorCode.KEY_PIN_MISMATCH, 'Key fingerprint changed since last use');
         }
     }
 
-    // Step 6: Canonicalize and verify signature
+    // Step 6: Canonicalize and verify
+    const version = signatureData.schemapin_version;
+    if (versionTuple(version) === null) {
+        return failure(domain, ErrorCode.SIGNATURE_INVALID, `unsupported schemapin_version ${JSON.stringify(version)}`);
+    }
+    const legacy = isLegacyVersion(version);
     let rootHash;
     try {
-        const result = canonicalizeSkill(skillPath);
-        rootHash = result.rootHash;
+        rootHash = (legacy ? canonicalizeSkillV1(skillPath) : canonicalizeSkill(skillPath)).rootHash;
     } catch (e) {
-        return {
-            valid: false,
-            domain,
-            error_code: ErrorCode.SCHEMA_CANONICALIZATION_FAILED,
-            error_message: `Failed to canonicalize skill: ${e.message}`
-        };
+        return failure(domain, ErrorCode.SCHEMA_CANONICALIZATION_FAILED, `Failed to canonicalize skill: ${e.message}`);
     }
 
     const signatureB64 = signatureData.signature || '';
-    const valid = SignatureManager.verifySignature(rootHash, signatureB64, publicKey);
-
-    if (!valid) {
-        return {
-            valid: false,
-            domain,
-            error_code: ErrorCode.SIGNATURE_INVALID,
-            error_message: 'Signature verification failed'
-        };
+    let valid;
+    if (legacy) {
+        valid = SignatureManager.verifySignature(rootHash, signatureB64, publicKey);
+        warnings.push('legacy_signature_format');
+    } else {
+        const expectedHash = `sha256:${rootHash.toString('hex')}`;
+        if (signatureData.skill_hash !== expectedHash) {
+            return failure(domain, ErrorCode.SIGNATURE_INVALID, 'skill_hash does not match the directory contents');
+        }
+        let input;
+        try {
+            input = signingInput(signatureData);
+        } catch (e) {
+            return failure(domain, ErrorCode.SIGNATURE_INVALID, `malformed signature document: ${e.message}`);
+        }
+        valid = SignatureManager.verifySignature(input, signatureB64, publicKey);
     }
 
-    // Step 7: Return success
+    if (!valid) {
+        return failure(domain, ErrorCode.SIGNATURE_INVALID, 'Signature verification failed');
+    }
+
+    // Step 7: Expiration (fail-closed by default)
     const resultObj = {
         valid: true,
         domain,
         developer_name: discovery.developer_name || null,
-        key_pinning: pinResult ? { status: pinResult } : null,
-        warnings: []
+        key_pinning: null,
+        warnings
     };
-
-    // v1.4: apply signature expiration check (degraded, not failed).
-    if (signatureData.expires_at !== null && signatureData.expires_at !== undefined) {
-        applyExpirationCheck(resultObj, signatureData.expires_at);
+    applyExpirationCheck(resultObj, signatureData.expires_at ?? null, allowExpired, EXPIRATION_SKEW_SECONDS);
+    if (!resultObj.valid) {
+        return resultObj;
     }
 
-    // v1.4 alpha.2: surface lineage metadata (informational; chain enforcement
-    // is opt-in via verifyChain).
+    // Step 8: Pin only now, then surface lineage metadata
+    if (pinStore !== null && pinStore !== undefined && pinResult === 'first_use') {
+        pinStore.pin(toolId, domain, fingerprint);
+    }
+    if (pinResult !== null) {
+        resultObj.key_pinning = { status: pinResult };
+    }
     if (signatureData.schema_version !== null && signatureData.schema_version !== undefined) {
         resultObj.schema_version = signatureData.schema_version;
     }
@@ -514,11 +695,9 @@ export function verifySkillOffline(skillDir, discovery, signatureData = null, re
 /**
  * Verify a signed skill folder offline with an optional DNS TXT cross-check (v1.4).
  *
- * Behaves identically to {@link verifySkillOffline}, then — when `dnsTxt` is
- * non-null — verifies that the DNS TXT record's fingerprint matches the
- * discovery key. A mismatch converts the result into a hard failure with
- * `ErrorCode.DOMAIN_MISMATCH`. When `dnsTxt` is null, behaviour is unchanged
- * (DNS TXT is an optional, additive trust signal).
+ * Behaves identically to {@link verifySkillOffline}, with a DNS TXT
+ * fingerprint cross-check performed first when `dnsTxt` is non-null. A
+ * mismatch is a hard `DOMAIN_MISMATCH` failure and nothing is pinned.
  *
  * @param {string} skillDir - Path to skill directory
  * @param {Object} discovery - Well-known discovery document
@@ -527,58 +706,86 @@ export function verifySkillOffline(skillDir, discovery, signatureData = null, re
  * @param {KeyPinStore|null} pinStore - TOFU pin store
  * @param {string|null} toolId - Tool identifier for pinning
  * @param {Object|null} dnsTxt - Parsed DNS TXT record (`{ version, kid, fingerprint }`)
+ * @param {string|null} [expectedDomain=null]
+ * @param {boolean} [allowExpired=false]
  * @returns {Object} Verification result
  */
-export function verifySkillOfflineWithDns(skillDir, discovery, signatureData = null, revocationDoc = null, pinStore = null, toolId = null, dnsTxt = null) {
-    const result = verifySkillOffline(skillDir, discovery, signatureData, revocationDoc, pinStore, toolId);
-
-    if (!result.valid) {
-        return result;
+export function verifySkillOfflineWithDns(skillDir, discovery, signatureData = null, revocationDoc = null, pinStore = null, toolId = null, dnsTxt = null, expectedDomain = null, allowExpired = false) {
+    if (dnsTxt !== null && dnsTxt !== undefined) {
+        try {
+            verifyDnsMatch(discovery, dnsTxt);
+        } catch (e) {
+            return failure(expectedDomain, ErrorCode.DOMAIN_MISMATCH, e.message);
+        }
     }
-    if (dnsTxt === null || dnsTxt === undefined) {
-        return result;
-    }
-    try {
-        verifyDnsMatch(discovery, dnsTxt);
-        return result;
-    } catch (e) {
-        return {
-            valid: false,
-            domain: result.domain,
-            error_code: ErrorCode.DOMAIN_MISMATCH,
-            error_message: e.message
-        };
-    }
+    return verifySkillOffline(skillDir, discovery, signatureData, revocationDoc, pinStore, toolId, expectedDomain, allowExpired);
 }
 
 /**
  * Verify a signed skill folder using a resolver for discovery.
  *
+ * The signature's `domain` must equal `domain` (checked before any network
+ * I/O); the discovery document is fetched for `domain` and the pin is keyed
+ * by it. Revocation is fail-closed unless `allowUnreachableRevocation`.
+ *
  * @param {string} skillDir - Path to skill directory
- * @param {string} domain - Domain to resolve discovery for
+ * @param {string} domain - Domain to resolve discovery for and bind the skill to
  * @param {Object} resolver - SchemaResolver instance
  * @param {KeyPinStore|null} pinStore - TOFU pin store
  * @param {string|null} toolId - Tool identifier for pinning
+ * @param {boolean} [allowExpired=false]
+ * @param {boolean} [allowUnreachableRevocation=false]
  * @returns {Promise<Object>} Verification result
  */
-export async function verifySkillWithResolver(skillDir, domain, resolver, pinStore = null, toolId = null) {
-    const discovery = await resolver.resolveDiscovery(domain);
-    if (!discovery) {
-        return {
-            valid: false,
-            domain,
-            error_code: ErrorCode.DISCOVERY_FETCH_FAILED,
-            error_message: `Could not resolve discovery for domain: ${domain}`
-        };
+export async function verifySkillWithResolver(skillDir, domain, resolver, pinStore = null, toolId = null, allowExpired = false, allowUnreachableRevocation = false) {
+    try {
+        domain = validateDomain(domain);
+    } catch (e) {
+        if (e instanceof InvalidDomainError) {
+            return failure(domain, ErrorCode.DOMAIN_INVALID, e.message);
+        }
+        throw e;
     }
 
-    const revocation = await resolver.resolveRevocation(domain, discovery);
+    let signatureData;
+    try {
+        signatureData = loadSignature(skillDir);
+    } catch (e) {
+        return failure(domain, ErrorCode.SIGNATURE_INVALID, `No usable .schemapin.sig found in skill directory: ${e.message}`);
+    }
+    const sigDomain = signatureData.domain;
+    if (typeof sigDomain !== 'string' || sigDomain.toLowerCase() !== domain) {
+        return failure(domain, ErrorCode.DOMAIN_MISMATCH,
+            `signature domain ${JSON.stringify(sigDomain)} does not match expected domain ${JSON.stringify(domain)}`);
+    }
 
-    return verifySkillOffline(skillDir, discovery, null, revocation, pinStore, toolId);
+    const discovery = await resolver.resolveDiscovery(domain);
+    if (!discovery) {
+        return failure(domain, ErrorCode.DISCOVERY_FETCH_FAILED, `Could not resolve discovery for domain: ${domain}`);
+    }
+
+    let revocation;
+    try {
+        revocation = await resolver.resolveRevocation(domain, discovery);
+    } catch (e) {
+        if (!(e instanceof RevocationFetchError)) {
+            throw e;
+        }
+        if (!allowUnreachableRevocation) {
+            return failure(domain, ErrorCode.DISCOVERY_FETCH_FAILED, `Revocation document unreachable (fail-closed): ${e.message}`);
+        }
+        revocation = null;
+    }
+
+    return verifySkillOffline(skillDir, discovery, signatureData, revocation, pinStore, toolId, domain, allowExpired);
 }
 
 /**
  * Compare current file manifest against the signed manifest.
+ *
+ * Only meaningful for `schemapin_version >= "1.4"` documents, whose
+ * `file_manifest` is covered by the signature; for legacy 1.3 documents the
+ * manifest is unsigned and this is a diagnostic aid only.
  *
  * @param {Object} currentManifest - Current file manifest
  * @param {Object} signedManifest - Signed file manifest

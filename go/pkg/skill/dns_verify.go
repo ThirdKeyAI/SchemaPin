@@ -32,17 +32,30 @@ func VerifySkillOfflineWithDNS(
 	toolID string,
 	dnsTxt *dns.DnsTxtRecord,
 ) *verification.VerificationResult {
-	result := VerifySkillOffline(skillDir, disc, sig, rev, pinStore, toolID)
-	if !result.Valid || dnsTxt == nil {
-		return result
-	}
-	if err := dns.VerifyDnsMatch(disc, dnsTxt); err != nil {
-		return &verification.VerificationResult{
-			Valid:        false,
-			Domain:       result.Domain,
-			ErrorCode:    verification.ErrDomainMismatch,
-			ErrorMessage: err.Error(),
+	return VerifySkillOfflineWithDNSOptions(skillDir, disc, sig, rev, pinStore, dnsTxt, VerifyOptions{ToolID: toolID})
+}
+
+// VerifySkillOfflineWithDNSOptions is VerifySkillOfflineWithDNS with explicit
+// policy knobs. The DNS cross-check runs before verification so that a
+// mismatching key is never pinned.
+func VerifySkillOfflineWithDNSOptions(
+	skillDir string,
+	disc *discovery.WellKnownResponse,
+	sig *SkillSignature,
+	rev *revocation.RevocationDocument,
+	pinStore *verification.KeyPinStore,
+	dnsTxt *dns.DnsTxtRecord,
+	opts VerifyOptions,
+) *verification.VerificationResult {
+	if dnsTxt != nil {
+		if err := dns.VerifyDnsMatch(disc, dnsTxt); err != nil {
+			return &verification.VerificationResult{
+				Valid:        false,
+				Domain:       opts.Domain,
+				ErrorCode:    verification.ErrDomainMismatch,
+				ErrorMessage: err.Error(),
+			}
 		}
 	}
-	return result
+	return VerifySkillOfflineWithOptions(skillDir, disc, sig, rev, pinStore, opts)
 }

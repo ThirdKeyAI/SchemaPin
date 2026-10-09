@@ -34,8 +34,39 @@ impl KeyPinStore {
         format!("{}@{}", tool_id, domain)
     }
 
+    /// Compare `fingerprint` with the pinned keys for `tool_id@domain` without
+    /// mutating the store. `FirstUse` means nothing is pinned yet.
+    pub fn check(&self, tool_id: &str, domain: &str, fingerprint: &str) -> PinningResult {
+        match self.tools.get(&Self::composite_key(tool_id, domain)) {
+            None => PinningResult::FirstUse,
+            Some(pinned)
+                if pinned
+                    .pinned_keys
+                    .iter()
+                    .any(|pk| pk.fingerprint == fingerprint) =>
+            {
+                PinningResult::Matched
+            }
+            Some(_) => PinningResult::Changed,
+        }
+    }
+
+    /// Pin `fingerprint` for `tool_id@domain` (idempotent). Use after a
+    /// successful verification, or to pre-seed an expected key.
+    pub fn pin(&mut self, tool_id: &str, domain: &str, fingerprint: &str) {
+        self.add_key(tool_id, domain, fingerprint);
+    }
+
+    /// Pre-seed an expected fingerprint (out-of-band trust establishment).
+    pub fn seed(&mut self, tool_id: &str, domain: &str, fingerprint: &str) {
+        self.add_key(tool_id, domain, fingerprint);
+    }
+
     /// Check a key fingerprint against the pin store. If this is the first time
     /// seeing this tool@domain, the key is pinned (TOFU). Returns the pinning result.
+    ///
+    /// Prefer [`KeyPinStore::check`] followed by [`KeyPinStore::pin`] so that
+    /// pinning can be deferred until after signature verification.
     pub fn check_and_pin(
         &mut self,
         tool_id: &str,
@@ -122,6 +153,26 @@ impl KeyPinStore {
             .collect();
         Ok(Self { tools: map })
     }
+}
+
+/// Non-mutating pin check that returns an error if the key has changed.
+pub fn check_pinning_no_write(
+    store: &KeyPinStore,
+    tool_id: &str,
+    domain: &str,
+    fingerprint: &str,
+) -> Result<PinningResult, Error> {
+    let result = store.check(tool_id, domain, fingerprint);
+    if result == PinningResult::Changed {
+        return Err(Error::Verification {
+            code: ErrorCode::KeyPinMismatch,
+            message: format!(
+                "Key for '{}@{}' has changed since last pinned (fingerprint: '{}')",
+                tool_id, domain, fingerprint
+            ),
+        });
+    }
+    Ok(result)
 }
 
 /// Check pinning and return an error if key has changed (for use in verification flow).

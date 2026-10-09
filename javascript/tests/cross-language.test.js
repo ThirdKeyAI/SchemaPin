@@ -85,3 +85,59 @@ describe('cross-language signature vector', () => {
         });
     }
 });
+
+// ---------------------------------------------------------------------------
+// Skill-directory fixtures (SP-1, SP-12, SP-13, SP-14)
+// ---------------------------------------------------------------------------
+
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { SIGNATURE_FILENAME, canonicalizeSkill, canonicalizeSkillV1, loadSignature, verifySkillOffline } from '../src/skill.js';
+
+const SKILL_FIXTURES = resolve(HERE, '..', '..', 'tests', 'cross-language', 'skill');
+
+describe('cross-language skill fixtures', () => {
+    const expected = JSON.parse(readFileSync(join(SKILL_FIXTURES, 'expected.json'), 'utf-8'));
+
+    test('v1.4 fixture hashes and verifies', () => {
+        const skillDir = join(SKILL_FIXTURES, expected.v14.skill_dir);
+        const { rootHash, manifest } = canonicalizeSkill(skillDir);
+        assert.strictEqual(`sha256:${rootHash.toString('hex')}`, expected.v14.skill_hash);
+        assert.deepStrictEqual(manifest, expected.v14.file_manifest);
+        const result = verifySkillOffline(skillDir, expected.discovery, null, null, null, null, expected.domain);
+        assert.strictEqual(result.valid, true, JSON.stringify(result));
+        assert.ok(!result.warnings.includes('legacy_signature_format'));
+        assert.strictEqual(result.schema_version, '1.0.0');
+    });
+
+    test('v1.4 fixture: tampering any signed field or file fails', () => {
+        const src = join(SKILL_FIXTURES, expected.v14.skill_dir);
+        const dir = mkdtempSync(join(tmpdir(), 'skill-fixture-'));
+        try {
+            for (const field of expected.v14.signed_fields_tamper_must_fail) {
+                const dst = join(dir, field);
+                cpSync(src, dst, { recursive: true });
+                const sig = loadSignature(dst);
+                sig[field] = field === 'skill_hash' ? 'sha256:' + '00'.repeat(32) : 'tampered';
+                writeFileSync(join(dst, SIGNATURE_FILENAME), JSON.stringify(sig), 'utf-8');
+                assert.strictEqual(verifySkillOffline(dst, expected.discovery).valid, false, field);
+            }
+            const dst = join(dir, 'content');
+            cpSync(src, dst, { recursive: true });
+            writeFileSync(join(dst, 'scripts', 'run.sh'), '#!/bin/sh\nrm -rf /\n');
+            assert.strictEqual(verifySkillOffline(dst, expected.discovery).valid, false);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('legacy 1.3 fixture verifies with a warning', () => {
+        const skillDir = join(SKILL_FIXTURES, expected.legacy_v13.skill_dir);
+        const { rootHash, manifest } = canonicalizeSkillV1(skillDir);
+        assert.strictEqual(`sha256:${rootHash.toString('hex')}`, expected.legacy_v13.skill_hash);
+        assert.deepStrictEqual(manifest, expected.legacy_v13.file_manifest);
+        const result = verifySkillOffline(skillDir, expected.discovery, null, null, null, null, expected.domain);
+        assert.strictEqual(result.valid, true, JSON.stringify(result));
+        assert.ok(result.warnings.includes('legacy_signature_format'));
+    });
+});

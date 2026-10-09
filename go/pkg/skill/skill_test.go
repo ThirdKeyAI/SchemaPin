@@ -329,7 +329,7 @@ func TestLoadSignature(t *testing.T) {
 		t.Errorf("expected domain 'example.com', got %q", loaded.Domain)
 	}
 	if loaded.SchemapinVersion != "1.3" {
-		t.Errorf("expected version '1.3', got %q", loaded.SchemapinVersion)
+		t.Errorf("expected version '1.3' (legacy documents still load), got %q", loaded.SchemapinVersion)
 	}
 }
 
@@ -349,8 +349,8 @@ func TestSignCreatesFile(t *testing.T) {
 	if sig.Domain != "example.com" {
 		t.Errorf("expected domain 'example.com', got %q", sig.Domain)
 	}
-	if sig.SchemapinVersion != "1.3" {
-		t.Errorf("expected version '1.3', got %q", sig.SchemapinVersion)
+	if sig.SchemapinVersion != "1.4" {
+		t.Errorf("expected version '1.4', got %q", sig.SchemapinVersion)
 	}
 
 	// Check file was written
