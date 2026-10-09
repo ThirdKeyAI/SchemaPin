@@ -1,0 +1,8 @@
+{
+  "name": "16-keys-with-escapes",
+  "description": "Object keys are escaped with the same rules as string values.",
+  "input": "{\"quote\\\"key\":1,\"back\\\\slash\":2,\"tab\\tkey\":3,\"nl\\nkey\":4}",
+  "reject": false,
+  "expected_canonical": "{\"back\\\\slash\":2,\"nl\\nkey\":4,\"quote\\\"key\":1,\"tab\\tkey\":3}",
+  "expected_sha256": "7e2222fcaa213470de5ee372ad9a7587bb9235bd5ceccc9faccafc1d14f440e4"
+}

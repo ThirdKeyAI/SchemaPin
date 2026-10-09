@@ -1,0 +1,6 @@
+{
+  "name": "31-reject-trailing-garbage",
+  "description": "Trailing characters after the document are a parse error.",
+  "input": "{\"a\":1} x",
+  "reject": true
+}

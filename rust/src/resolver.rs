@@ -44,6 +44,7 @@ pub trait SchemaResolver: Send + Sync {
 /// Async equivalent of [`SchemaResolver`].
 ///
 /// Gated behind the `fetch` feature because it brings in `async-trait`.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait AsyncSchemaResolver: Send + Sync {
     async fn resolve_discovery(&self, domain: &str) -> Result<WellKnownResponse, Error>;

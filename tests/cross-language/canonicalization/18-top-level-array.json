@@ -1,0 +1,8 @@
+{
+  "name": "18-top-level-array",
+  "description": "Top-level arrays are canonicalized too.",
+  "input": "[{\"b\":1,\"a\":2},[],\"x\",1.5]",
+  "reject": false,
+  "expected_canonical": "[{\"a\":2,\"b\":1},[],\"x\",1.5]",
+  "expected_sha256": "65522185759931aed24d5dee90787d19b201e19d4a11231697b23e267b0583d7"
+}

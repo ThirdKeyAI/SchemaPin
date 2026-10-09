@@ -4,7 +4,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { SchemaPinCore } from '../src/core.js';
+import { SchemaPinCore, CanonicalizationError } from '../src/core.js';
 
 describe('SchemaPinCore', () => {
     test('canonicalizeSchema - basic', () => {
@@ -89,5 +89,50 @@ describe('SchemaPinCore', () => {
         
         // Should produce identical hashes
         assert(hash1.equals(hash2));
+    });
+});
+describe('strict canonicalization (SP-3/SP-4/SP-5 regressions)', () => {
+    test('preserves __proto__ keys instead of invoking the prototype setter', () => {
+        const parsed = SchemaPinCore.parseSchemaJson('{"__proto__":{"polluted":1},"name":"x"}');
+        assert.strictEqual(
+            SchemaPinCore.canonicalizeSchema(parsed),
+            '{"__proto__":{"polluted":1},"name":"x"}'
+        );
+        // A benign schema must not share bytes with one carrying __proto__.
+        assert.notStrictEqual(
+            SchemaPinCore.canonicalizeSchema(parsed),
+            SchemaPinCore.canonicalizeSchema({ name: 'x' })
+        );
+        assert.strictEqual(({}).polluted, undefined);
+        // Also handles objects produced by the built-in JSON.parse.
+        assert.strictEqual(
+            SchemaPinCore.canonicalizeSchema(JSON.parse('{"__proto__":{"polluted":1},"name":"x"}')),
+            '{"__proto__":{"polluted":1},"name":"x"}'
+        );
+    });
+
+    test('sorts keys by code point, not UTF-16 code unit', () => {
+        const canonical = SchemaPinCore.canonicalizeSchema({ '\u{1F600}': 1, '￿': 2, z: 3 });
+        assert.strictEqual(canonical, '{"z":3,"￿":2,"\u{1F600}":1}');
+    });
+
+    test('emits < > & and U+2028/U+2029 literally', () => {
+        assert.strictEqual(
+            SchemaPinCore.canonicalizeSchema({ s: '<a>&\u2028\u2029' }),
+            '{"s":"<a>&\u2028\u2029"}'
+        );
+    });
+
+    test('formats numbers per ES6 and rejects unsafe magnitudes', () => {
+        assert.strictEqual(SchemaPinCore.canonicalizeSchema([1.0, 1e-7, 0.000001, 1e3, -0]), '[1,1e-7,0.000001,1000,0]');
+        assert.throws(() => SchemaPinCore.canonicalizeSchema({ a: 2 ** 53 }), CanonicalizationError);
+        assert.throws(() => SchemaPinCore.canonicalizeSchema({ a: NaN }), CanonicalizationError);
+        assert.throws(() => SchemaPinCore.canonicalizeSchema({ a: Infinity }), CanonicalizationError);
+    });
+
+    test('rejects duplicate keys and lone surrogates at parse time', () => {
+        assert.throws(() => SchemaPinCore.parseSchemaJson('{"a":1,"a":2}'), CanonicalizationError);
+        assert.throws(() => SchemaPinCore.parseSchemaJson('{"a":"\\ud800"}'), CanonicalizationError);
+        assert.throws(() => SchemaPinCore.canonicalizeSchema({ a: '\ud800' }), CanonicalizationError);
     });
 });

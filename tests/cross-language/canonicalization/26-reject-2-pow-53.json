@@ -1,0 +1,6 @@
+{
+  "name": "26-reject-2-pow-53",
+  "description": "2^53 exceeds the safe range.",
+  "input": "{\"a\":9007199254740992}",
+  "reject": true
+}

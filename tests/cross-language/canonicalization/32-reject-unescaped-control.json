@@ -1,0 +1,6 @@
+{
+  "name": "32-reject-unescaped-control",
+  "description": "Raw control characters inside strings are a parse error.",
+  "input": "{\"a\":\"tab\there\"}",
+  "reject": true
+}

@@ -1,0 +1,8 @@
+{
+  "name": "02-nested-sort",
+  "description": "Keys are sorted recursively; arrays keep their order.",
+  "input": "{\"z\":{\"b\":2,\"a\":1},\"a\":{\"d\":[3,1,2],\"c\":{\"y\":true,\"x\":null}}}",
+  "reject": false,
+  "expected_canonical": "{\"a\":{\"c\":{\"x\":null,\"y\":true},\"d\":[3,1,2]},\"z\":{\"a\":1,\"b\":2}}",
+  "expected_sha256": "348d96c3bcd851ec1273ea92b1bbe290d6fa85727e93d0f885e8a98004d1e2a2"
+}

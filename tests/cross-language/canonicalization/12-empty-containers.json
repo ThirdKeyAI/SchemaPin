@@ -1,0 +1,8 @@
+{
+  "name": "12-empty-containers",
+  "description": "Empty objects and arrays.",
+  "input": "{\"o\":{},\"a\":[],\"n\":{\"o\":{},\"a\":[]}}",
+  "reject": false,
+  "expected_canonical": "{\"a\":[],\"n\":{\"a\":[],\"o\":{}},\"o\":{}}",
+  "expected_sha256": "ce6dbc64ed0524b37fd7cd908f0e5ebfc2aa36c1c5af07ede2fcbca475b54c32"
+}

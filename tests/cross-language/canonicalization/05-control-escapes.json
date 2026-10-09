@@ -1,0 +1,8 @@
+{
+  "name": "05-control-escapes",
+  "description": "C0 controls: short escapes for \\b \\f \\n \\r \\t, lowercase \\u00xx otherwise; DEL (U+007F) literal; solidus never escaped.",
+  "input": "{\"s\":\"\\u0000\\u0001\\u001f\\b\\f\\n\\r\\t\\\"\\\\\\/\\u007f\"}",
+  "reject": false,
+  "expected_canonical": "{\"s\":\"\\u0000\\u0001\\u001f\\b\\f\\n\\r\\t\\\"\\\\/\"}",
+  "expected_sha256": "2677634f2b2c4d59a1e24fa949cced8205569d3c93b3742c10ef7ab7bd52bfe3"
+}

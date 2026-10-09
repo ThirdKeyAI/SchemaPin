@@ -3,6 +3,7 @@ package core
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"math"
 	"testing"
 )
 
@@ -394,5 +395,61 @@ func TestKeyOrderingConsistency(t *testing.T) {
 
 	if canonical1 != canonical2 {
 		t.Errorf("Key ordering inconsistency:\nSchema1: %s\nSchema2: %s", canonical1, canonical2)
+	}
+}
+
+// Regression tests for SP-3 (HTML escaping) and SP-5 (number / escape rules).
+func TestCanonicalizeLiteralHTMLChars(t *testing.T) {
+	c := NewSchemaPinCore()
+	got, err := c.CanonicalizeSchema(map[string]interface{}{"s": "a < b && c > d", "u": "  "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "{\"s\":\"a < b && c > d\",\"u\":  \"}"
+	want = "{\"s\":\"a < b && c > d\",\"u\":\"  \"}"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestCanonicalizeShortEscapesIndependentOfToolchain(t *testing.T) {
+	got, err := CanonicalizeValue(map[string]interface{}{"s": "\b\f\n\r\t\x00\x1f\x7f"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "{\"s\":\"\\b\\f\\n\\r\\t\\u0000\\u001f\x7f\"}"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestCanonicalizeNumbersES6(t *testing.T) {
+	got, err := CanonicalizeValue([]interface{}{1.0, 1e-7, 0.000001, 1e3, math.Copysign(0, -1), int64(42), json.Number("2.50")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "[1,1e-7,0.000001,1000,0,42,2.5]" {
+		t.Fatalf("got %q", got)
+	}
+	for _, bad := range []interface{}{float64(1 << 53), int64(1<<53 + 1), math.NaN(), math.Inf(1), json.Number("1e21")} {
+		if _, err := CanonicalizeValue(map[string]interface{}{"a": bad}); err == nil {
+			t.Errorf("expected rejection of %v", bad)
+		}
+	}
+}
+
+func TestParseSchemaJSONStrict(t *testing.T) {
+	for _, bad := range []string{`{"a":1,"a":2}`, `{"a":NaN}`, `{"a":"\ud800"}`, `{"a":9007199254740992}`, "{\"a\":\"\xff\"}"} {
+		if _, err := ParseSchemaJSON([]byte(bad)); err == nil {
+			t.Errorf("expected rejection of %s", bad)
+		}
+	}
+	v, err := ParseSchemaJSON([]byte(`{"__proto__":{"polluted":1},"name":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := CanonicalizeValue(v)
+	if got != `{"__proto__":{"polluted":1},"name":"x"}` {
+		t.Fatalf("got %q", got)
 	}
 }

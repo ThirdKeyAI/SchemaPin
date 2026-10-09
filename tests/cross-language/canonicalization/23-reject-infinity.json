@@ -1,0 +1,6 @@
+{
+  "name": "23-reject-infinity",
+  "description": "Infinity is not valid JSON.",
+  "input": "{\"a\":Infinity}",
+  "reject": true
+}

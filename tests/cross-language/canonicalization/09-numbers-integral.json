@@ -1,0 +1,8 @@
+{
+  "name": "09-numbers-integral",
+  "description": "Integral values print as plain integers; 1.0 -> 1, 1e3 -> 1000, -0 and -0.0 -> 0.",
+  "input": "[1.0,1e3,-0.0,-0,0,100,-7,2.50e1]",
+  "reject": false,
+  "expected_canonical": "[1,1000,0,0,0,100,-7,25]",
+  "expected_sha256": "713a5010f5b5424fa2fc78002fc3a840d1c7e3e6d5b98d4cbaf10069de3a2286"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "27-reject-2-pow-53-plus-1",
+  "description": "2^53+1 rounds to 2^53 in binary64; it must be rejected, not silently collapsed.",
+  "input": "{\"a\":9007199254740993}",
+  "reject": true
+}

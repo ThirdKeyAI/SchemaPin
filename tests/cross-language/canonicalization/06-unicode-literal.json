@@ -1,0 +1,8 @@
+{
+  "name": "06-unicode-literal",
+  "description": "Non-ASCII is emitted as literal UTF-8, not \\u escapes.",
+  "input": "{\"name\":\"café\",\"lang\":\"日本語\",\"emoji\":\"\\ud83d\\ude00\"}",
+  "reject": false,
+  "expected_canonical": "{\"emoji\":\"😀\",\"lang\":\"日本語\",\"name\":\"café\"}",
+  "expected_sha256": "fa6d52fd2c1798c3f09135cdd9029192d90a64481000cc841a1745778e6afa2a"
+}

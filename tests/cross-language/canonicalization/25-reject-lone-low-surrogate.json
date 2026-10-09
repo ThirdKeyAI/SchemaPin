@@ -1,0 +1,6 @@
+{
+  "name": "25-reject-lone-low-surrogate",
+  "description": "A lone low surrogate escape is rejected.",
+  "input": "{\"a\":\"\\udc00x\"}",
+  "reject": true
+}

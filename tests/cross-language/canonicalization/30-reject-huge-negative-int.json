@@ -1,0 +1,6 @@
+{
+  "name": "30-reject-huge-negative-int",
+  "description": "Large negative integers are rejected symmetrically.",
+  "input": "{\"a\":-9007199254740992}",
+  "reject": true
+}

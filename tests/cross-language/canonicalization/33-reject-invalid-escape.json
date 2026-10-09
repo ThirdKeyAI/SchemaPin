@@ -1,0 +1,6 @@
+{
+  "name": "33-reject-invalid-escape",
+  "description": "Unknown escape sequences are a parse error.",
+  "input": "{\"a\":\"\\x41\"}",
+  "reject": true
+}

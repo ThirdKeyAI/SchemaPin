@@ -1,0 +1,8 @@
+{
+  "name": "14-whitespace",
+  "description": "Insignificant whitespace (including tabs and CRLF) is removed.",
+  "input": "\t{\r\n\t\"a\" :\t[ 1 ,\r\n 2 ] ,\r\n \"b\" : { \"c\" : \"d e\" }\r\n}\r\n",
+  "reject": false,
+  "expected_canonical": "{\"a\":[1,2],\"b\":{\"c\":\"d e\"}}",
+  "expected_sha256": "cc64527e07932c1733c56833873e1a90e0a7df83c0c583b28bd3c3fe766cdb09"
+}

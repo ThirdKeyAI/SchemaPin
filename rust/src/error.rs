@@ -20,6 +20,9 @@ pub enum Error {
     #[error("Invalid key format")]
     InvalidKeyFormat,
 
+    #[error("Canonicalization error: {0}")]
+    Canonicalization(String),
+
     #[error("Discovery error: {0}")]
     Discovery(String),
 

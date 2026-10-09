@@ -41,7 +41,7 @@ fn signing_bytes(bundle: &SchemaPinTrustBundle) -> Result<String, Error> {
     if let Value::Object(map) = &mut value {
         map.insert("signature".to_string(), Value::String(String::new()));
     }
-    Ok(canonicalize_schema(&value))
+    canonicalize_schema(&value)
 }
 
 /// Sign a trust bundle with a bundle-authority key.
@@ -86,22 +86,24 @@ pub fn verify_trust_bundle(
     bundle: &SchemaPinTrustBundle,
     authority_pin_store: &mut KeyPinStore,
 ) -> Result<(), Error> {
-    let authority = bundle.bundle_authority.as_ref().ok_or(Error::Verification {
-        code: ErrorCode::BundleUnsigned,
-        message: "trust bundle has no bundle_authority".to_string(),
-    })?;
+    let authority = bundle
+        .bundle_authority
+        .as_ref()
+        .ok_or(Error::Verification {
+            code: ErrorCode::BundleUnsigned,
+            message: "trust bundle has no bundle_authority".to_string(),
+        })?;
     let signature = bundle.signature.as_ref().ok_or(Error::Verification {
         code: ErrorCode::BundleUnsigned,
         message: "trust bundle has no signature".to_string(),
     })?;
 
     if let Some(expires_at) = &bundle.expires_at {
-        let exp = chrono::DateTime::parse_from_rfc3339(expires_at).map_err(|e| {
-            Error::Verification {
+        let exp =
+            chrono::DateTime::parse_from_rfc3339(expires_at).map_err(|e| Error::Verification {
                 code: ErrorCode::BundleExpired,
                 message: format!("unparseable expires_at '{}': {}", expires_at, e),
-            }
-        })?;
+            })?;
         if chrono::Utc::now() > exp {
             return Err(Error::Verification {
                 code: ErrorCode::BundleExpired,
@@ -146,10 +148,7 @@ pub fn merge_trust_bundles(bundles: &[SchemaPinTrustBundle]) -> SchemaPinTrustBu
     let mut newest_ts = String::new();
 
     for b in bundles {
-        let ts = b
-            .signed_at
-            .clone()
-            .unwrap_or_else(|| b.created_at.clone());
+        let ts = b.signed_at.clone().unwrap_or_else(|| b.created_at.clone());
         if ts > newest_ts {
             newest_ts = ts.clone();
         }
@@ -214,13 +213,14 @@ pub fn build_trust_bundle_response(
 
 /// Extract the bundle from a `schemapin/trustBundle` JSON-RPC response.
 pub fn parse_trust_bundle_response(response: &Value) -> Result<SchemaPinTrustBundle, Error> {
-    let bundle = response
-        .get("result")
-        .and_then(|r| r.get("bundle"))
-        .ok_or(Error::Verification {
-            code: ErrorCode::DiscoveryInvalid,
-            message: "JSON-RPC response missing result.bundle".to_string(),
-        })?;
+    let bundle =
+        response
+            .get("result")
+            .and_then(|r| r.get("bundle"))
+            .ok_or(Error::Verification {
+                code: ErrorCode::DiscoveryInvalid,
+                message: "JSON-RPC response missing result.bundle".to_string(),
+            })?;
     Ok(serde_json::from_value(bundle.clone())?)
 }
 
@@ -266,7 +266,10 @@ mod tests {
 
         assert_eq!(signed.schemapin_bundle_version, "1.4");
         assert!(signed.signature.is_some());
-        assert_eq!(signed.bundle_authority.as_ref().unwrap().kid, "auth-2026-05");
+        assert_eq!(
+            signed.bundle_authority.as_ref().unwrap().kid,
+            "auth-2026-05"
+        );
 
         let mut store = KeyPinStore::new();
         verify_trust_bundle(&signed, &mut store).unwrap();

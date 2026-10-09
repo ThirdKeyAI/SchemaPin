@@ -1,0 +1,8 @@
+{
+  "name": "04-line-separators",
+  "description": "U+2028 and U+2029 are emitted literally.",
+  "input": "{\"text\":\"line sep para\"}",
+  "reject": false,
+  "expected_canonical": "{\"text\":\"line sep para\"}",
+  "expected_sha256": "711d9b90f63229ca7c83c20adbf73d72d406ebf81c10d63c3843a2baf27501aa"
+}

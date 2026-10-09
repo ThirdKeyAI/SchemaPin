@@ -231,7 +231,15 @@ pub fn verify_schema_offline_with_canonicalization(
     };
 
     // Step 5: Canonicalize schema and compute hash
-    let schema_hash = canonicalize_and_hash(schema);
+    let schema_hash = match canonicalize_and_hash(schema) {
+        Ok(h) => h,
+        Err(e) => {
+            return VerificationResult::failure(
+                ErrorCode::SchemaCanonicalizationFailed,
+                &format!("Failed to canonicalize schema: {}", e),
+            );
+        }
+    };
 
     // Step 6: Verify ECDSA signature
     let valid =
@@ -477,7 +485,7 @@ mod tests {
             "description": "Calculates the sum of two numbers",
             "parameters": { "a": "integer", "b": "integer" }
         });
-        let hash = canonicalize_and_hash(&schema);
+        let hash = canonicalize_and_hash(&schema).unwrap();
         let signature = sign_data(&kp.private_key_pem, &hash).unwrap();
         let discovery =
             build_well_known_response(&kp.public_key_pem, Some("Test Developer"), vec![], "1.2");
@@ -600,7 +608,7 @@ mod tests {
 
         // Now change the key
         let kp2 = generate_key_pair().unwrap();
-        let hash = canonicalize_and_hash(&f.schema);
+        let hash = canonicalize_and_hash(&f.schema).unwrap();
         let sig2 = sign_data(&kp2.private_key_pem, &hash).unwrap();
         let disc2 = build_well_known_response(
             &kp2.public_key_pem,
