@@ -5,7 +5,13 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-import requests
+
+class RevocationFetchError(RuntimeError):
+    """Raised when a declared revocation endpoint cannot be fetched or parsed.
+
+    Verification paths treat this as fail-closed (``DISCOVERY_FETCH_FAILED``)
+    unless the caller opts out with ``allow_unreachable_revocation=True``.
+    """
 
 
 class RevocationReason(Enum):
@@ -131,16 +137,17 @@ def check_revocation_combined(
 
 def fetch_revocation_document(
     url: str, timeout: int = 10
-) -> Optional[RevocationDocument]:
-    """Fetch a standalone revocation document from a URL.
+) -> RevocationDocument:
+    """Fetch a standalone revocation document from an ``https://`` URL.
 
-    Returns:
-        RevocationDocument if successful, None on failure.
+    Redirects are not followed, the response body is capped and the URL must
+    use ``https``. Raises :class:`RevocationFetchError` on any failure so that
+    callers fail closed; it never silently returns "no revocations".
     """
+    from .transport import TransportError, fetch_json
+
     try:
-        resp = requests.get(url, timeout=timeout)
-        resp.raise_for_status()
-        data = resp.json()
+        data = fetch_json(url, timeout=timeout)
         return RevocationDocument.from_dict(data)
-    except Exception:
-        return None
+    except (TransportError, KeyError, TypeError, ValueError) as e:
+        raise RevocationFetchError(f"failed to fetch revocation document {url}: {e}") from e

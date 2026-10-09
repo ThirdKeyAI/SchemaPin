@@ -243,8 +243,10 @@ func TestSchemaVerificationWorkflow_VerifySchema_AutoPin(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Extract domain from server URL
-	domain := strings.TrimPrefix(server.URL, "http://")
+	// Discovery is https-only and validates domains, so route requests for
+	// https://example.com through the mock handler instead of the network.
+	workflow.discovery = discovery.NewPublicKeyDiscoveryWithClient(mockClient(server))
+	domain := "example.com"
 
 	ctx := context.Background()
 	result, err := workflow.VerifySchema(ctx, schema, signature, "test-tool", domain, false)
@@ -336,8 +338,10 @@ func TestSchemaVerificationWorkflow_VerifySchema_PinnedKey(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Extract domain from server URL
-	domain := strings.TrimPrefix(server.URL, "http://")
+	// Discovery is https-only and validates domains, so route requests for
+	// https://example.com through the mock handler instead of the network.
+	workflow.discovery = discovery.NewPublicKeyDiscoveryWithClient(mockClient(server))
+	domain := "example.com"
 
 	ctx := context.Background()
 	result, err := workflow.VerifySchema(ctx, schema, signature, "test-tool", domain, false)
@@ -692,3 +696,20 @@ func BenchmarkFormatKeyFingerprint(b *testing.B) {
 		_ = FormatKeyFingerprint(fingerprint)
 	}
 }
+
+// mockClient returns an http.Client that serves every request from the
+// httptest server's handler regardless of the request host, so https-only
+// discovery for "example.com" can be exercised offline.
+func mockClient(server *httptest.Server) *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		rec := httptest.NewRecorder()
+		server.Config.Handler.ServeHTTP(rec, r)
+		resp := rec.Result()
+		resp.Request = r
+		return resp, nil
+	})}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

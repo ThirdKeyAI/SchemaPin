@@ -459,6 +459,7 @@ func TestInteractivePinKeyAutomatic(t *testing.T) {
 		t.Fatalf("Failed to create KeyPinning: %v", err)
 	}
 	defer pinning.Close()
+	pinning.SetRevocationChecker(func(string, string) (bool, error) { return true, nil })
 
 	toolID := "test-tool"
 	publicKeyPEM := "test-key"
@@ -503,10 +504,15 @@ func TestInteractivePinKeyWithMockServer(t *testing.T) {
 		t.Fatalf("Failed to create KeyPinning: %v", err)
 	}
 	defer pinning.Close()
+	pinning.SetRevocationChecker(func(string, string) (bool, error) { return true, nil })
 
 	toolID := "test-tool"
 	publicKeyPEM := "test-key"
-	domain := server.URL[7:] // Remove "http://" for domain
+	// Discovery is https-only and validates domains, so the mock server is
+	// not reachable through the real client; the revocation checker above
+	// stands in for it and the server only documents the expected shape.
+	_ = server
+	domain := "example.com"
 	developerName := "Test Developer"
 
 	result, err := pinning.InteractivePinKey(toolID, publicKeyPEM, domain, developerName)
@@ -533,6 +539,7 @@ func TestInteractivePinKeyReject(t *testing.T) {
 		t.Fatalf("Failed to create KeyPinning: %v", err)
 	}
 	defer pinning.Close()
+	pinning.SetRevocationChecker(func(string, string) (bool, error) { return true, nil })
 
 	toolID := "test-tool"
 	publicKeyPEM := "test-key"
@@ -633,6 +640,7 @@ func TestKeyChangeScenario(t *testing.T) {
 		t.Fatalf("Failed to create KeyPinning: %v", err)
 	}
 	defer pinning.Close()
+	pinning.SetRevocationChecker(func(string, string) (bool, error) { return true, nil })
 
 	toolID := "test-tool"
 	originalKey := "original-key"
@@ -680,6 +688,7 @@ func TestSameKeyUpdateVerification(t *testing.T) {
 		t.Fatalf("Failed to create KeyPinning: %v", err)
 	}
 	defer pinning.Close()
+	pinning.SetRevocationChecker(func(string, string) (bool, error) { return true, nil })
 
 	toolID := "test-tool"
 	publicKeyPEM := "test-key"

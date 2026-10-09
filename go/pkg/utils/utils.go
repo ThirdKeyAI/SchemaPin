@@ -156,11 +156,12 @@ func (s *SchemaVerificationWorkflow) VerifySchema(ctx context.Context, schema ma
 	var publicKey *ecdsa.PublicKey
 
 	if pinnedKeyPEM != "" {
-		// Use pinned key, but check if it's been revoked
+		// Use pinned key, but check if it's been revoked (fail-closed: an
+		// unreachable revocation source is a verification failure).
 		isNotRevoked, err := s.discovery.ValidateKeyNotRevoked(ctx, pinnedKeyPEM, domain)
 		if err != nil {
-			// If we can't check revocation, proceed with caution
-			isNotRevoked = true
+			result.Error = fmt.Sprintf("revocation status unavailable: %v", err)
+			return result, nil
 		}
 
 		if !isNotRevoked {
@@ -184,11 +185,11 @@ func (s *SchemaVerificationWorkflow) VerifySchema(ctx context.Context, schema ma
 			return result, nil
 		}
 
-		// Check if key is revoked
+		// Check if key is revoked (fail-closed)
 		isNotRevoked, err := s.discovery.ValidateKeyNotRevoked(ctx, discoveredKeyPEM, domain)
 		if err != nil {
-			// If we can't check revocation, proceed with caution
-			isNotRevoked = true
+			result.Error = fmt.Sprintf("revocation status unavailable: %v", err)
+			return result, nil
 		}
 
 		if !isNotRevoked {

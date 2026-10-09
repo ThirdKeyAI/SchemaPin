@@ -23,6 +23,12 @@ pub enum Error {
     #[error("Canonicalization error: {0}")]
     Canonicalization(String),
 
+    #[error("Invalid domain: {0}")]
+    InvalidDomain(String),
+
+    #[error("Transport error: {0}")]
+    Transport(String),
+
     #[error("Discovery error: {0}")]
     Discovery(String),
 
@@ -102,6 +108,17 @@ pub enum ErrorCode {
     /// (v1.4) A signed trust bundle's `expires_at` is in the past.
     #[serde(rename = "BUNDLE_EXPIRED")]
     BundleExpired,
+    /// A signature's `expires_at` is in the past (or unparseable) and the
+    /// caller did not opt in with `allow_expired`. Hard failure.
+    #[serde(rename = "SIGNATURE_EXPIRED")]
+    SignatureExpired,
+    /// The caller-supplied domain is not a valid RFC 1123 hostname.
+    #[serde(rename = "DOMAIN_INVALID")]
+    DomainInvalid,
+    /// A trust bundle's authority key is not pre-seeded in the authority
+    /// store and the caller did not opt in to first-use trust.
+    #[serde(rename = "BUNDLE_AUTHORITY_UNTRUSTED")]
+    BundleAuthorityUntrusted,
 }
 
 impl std::fmt::Display for ErrorCode {
@@ -119,6 +136,9 @@ impl std::fmt::Display for ErrorCode {
             ErrorCode::A2aScopeViolation => "A2A_SCOPE_VIOLATION",
             ErrorCode::BundleUnsigned => "BUNDLE_UNSIGNED",
             ErrorCode::BundleExpired => "BUNDLE_EXPIRED",
+            ErrorCode::SignatureExpired => "SIGNATURE_EXPIRED",
+            ErrorCode::DomainInvalid => "DOMAIN_INVALID",
+            ErrorCode::BundleAuthorityUntrusted => "BUNDLE_AUTHORITY_UNTRUSTED",
         };
         write!(f, "{}", s)
     }

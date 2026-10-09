@@ -279,9 +279,10 @@ class TestVerifySchema:
         assert result_data["verification_method"] == "public_key"
         assert "key_fingerprint" in result_data
 
+    @patch('schemapin.discovery.PublicKeyDiscovery.validate_key_not_revoked', return_value=True)
     @patch('schemapin.discovery.PublicKeyDiscovery.get_public_key_pem')
-    def test_verify_with_discovery(self, mock_get_key):
-        """Test verification with discovery."""
+    def test_verify_with_discovery(self, mock_get_key, _mock_not_revoked):
+        """Test verification with discovery (revocation check is fail-closed, so it is mocked)."""
         mock_get_key.return_value = self.public_key_pem
 
         # Test the underlying function directly instead of subprocess

@@ -1,9 +1,24 @@
+use crate::domain::validate_domain;
 use crate::error::Error;
 use crate::types::discovery::WellKnownResponse;
 
 /// Construct the `.well-known` URL for a domain.
-pub fn construct_well_known_url(domain: &str) -> String {
-    format!("https://{}/.well-known/schemapin.json", domain)
+///
+/// `domain` must be a bare hostname (an `https://` prefix is tolerated and
+/// stripped); `http://` is refused because the spec requires HTTPS and a
+/// plaintext first fetch would let a network attacker pin their own key.
+pub fn construct_well_known_url(domain: &str) -> Result<String, Error> {
+    if domain.starts_with("http://") {
+        return Err(Error::InvalidDomain(
+            "SchemaPin discovery requires https; http:// is not permitted".to_string(),
+        ));
+    }
+    let bare = domain
+        .strip_prefix("https://")
+        .unwrap_or(domain)
+        .trim_end_matches('/');
+    let normalized = validate_domain(bare)?;
+    Ok(format!("https://{}/.well-known/schemapin.json", normalized))
 }
 
 /// Validate a well-known response for basic structural requirements.
@@ -52,41 +67,15 @@ pub fn check_key_revocation(fingerprint: &str, revoked_keys: &[String]) -> bool 
 }
 
 /// Fetch a well-known response from a domain over HTTPS.
+///
+/// Uses the hardened transport: https only, no redirects, capped body,
+/// timeouts.
 #[cfg(feature = "fetch")]
 pub async fn fetch_well_known(domain: &str) -> Result<WellKnownResponse, Error> {
-    let url = construct_well_known_url(domain);
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
+    let url = construct_well_known_url(domain)?;
+    let well_known: WellKnownResponse = crate::transport::fetch_json(&url)
+        .await
         .map_err(|e| Error::Discovery(e.to_string()))?;
-
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| Error::Discovery(format!("Failed to fetch {}: {}", url, e)))?;
-
-    if resp.status().is_redirection() {
-        return Err(Error::Discovery(format!(
-            "Redirect detected fetching {} (status {}). Redirects are not allowed.",
-            url,
-            resp.status()
-        )));
-    }
-
-    if !resp.status().is_success() {
-        return Err(Error::Discovery(format!(
-            "HTTP {} fetching {}",
-            resp.status(),
-            url
-        )));
-    }
-
-    let well_known: WellKnownResponse = resp
-        .json()
-        .await
-        .map_err(|e| Error::Discovery(format!("Invalid JSON from {}: {}", url, e)))?;
-
     validate_well_known_response(&well_known)?;
     Ok(well_known)
 }
@@ -98,9 +87,28 @@ mod tests {
     #[test]
     fn test_construct_well_known_url() {
         assert_eq!(
-            construct_well_known_url("example.com"),
+            construct_well_known_url("example.com").unwrap(),
             "https://example.com/.well-known/schemapin.json"
         );
+        assert_eq!(
+            construct_well_known_url("https://Example.COM/").unwrap(),
+            "https://example.com/.well-known/schemapin.json"
+        );
+        for bad in [
+            "http://example.com",
+            "example.com:8080",
+            "example.com/x",
+            "10.0.0.1",
+            "localhost",
+            "../evil",
+            "good.com@evil.com",
+        ] {
+            assert!(
+                construct_well_known_url(bad).is_err(),
+                "{:?} must fail",
+                bad
+            );
+        }
     }
 
     #[test]

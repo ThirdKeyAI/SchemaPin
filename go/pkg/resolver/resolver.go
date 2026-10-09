@@ -7,11 +7,31 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ThirdKeyAi/schemapin/go/pkg/bundle"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/discovery"
+	"github.com/ThirdKeyAi/schemapin/go/pkg/domain"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/revocation"
 )
+
+// safeDomainPath joins a validated domain-derived file name onto baseDir and
+// makes sure the result stays inside baseDir (SP-16).
+func safeDomainPath(baseDir, domainName, suffix string) (string, error) {
+	normalized, err := domain.ValidateDomain(domainName)
+	if err != nil {
+		return "", err
+	}
+	root, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(root, normalized+suffix)
+	if path != root && !strings.HasPrefix(path, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("resolved path %s escapes %s", path, root)
+	}
+	return path, nil
+}
 
 // SchemaResolver is the interface for resolving discovery and revocation documents.
 type SchemaResolver interface {
@@ -37,6 +57,7 @@ func (r *WellKnownResolver) ResolveDiscovery(domain string) (*discovery.WellKnow
 }
 
 // ResolveRevocation fetches revocation from the discovery's revocation_endpoint.
+// A declared endpoint that cannot be fetched is an error (callers fail closed).
 func (r *WellKnownResolver) ResolveRevocation(domain string, disc *discovery.WellKnownResponse) (*revocation.RevocationDocument, error) {
 	if disc == nil || disc.RevocationEndpoint == "" {
 		return nil, nil
@@ -49,6 +70,10 @@ func (r *WellKnownResolver) ResolveRevocation(domain string, disc *discovery.Wel
 }
 
 // LocalFileResolver resolves discovery from local JSON files.
+//
+// The domain is validated and the resolved path must stay inside the
+// configured directory, so a hostile domain string cannot select an
+// arbitrary file.
 type LocalFileResolver struct {
 	discoveryDir  string
 	revocationDir string
@@ -63,9 +88,12 @@ func NewLocalFileResolver(discoveryDir, revocationDir string) *LocalFileResolver
 }
 
 // ResolveDiscovery reads {domain}.json from the discovery directory.
-func (r *LocalFileResolver) ResolveDiscovery(domain string) (*discovery.WellKnownResponse, error) {
-	path := filepath.Join(r.discoveryDir, domain+".json")
-	data, err := os.ReadFile(path) // #nosec G304 -- path constructed from trusted config directory + domain
+func (r *LocalFileResolver) ResolveDiscovery(domainName string) (*discovery.WellKnownResponse, error) {
+	path, err := safeDomainPath(r.discoveryDir, domainName, ".json")
+	if err != nil {
+		return nil, fmt.Errorf("invalid domain for local discovery: %w", err)
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- domain validated and path confined by safeDomainPath
 	if err != nil {
 		return nil, fmt.Errorf("failed to read discovery file: %w", err)
 	}
@@ -79,15 +107,21 @@ func (r *LocalFileResolver) ResolveDiscovery(domain string) (*discovery.WellKnow
 }
 
 // ResolveRevocation reads {domain}.revocations.json from the revocation directory.
-func (r *LocalFileResolver) ResolveRevocation(domain string, disc *discovery.WellKnownResponse) (*revocation.RevocationDocument, error) {
+func (r *LocalFileResolver) ResolveRevocation(domainName string, disc *discovery.WellKnownResponse) (*revocation.RevocationDocument, error) {
 	if r.revocationDir == "" {
 		return nil, nil
 	}
 
-	path := filepath.Join(r.revocationDir, domain+".revocations.json")
-	data, err := os.ReadFile(path) // #nosec G304 -- path constructed from trusted config directory + domain
+	path, err := safeDomainPath(r.revocationDir, domainName, ".revocations.json")
 	if err != nil {
-		return nil, nil // Missing file is not an error
+		return nil, fmt.Errorf("invalid domain for local revocation: %w", err)
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- domain validated and path confined by safeDomainPath
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // Missing file is not an error
+		}
+		return nil, fmt.Errorf("failed to read revocation file: %w", err)
 	}
 
 	var doc revocation.RevocationDocument
@@ -132,6 +166,10 @@ func (r *TrustBundleResolver) ResolveRevocation(domain string, disc *discovery.W
 }
 
 // ChainResolver tries multiple resolvers in order, returning the first success.
+//
+// Precedence is positional: put the most trusted source first. A revocation
+// fetch failure from any member propagates (fail-closed) instead of being
+// skipped.
 type ChainResolver struct {
 	resolvers []SchemaResolver
 }
@@ -157,11 +195,16 @@ func (r *ChainResolver) ResolveDiscovery(domain string) (*discovery.WellKnownRes
 	return nil, fmt.Errorf("no resolvers available")
 }
 
-// ResolveRevocation tries each resolver in order.
+// ResolveRevocation tries each resolver in order. The first error is returned
+// rather than skipped: a declared-but-unreachable revocation source must not
+// silently degrade to "not revoked".
 func (r *ChainResolver) ResolveRevocation(domain string, disc *discovery.WellKnownResponse) (*revocation.RevocationDocument, error) {
 	for _, resolver := range r.resolvers {
 		doc, err := resolver.ResolveRevocation(domain, disc)
-		if err == nil && doc != nil {
+		if err != nil {
+			return nil, err
+		}
+		if doc != nil {
 			return doc, nil
 		}
 	}

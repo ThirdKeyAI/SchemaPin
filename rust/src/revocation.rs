@@ -60,33 +60,16 @@ pub fn check_revocation_combined(
     Ok(())
 }
 
-/// Fetch a revocation document from a URL.
+/// Fetch a revocation document from an `https://` URL.
+///
+/// Uses the hardened transport (no redirects, capped body, timeouts). Any
+/// failure is an error so callers fail closed; it never silently yields "no
+/// revocations".
 #[cfg(feature = "fetch")]
 pub async fn fetch_revocation_document(url: &str) -> Result<RevocationDocument, Error> {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
+    let doc: RevocationDocument = crate::transport::fetch_json(url)
+        .await
         .map_err(|e| Error::Revocation(e.to_string()))?;
-
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| Error::Revocation(format!("Failed to fetch {}: {}", url, e)))?;
-
-    if !resp.status().is_success() {
-        return Err(Error::Revocation(format!(
-            "HTTP {} fetching {}",
-            resp.status(),
-            url
-        )));
-    }
-
-    let doc: RevocationDocument = resp
-        .json()
-        .await
-        .map_err(|e| Error::Revocation(format!("Invalid JSON from {}: {}", url, e)))?;
-
     Ok(doc)
 }
 

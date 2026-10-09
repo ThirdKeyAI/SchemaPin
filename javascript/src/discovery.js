@@ -3,6 +3,9 @@
  */
 
 import { KeyManager } from './crypto.js';
+import { InvalidDomainError, validateDomain } from './domain.js';
+import { checkRevocation, fetchRevocationDocument, RevocationFetchError } from './revocation.js';
+import { DEFAULT_TIMEOUT_MS, fetchJson } from './transport.js';
 
 /**
  * Handles public key discovery from .well-known endpoints.
@@ -15,10 +18,16 @@ export class PublicKeyDiscovery {
      * @returns {string} Full .well-known URI
      */
     static constructWellKnownUrl(domain) {
-        if (!domain.startsWith('http://') && !domain.startsWith('https://')) {
-            domain = `https://${domain}`;
+        if (typeof domain !== 'string') {
+            throw new InvalidDomainError('domain must be a string');
         }
-        return new URL('/.well-known/schemapin.json', domain).toString();
+        if (domain.startsWith('http://')) {
+            throw new InvalidDomainError('SchemaPin discovery requires https; http:// is not permitted');
+        }
+        if (domain.startsWith('https://')) {
+            domain = domain.slice('https://'.length).replace(/\/+$/, '');
+        }
+        return `https://${validateDomain(domain)}/.well-known/schemapin.json`;
     }
 
     /**
@@ -28,6 +37,9 @@ export class PublicKeyDiscovery {
      * @returns {boolean} True if response is valid, false otherwise
      */
     static validateWellKnownResponse(responseData) {
+        if (responseData === null || typeof responseData !== 'object' || Array.isArray(responseData)) {
+            return false;
+        }
         const requiredFields = ['schema_version', 'public_key_pem'];
         return requiredFields.every(field => field in responseData);
     }
@@ -39,33 +51,15 @@ export class PublicKeyDiscovery {
      * @param {number} timeout - Request timeout in milliseconds (default: 10000)
      * @returns {Promise<Object|null>} Parsed response data if valid, null otherwise
      */
-    static async fetchWellKnown(domain, timeout = 10000) {
+    static async fetchWellKnown(domain, timeout = DEFAULT_TIMEOUT_MS) {
         try {
             const url = this.constructWellKnownUrl(domain);
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), timeout);
-            
-            const response = await fetch(url, {
-                signal: controller.signal,
-                headers: {
-                    'Accept': 'application/json',
-                    'User-Agent': 'SchemaPin/1.0'
-                }
-            });
-            
-            clearTimeout(timeoutId);
-            
-            if (!response.ok) {
-                return null;
-            }
-            
-            const data = await response.json();
+            const data = await fetchJson(url, timeout);
             if (this.validateWellKnownResponse(data)) {
                 return data;
             }
             return null;
-            
-        } catch (error) {
+        } catch {
             return null;
         }
     }
@@ -77,7 +71,7 @@ export class PublicKeyDiscovery {
      * @param {number} timeout - Request timeout in milliseconds (default: 10000)
      * @returns {Promise<string|null>} PEM-encoded public key if found, null otherwise
      */
-    static async getPublicKeyPem(domain, timeout = 10000) {
+    static async getPublicKeyPem(domain, timeout = DEFAULT_TIMEOUT_MS) {
         const wellKnownData = await this.fetchWellKnown(domain, timeout);
         if (wellKnownData) {
             return wellKnownData.public_key_pem;
@@ -92,7 +86,7 @@ export class PublicKeyDiscovery {
      * @param {number} timeout - Request timeout in milliseconds (default: 10000)
      * @returns {Promise<Object|null>} Object with developer info if available, null otherwise
      */
-    static async getDeveloperInfo(domain, timeout = 10000) {
+    static async getDeveloperInfo(domain, timeout = DEFAULT_TIMEOUT_MS) {
         const wellKnownData = await this.fetchWellKnown(domain, timeout);
         if (wellKnownData) {
             return {
@@ -119,9 +113,9 @@ export class PublicKeyDiscovery {
         try {
             const fingerprint = KeyManager.calculateKeyFingerprint(publicKeyPem);
             return revokedKeys.includes(fingerprint);
-        } catch (error) {
-            // If we can't calculate fingerprint, assume not revoked
-            return false;
+        } catch {
+            // A key that cannot be fingerprinted cannot be trusted either.
+            return true;
         }
     }
 
@@ -132,7 +126,7 @@ export class PublicKeyDiscovery {
      * @param {number} timeout - Request timeout in milliseconds (default: 10000)
      * @returns {Promise<Array<string>|null>} Array of revoked key fingerprints if available, null otherwise
      */
-    static async getRevokedKeys(domain, timeout = 10000) {
+    static async getRevokedKeys(domain, timeout = DEFAULT_TIMEOUT_MS) {
         const wellKnownData = await this.fetchWellKnown(domain, timeout);
         if (wellKnownData) {
             return wellKnownData.revoked_keys || [];
@@ -141,20 +135,44 @@ export class PublicKeyDiscovery {
     }
 
     /**
-     * Validate that a public key is not revoked.
+     * Validate that a public key is not revoked (fail-closed).
+     *
+     * Consults both the inline `revoked_keys` list and, when the discovery
+     * document declares one, the standalone `revocation_endpoint`. If either
+     * cannot be fetched the key is treated as not validated and `false` is
+     * returned, unless `allowUnreachable` is true.
      *
      * @param {string} publicKeyPem - PEM-encoded public key string
      * @param {string} domain - Tool provider domain
      * @param {number} timeout - Request timeout in milliseconds (default: 10000)
-     * @returns {Promise<boolean>} True if key is not revoked, false if revoked or error
+     * @param {boolean} [allowUnreachable=false] - Treat fetch failures as "not revoked"
+     * @returns {Promise<boolean>} True if the key is confirmed not revoked
      */
-    static async validateKeyNotRevoked(publicKeyPem, domain, timeout = 10000) {
-        const revokedKeys = await this.getRevokedKeys(domain, timeout);
-        if (revokedKeys === null) {
-            // If we can't fetch revocation list, assume not revoked
-            return true;
+    static async validateKeyNotRevoked(publicKeyPem, domain, timeout = DEFAULT_TIMEOUT_MS, allowUnreachable = false) {
+        const wellKnown = await this.fetchWellKnown(domain, timeout);
+        if (wellKnown === null) {
+            return allowUnreachable;
         }
-
-        return !this.checkKeyRevocation(publicKeyPem, revokedKeys);
+        if (this.checkKeyRevocation(publicKeyPem, wellKnown.revoked_keys || [])) {
+            return false;
+        }
+        const endpoint = wellKnown.revocation_endpoint;
+        if (endpoint) {
+            let doc;
+            try {
+                doc = await fetchRevocationDocument(endpoint, timeout);
+            } catch (e) {
+                if (e instanceof RevocationFetchError) {
+                    return allowUnreachable;
+                }
+                throw e;
+            }
+            try {
+                checkRevocation(doc, KeyManager.calculateKeyFingerprint(publicKeyPem));
+            } catch {
+                return false;
+            }
+        }
+        return true;
     }
 }

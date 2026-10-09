@@ -50,6 +50,10 @@ type DomainPolicy struct {
 	CreatedAt time.Time     `json:"created_at"`
 }
 
+// RevocationChecker reports whether publicKeyPEM is confirmed not revoked for
+// domain. An error means the status could not be determined (fail-closed).
+type RevocationChecker func(publicKeyPEM, domain string) (bool, error)
+
 // KeyPinning manages TOFU key storage with BoltDB
 type KeyPinning struct {
 	db                 *bbolt.DB
@@ -57,6 +61,22 @@ type KeyPinning struct {
 	mode               PinningMode
 	interactiveManager *interactive.InteractivePinningManager
 	discovery          *discovery.PublicKeyDiscovery
+	checkRevoked       RevocationChecker
+}
+
+// SetRevocationChecker replaces the discovery-backed revocation check used by
+// the interactive pinning flows (for custom resolvers or offline bundles).
+func (k *KeyPinning) SetRevocationChecker(fn RevocationChecker) {
+	k.checkRevoked = fn
+}
+
+func (k *KeyPinning) revocationChecker() RevocationChecker {
+	if k.checkRevoked != nil {
+		return k.checkRevoked
+	}
+	return func(publicKeyPEM, domain string) (bool, error) {
+		return k.discovery.ValidateKeyNotRevokedWithTimeout(publicKeyPEM, domain, 10*time.Second)
+	}
 }
 
 var (
@@ -399,11 +419,11 @@ func (k *KeyPinning) interactivePinKeyWithOptions(toolID, publicKeyPEM, domain, 
 
 // handleFirstTimeKey handles first-time key encounter
 func (k *KeyPinning) handleFirstTimeKey(toolID, domain, publicKeyPEM, developerName string, forcePrompt bool) (bool, error) {
-	// Check if key is revoked
-	isNotRevoked, err := k.discovery.ValidateKeyNotRevokedWithTimeout(publicKeyPEM, domain, 10*time.Second)
+	// Check if key is revoked. Fail-closed: an unreachable revocation source
+	// means the key cannot be trusted.
+	isNotRevoked, err := k.revocationChecker()(publicKeyPEM, domain)
 	if err != nil {
-		// If we can't check revocation, proceed with caution
-		isNotRevoked = true
+		return false, fmt.Errorf("revocation status unavailable (fail-closed): %w", err)
 	}
 
 	if !isNotRevoked {
@@ -459,10 +479,10 @@ func (k *KeyPinning) handleFirstTimeKey(toolID, domain, publicKeyPEM, developerN
 
 // handleKeyChange handles key change scenario
 func (k *KeyPinning) handleKeyChange(toolID, domain, currentKeyPEM, newKeyPEM, developerName string) (bool, error) {
-	// Check if new key is revoked
-	isNotRevoked, err := k.discovery.ValidateKeyNotRevokedWithTimeout(newKeyPEM, domain, 10*time.Second)
+	// Check if new key is revoked (fail-closed)
+	isNotRevoked, err := k.revocationChecker()(newKeyPEM, domain)
 	if err != nil {
-		isNotRevoked = true // Assume not revoked if check fails
+		return false, fmt.Errorf("revocation status unavailable (fail-closed): %w", err)
 	}
 
 	if !isNotRevoked {

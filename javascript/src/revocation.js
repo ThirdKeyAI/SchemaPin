@@ -2,6 +2,21 @@
  * Standalone revocation documents for SchemaPin v1.2.
  */
 
+import { DEFAULT_TIMEOUT_MS, fetchJson, TransportError } from './transport.js';
+
+/**
+ * Thrown when a declared revocation endpoint cannot be fetched or parsed.
+ *
+ * Verification paths treat this as fail-closed (`DISCOVERY_FETCH_FAILED`)
+ * unless the caller opts out with `allowUnreachableRevocation`.
+ */
+export class RevocationFetchError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'RevocationFetchError';
+    }
+}
+
 /**
  * Revocation reason constants.
  */
@@ -80,26 +95,29 @@ export function checkRevocationCombined(simpleRevoked, revocationDoc, fingerprin
 }
 
 /**
- * Fetch a standalone revocation document from a URL.
+ * Fetch a standalone revocation document from an https:// URL.
+ *
+ * Redirects are not followed, the response body is capped and the URL must
+ * use https. Throws {@link RevocationFetchError} on any failure so that
+ * callers fail closed; it never silently resolves to "no revocations".
  *
  * @param {string} url - URL to fetch from
  * @param {number} timeout - Timeout in milliseconds (default: 10000)
- * @returns {Promise<Object|null>} Revocation document or null on failure
+ * @returns {Promise<Object>} Revocation document
+ * @throws {RevocationFetchError}
  */
-export async function fetchRevocationDocument(url, timeout = 10000) {
+export async function fetchRevocationDocument(url, timeout = DEFAULT_TIMEOUT_MS) {
+    let data;
     try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-        const response = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-            return null;
+        data = await fetchJson(url, timeout);
+    } catch (e) {
+        if (e instanceof TransportError) {
+            throw new RevocationFetchError(`failed to fetch revocation document ${url}: ${e.message}`);
         }
-
-        return await response.json();
-    } catch {
-        return null;
+        throw e;
     }
+    if (data === null || typeof data !== 'object' || !Array.isArray(data.revoked_keys) || typeof data.domain !== 'string') {
+        throw new RevocationFetchError(`revocation document from ${url} is malformed`);
+    }
+    return data;
 }

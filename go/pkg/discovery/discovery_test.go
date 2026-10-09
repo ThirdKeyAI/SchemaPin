@@ -26,24 +26,29 @@ func TestConstructWellKnownURL(t *testing.T) {
 			expected: "https://example.com/.well-known/schemapin.json",
 		},
 		{
-			name:     "domain with http",
-			domain:   "http://example.com",
-			expected: "http://example.com/.well-known/schemapin.json",
-		},
-		{
-			name:     "domain with port",
-			domain:   "example.com:8080",
-			expected: "https://example.com:8080/.well-known/schemapin.json",
+			name:     "mixed case is normalized",
+			domain:   "Example.COM",
+			expected: "https://example.com/.well-known/schemapin.json",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ConstructWellKnownURL(tt.domain)
+			result, err := ConstructWellKnownURL(tt.domain)
+			if err != nil {
+				t.Fatalf("ConstructWellKnownURL(%q) error: %v", tt.domain, err)
+			}
 			if result != tt.expected {
 				t.Errorf("ConstructWellKnownURL(%q) = %q, want %q", tt.domain, result, tt.expected)
 			}
 		})
+	}
+
+	// SP-11: plaintext, ports, paths, IP literals and traversal are refused.
+	for _, bad := range []string{"http://example.com", "example.com:8080", "example.com/x", "10.0.0.1", "localhost", "../evil", "good.com@evil.com"} {
+		if _, err := ConstructWellKnownURL(bad); err == nil {
+			t.Errorf("ConstructWellKnownURL(%q) must fail", bad)
+		}
 	}
 }
 
@@ -109,10 +114,12 @@ func TestCheckKeyRevocation(t *testing.T) {
 			expected:    false,
 		},
 		{
-			name:        "key not revoked - not in list",
+			// A key that cannot be fingerprinted cannot be cleared against a
+			// non-empty revocation list (fail-closed).
+			name:        "unparseable key with revocations - treated as revoked",
 			publicKey:   "test-key",
 			revokedKeys: []string{"other-key", "another-key"},
-			expected:    false,
+			expected:    true,
 		},
 		{
 			name:        "key revoked - direct match",
@@ -166,7 +173,7 @@ func TestPublicKeyDiscoveryFetchWellKnown(t *testing.T) {
 	domain := server.URL[7:] // Remove "http://"
 
 	// Override the URL construction to use HTTP for testing
-	originalURL := discovery.ConstructWellKnownURL(domain)
+	originalURL, _ := discovery.ConstructWellKnownURL(domain)
 	testURL := server.URL + "/.well-known/schemapin.json"
 
 	// Create a custom request

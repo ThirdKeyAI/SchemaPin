@@ -1,6 +1,6 @@
 module github.com/ThirdKeyAi/schemapin/go
 
-go 1.22
+go 1.23
 
 toolchain go1.26.0
 

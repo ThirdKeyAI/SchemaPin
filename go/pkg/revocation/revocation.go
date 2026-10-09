@@ -3,10 +3,11 @@ package revocation
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/ThirdKeyAi/schemapin/go/pkg/transport"
 )
 
 // RevocationReason represents why a key was revoked.
@@ -80,29 +81,26 @@ func CheckRevocationCombined(simpleRevoked []string, doc *RevocationDocument, fi
 	return nil
 }
 
-// FetchRevocationDocument fetches a standalone revocation document from a URL.
+// FetchRevocationDocument fetches a standalone revocation document from an
+// https:// URL. Redirects are not followed, the body is capped and the URL
+// must use https. Any failure is returned as an error so callers fail closed;
+// it never silently yields "no revocations".
 func FetchRevocationDocument(ctx context.Context, url string) (*RevocationDocument, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
+	return FetchRevocationDocumentWithClient(ctx, nil, url)
+}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+// FetchRevocationDocumentWithClient is FetchRevocationDocument with an explicit
+// client (nil means a hardened default with a 10s timeout).
+func FetchRevocationDocumentWithClient(ctx context.Context, client *http.Client, url string) (*RevocationDocument, error) {
+	if client == nil {
+		client = transport.NewClient(10 * time.Second)
 	}
-
-	resp, err := client.Do(req) // #nosec G704 -- URL is from discovery document's revocation_endpoint
-	if err != nil {
+	var doc RevocationDocument
+	if err := transport.FetchJSON(ctx, client, url, &doc); err != nil {
 		return nil, fmt.Errorf("failed to fetch revocation document: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	if doc.Domain == "" {
+		return nil, fmt.Errorf("failed to fetch revocation document: missing domain")
 	}
-
-	var doc RevocationDocument
-	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
-		return nil, fmt.Errorf("failed to decode revocation document: %w", err)
-	}
-
 	return &doc, nil
 }
