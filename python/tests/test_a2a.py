@@ -21,7 +21,6 @@ from schemapin import (
     verify_schema_offline,
 )
 
-
 # ──────────────────────────────────────────────────────────────────────
 # AllowedDomains helpers (mirrors AgentPin v0.3 §4.11 semantics)
 # ──────────────────────────────────────────────────────────────────────

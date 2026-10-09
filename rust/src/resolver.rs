@@ -181,8 +181,16 @@ impl TrustBundleResolver {
     }
 
     /// Build from a JSON string representing a [`SchemaPinTrustBundle`].
+    /// Bundles with duplicate domain entries are rejected so lookups are
+    /// unambiguous.
     pub fn from_json(json: &str) -> Result<Self, Error> {
         let bundle: SchemaPinTrustBundle = serde_json::from_str(json)?;
+        if let Some(dup) = crate::bundle::duplicate_domain(&bundle) {
+            return Err(Error::Discovery(format!(
+                "trust bundle has duplicate entries for domain {:?}",
+                dup
+            )));
+        }
         Ok(Self::new(&bundle))
     }
 }

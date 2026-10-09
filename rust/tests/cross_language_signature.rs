@@ -30,7 +30,10 @@ fn fixed_schema_signature_verifies() {
     assert_eq!(canonical, v.canonical);
     let digest = hash_canonical(&canonical);
     assert_eq!(hex::encode(&digest), v.sha256);
-    assert_eq!(calculate_key_id(&v.public_key_pem).unwrap(), v.key_fingerprint);
+    assert_eq!(
+        calculate_key_id(&v.public_key_pem).unwrap(),
+        v.key_fingerprint
+    );
     assert!(verify_signature(&v.public_key_pem, &digest, &v.signature).unwrap());
 }
 
@@ -47,7 +50,8 @@ fn tampered_schema_and_trailing_der_bytes_rejected() {
 #[test]
 fn non_p256_public_keys_rejected() {
     for name in ["reject-p384-public.pem", "reject-rsa2048-public.pem"] {
-        let pem = std::fs::read_to_string(format!("../tests/cross-language/keys/{}", name)).unwrap();
+        let pem =
+            std::fs::read_to_string(format!("../tests/cross-language/keys/{}", name)).unwrap();
         assert!(calculate_key_id(&pem).is_err(), "{} must be rejected", name);
         assert!(
             verify_signature(&pem, b"x", "AAAA").is_err(),

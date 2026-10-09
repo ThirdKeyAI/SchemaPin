@@ -125,9 +125,26 @@ class LocalFileResolver(SchemaResolver):
 
 
 class TrustBundleResolver(SchemaResolver):
-    """Resolves discovery from an in-memory trust bundle."""
+    """Resolves discovery from an in-memory trust bundle.
+
+    Only load bundles you have verified with
+    :func:`schemapin.bundle_distribution.verify_trust_bundle`. Bundles with
+    duplicate domain entries are rejected (``ValueError``) so lookups are
+    unambiguous.
+    """
 
     def __init__(self, bundle: SchemaPinTrustBundle):
+        seen: set = set()
+        for doc in bundle.documents:
+            domain = doc.get("domain")
+            if domain in seen:
+                raise ValueError(f"trust bundle has duplicate entries for domain {domain!r}")
+            seen.add(domain)
+        seen = set()
+        for rev in bundle.revocations:
+            if rev.domain in seen:
+                raise ValueError(f"trust bundle has duplicate entries for domain {rev.domain!r}")
+            seen.add(rev.domain)
         self._bundle = bundle
 
     @classmethod

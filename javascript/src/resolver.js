@@ -7,7 +7,7 @@ import { join, resolve, sep } from 'node:path';
 
 import { PublicKeyDiscovery } from './discovery.js';
 import { fetchRevocationDocument, RevocationFetchError } from './revocation.js';
-import { findDiscovery, findRevocation, parseTrustBundle } from './bundle.js';
+import { findDiscovery, findDuplicateDomain, findRevocation, parseTrustBundle } from './bundle.js';
 import { validateDomain } from './domain.js';
 
 /**
@@ -123,10 +123,17 @@ export class LocalFileResolver extends SchemaResolver {
 
 /**
  * Resolves discovery from an in-memory trust bundle.
+ *
+ * Only load bundles you have verified with `verifyTrustBundle`. Bundles with
+ * duplicate domain entries are rejected so lookups are unambiguous.
  */
 export class TrustBundleResolver extends SchemaResolver {
     constructor(bundle) {
         super();
+        const dup = findDuplicateDomain(bundle);
+        if (dup !== null) {
+            throw new Error(`trust bundle has duplicate entries for domain ${JSON.stringify(dup)}`);
+        }
         this._bundle = bundle;
     }
 

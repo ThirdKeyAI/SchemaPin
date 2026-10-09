@@ -11,7 +11,6 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePublicKey,
 )
 
-
 #: The only curve SchemaPin accepts (spec section 10: "not valid ECDSA P-256
 #: keys MUST be rejected").
 REQUIRED_CURVE = "secp256r1"

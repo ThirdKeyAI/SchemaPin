@@ -2,6 +2,7 @@
 """SchemaPin key generation tool."""
 
 import argparse
+import os
 import json
 import sys
 from pathlib import Path
@@ -67,6 +68,16 @@ def calculate_rsa_fingerprint(public_key):
     fingerprint = hashes.Hash(hashes.SHA256())
     fingerprint.update(der_bytes)
     return f"sha256:{fingerprint.finalize().hex()}"
+
+
+def write_private_file(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` with owner-only permissions (0600)."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    os.chmod(path, 0o600)
 
 
 def main():
@@ -191,12 +202,13 @@ Examples:
         private_key_file = args.output_dir / f"{args.prefix}_private{ext}"
         public_key_file = args.output_dir / f"{args.prefix}_public{ext}"
 
-        # Write key files
+        # Write key files. The private key is created with mode 0600 so it is
+        # never world-readable, regardless of the process umask.
         if args.format == 'pem':
-            private_key_file.write_text(private_key_data)
+            write_private_file(private_key_file, private_key_data.encode('utf-8'))
             public_key_file.write_text(public_key_data)
         else:  # DER
-            private_key_file.write_bytes(private_key_data)
+            write_private_file(private_key_file, private_key_data)
             public_key_file.write_bytes(public_key_data)
 
         # Generate .well-known template if requested

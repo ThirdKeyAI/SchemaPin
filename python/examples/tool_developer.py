@@ -2,6 +2,7 @@
 """Example tool developer workflow for signing schemas."""
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -72,8 +73,9 @@ def main():
     # Step 5: Save files for demonstration
     print("\n5. Saving demonstration files...")
 
-    # Save private key (in real use, keep this secure!)
-    with open("demo_private_key.pem", "w") as f:
+    # Save private key with owner-only permissions (in real use, keep this secure!)
+    fd = os.open("demo_private_key.pem", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         f.write(private_key_pem)
 
     # Save schema with signature

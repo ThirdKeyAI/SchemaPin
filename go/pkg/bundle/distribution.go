@@ -7,30 +7,46 @@ package bundle
 // Provides:
 //
 //   - SignTrustBundle / VerifyTrustBundle — ECDSA P-256 over the canonical
-//     bundle bytes, with TOFU pinning of the authority key by kid.
-//   - MergeTrustBundles — combine bundles from multiple sources, newest entry
-//     wins per domain.
+//     bundle bytes, with an authority allow-list: the authority key must be
+//     pre-seeded in the AuthorityPinStore (SeedBundleAuthority) unless the
+//     caller explicitly opts in to first-use trust.
+//   - MergeTrustBundles — combine bundles from multiple sources with
+//     per-authority precedence and parsed-timestamp tie-breaking.
 //   - BuildTrustBundleRequest / BuildTrustBundleResponse /
 //     ParseTrustBundleResponse — the schemapin/trustBundle JSON-RPC envelope
 //     for A2A bundle exchange.
 //
 // # Signing input
 //
-// The signature covers the schemapin-v1 canonicalization (recursive sorted
-// keys, compact, UTF-8) of the entire bundle object with the signature field
-// set to the empty string "". All four SDKs build the identical byte string,
-// so a bundle signed by any SDK verifies in every other.
+// The signature covers the schemapin-v1 canonicalization of the bundle's
+// known fields (unknown fields are ignored and therefore unprotected) with the
+// signature field set to the empty string "". All four SDKs build the
+// identical byte string, so a bundle signed by any SDK verifies in every other.
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"time"
 
+	"github.com/ThirdKeyAi/schemapin/go/pkg/core"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/crypto"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/revocation"
 )
+
+var rfc3339Strict = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$`)
+
+func parseRFC3339Strict(value string) (time.Time, bool) {
+	if !rfc3339Strict.MatchString(value) {
+		return time.Time{}, false
+	}
+	ts, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return ts.UTC(), true
+}
 
 // ErrorCode mirrors ErrorCode for the bundle-distribution error
 // surface. The values are kept identical to the verification package so callers
@@ -50,9 +66,70 @@ const (
 	ErrKeyPinMismatch ErrorCode = "key_pin_mismatch"
 	// ErrSignatureInvalid — the bundle signature does not verify.
 	ErrSignatureInvalid ErrorCode = "signature_invalid"
-	// ErrDiscoveryInvalid — a JSON-RPC response was missing result.bundle.
+	// ErrDiscoveryInvalid — a JSON-RPC response was missing result.bundle, or
+	// a bundle carries duplicate domain entries.
 	ErrDiscoveryInvalid ErrorCode = "discovery_invalid"
+	// ErrKeyNotFound — the bundle authority public key is not a valid P-256 key.
+	ErrKeyNotFound ErrorCode = "key_not_found"
+	// ErrBundleAuthorityUntrusted — the authority kid is not in the allow-list
+	// and first-use trust was not allowed.
+	ErrBundleAuthorityUntrusted ErrorCode = "bundle_authority_untrusted"
 )
+
+// BundleVerification is the successful outcome of VerifyTrustBundleWithOptions.
+// FirstUse is true when the authority key was not pre-seeded and the caller
+// allowed first-use trust; hosts should surface this exactly like a first-use
+// tool key.
+type BundleVerification struct {
+	Kid         string
+	Fingerprint string
+	FirstUse    bool
+}
+
+// BundleVerifyOptions tunes VerifyTrustBundleWithOptions.
+type BundleVerifyOptions struct {
+	// AllowFirstUse pins an unknown authority on first use (TOFU) instead of
+	// failing with ErrBundleAuthorityUntrusted.
+	AllowFirstUse bool
+}
+
+// SeedBundleAuthority pre-seeds the expected fingerprint (sha256:<hex>) of a
+// bundle authority. This is the allow-list entry VerifyTrustBundle requires.
+func SeedBundleAuthority(store *AuthorityPinStore, kid, fingerprint string) {
+	store.Seed(kid, BundleAuthorityPinDomain, fingerprint)
+}
+
+// SeedBundleAuthorityFromPEM seeds an authority from its PEM public key (for
+// example the public_key_pem of the authority's own discovery document) and
+// returns the fingerprint.
+func SeedBundleAuthorityFromPEM(store *AuthorityPinStore, kid, publicKeyPEM string) (string, error) {
+	fingerprint, err := crypto.NewKeyManager().CalculateKeyFingerprintFromPEM(publicKeyPEM)
+	if err != nil {
+		return "", err
+	}
+	SeedBundleAuthority(store, kid, fingerprint)
+	return fingerprint, nil
+}
+
+// DuplicateDomain returns a domain that appears more than once in the bundle's
+// documents or revocations, or "" when every domain is unique.
+func DuplicateDomain(b *SchemaPinTrustBundle) string {
+	seen := map[string]bool{}
+	for _, d := range b.Documents {
+		if seen[d.Domain] {
+			return d.Domain
+		}
+		seen[d.Domain] = true
+	}
+	seen = map[string]bool{}
+	for _, r := range b.Revocations {
+		if seen[r.Domain] {
+			return r.Domain
+		}
+		seen[r.Domain] = true
+	}
+	return ""
+}
 
 // BundleVersionSigned is the bundle-distribution wire format version stamped on
 // signed bundles.
@@ -78,20 +155,10 @@ func newBundleError(code ErrorCode, msg string) *BundleError {
 	return &BundleError{Code: code, Message: msg}
 }
 
-// canonicalizeValue recursively sorts object keys and marshals to compact JSON
-// with HTML escaping disabled, matching the Rust serde_json output used by
-// canonicalize_schema. HTML escaping MUST be off so that '<', '>' and '&' are
-// emitted literally (Go's encoding/json escapes them to \u00xx by default,
-// which would diverge from every other SDK).
+// canonicalizeValue produces the schemapin-v1 canonical form shared by every
+// signing path in this module.
 func canonicalizeValue(v interface{}) (string, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return "", err
-	}
-	// json.Encoder appends a trailing newline; trim it.
-	return string(bytes.TrimRight(buf.Bytes(), "\n")), nil
+	return core.CanonicalizeValue(v)
 }
 
 // signingBytes builds the canonical bytes that a bundle's signature covers: the
@@ -217,6 +284,10 @@ func SignTrustBundle(b *SchemaPinTrustBundle, privateKeyPEM, kid, signedAt, expi
 		return nil, fmt.Errorf("failed to export public key: %w", err)
 	}
 
+	if dup := DuplicateDomain(b); dup != "" {
+		return nil, newBundleError(ErrDiscoveryInvalid, fmt.Sprintf("trust bundle has duplicate entries for domain %q", dup))
+	}
+
 	signed := b.clone()
 	signed.SchemapinBundleVersion = BundleVersionSigned
 	signed.BundleAuthority = &BundleAuthority{Kid: kid, PublicKeyPEM: publicKeyPEM}
@@ -240,32 +311,47 @@ func SignTrustBundle(b *SchemaPinTrustBundle, privateKeyPEM, kid, signedAt, expi
 	return signed, nil
 }
 
-// VerifyTrustBundle verifies a signed trust bundle and TOFU-pins its authority
-// key by kid.
+// VerifyTrustBundle verifies a signed trust bundle against the authority
+// allow-list: the authority kid must already be seeded in authorityPinStore
+// (SeedBundleAuthority) or verification fails with ErrBundleAuthorityUntrusted.
+// Use VerifyTrustBundleWithOptions to allow first-use pinning.
+func VerifyTrustBundle(b *SchemaPinTrustBundle, authorityPinStore *AuthorityPinStore) error {
+	_, err := VerifyTrustBundleWithOptions(b, authorityPinStore, BundleVerifyOptions{})
+	return err
+}
+
+// VerifyTrustBundleWithOptions verifies a signed trust bundle.
 //
 // Steps: require bundle_authority + signature (else ErrBundleUnsigned); reject
-// when expires_at is in the past or unparseable (ErrBundleExpired); TOFU-pin
-// the authority's key fingerprint by kid (mismatch -> ErrKeyPinMismatch);
-// verify the signature over the canonical bytes (failure -> ErrSignatureInvalid).
+// duplicate domains (ErrDiscoveryInvalid); reject when expires_at is in the
+// past or not strict RFC 3339 (ErrBundleExpired); look the authority's key
+// fingerprint up by kid -- a different pinned key is ErrKeyPinMismatch, an
+// unknown kid is ErrBundleAuthorityUntrusted unless opts.AllowFirstUse; verify
+// the signature over the canonical bytes (ErrSignatureInvalid); pin the
+// authority on first use only after the signature verified.
 //
-// On a verification failure the returned error is a *BundleError whose Code is
-// the relevant ErrorCode.
-func VerifyTrustBundle(b *SchemaPinTrustBundle, authorityPinStore *AuthorityPinStore) error {
+// The bundle carries its own public key, so without an allow-list any
+// self-signed bundle under a fresh kid would pass. Treat AllowFirstUse exactly
+// like TOFU for a tool key (prompt the user, log it).
+func VerifyTrustBundleWithOptions(b *SchemaPinTrustBundle, authorityPinStore *AuthorityPinStore, opts BundleVerifyOptions) (*BundleVerification, error) {
 	if b.BundleAuthority == nil {
-		return newBundleError(ErrBundleUnsigned, "trust bundle has no bundle_authority")
+		return nil, newBundleError(ErrBundleUnsigned, "trust bundle has no bundle_authority")
 	}
 	if b.Signature == "" {
-		return newBundleError(ErrBundleUnsigned, "trust bundle has no signature")
+		return nil, newBundleError(ErrBundleUnsigned, "trust bundle has no signature")
+	}
+	if dup := DuplicateDomain(b); dup != "" {
+		return nil, newBundleError(ErrDiscoveryInvalid, fmt.Sprintf("trust bundle has duplicate entries for domain %q", dup))
 	}
 
 	if b.ExpiresAt != "" {
-		exp, err := time.Parse(time.RFC3339, b.ExpiresAt)
-		if err != nil {
-			return newBundleError(ErrBundleExpired,
-				fmt.Sprintf("unparseable expires_at '%s': %v", b.ExpiresAt, err))
+		exp, ok := parseRFC3339Strict(b.ExpiresAt)
+		if !ok {
+			return nil, newBundleError(ErrBundleExpired,
+				fmt.Sprintf("unparseable expires_at '%s'", b.ExpiresAt))
 		}
 		if time.Now().After(exp) {
-			return newBundleError(ErrBundleExpired,
+			return nil, newBundleError(ErrBundleExpired,
 				fmt.Sprintf("trust bundle expired at %s", b.ExpiresAt))
 		}
 	}
@@ -273,70 +359,135 @@ func VerifyTrustBundle(b *SchemaPinTrustBundle, authorityPinStore *AuthorityPinS
 	km := crypto.NewKeyManager()
 	fingerprint, err := km.CalculateKeyFingerprintFromPEM(b.BundleAuthority.PublicKeyPEM)
 	if err != nil {
-		return fmt.Errorf("failed to fingerprint authority key: %w", err)
+		return nil, newBundleError(ErrKeyNotFound, fmt.Sprintf("bundle authority key is invalid: %v", err))
 	}
-	if authorityPinStore.CheckAndPin(b.BundleAuthority.Kid, BundleAuthorityPinDomain, fingerprint) == PinningResultChanged {
-		return newBundleError(ErrKeyPinMismatch,
-			fmt.Sprintf("bundle authority key for kid '%s' has changed since last pinned", b.BundleAuthority.Kid))
+	if authorityPinStore == nil {
+		authorityPinStore = NewAuthorityPinStore()
+	}
+	pinResult := authorityPinStore.Check(b.BundleAuthority.Kid, BundleAuthorityPinDomain, fingerprint)
+	switch {
+	case pinResult == PinningResultChanged:
+		return nil, newBundleError(ErrKeyPinMismatch,
+			fmt.Sprintf("bundle authority key for kid '%s' does not match the seeded authority key", b.BundleAuthority.Kid))
+	case pinResult == PinningResultFirstUse && !opts.AllowFirstUse:
+		return nil, newBundleError(ErrBundleAuthorityUntrusted,
+			fmt.Sprintf("bundle authority kid '%s' is not in the authority allow-list; seed it with SeedBundleAuthority or set AllowFirstUse", b.BundleAuthority.Kid))
 	}
 
 	pub, err := km.LoadPublicKeyPEM(b.BundleAuthority.PublicKeyPEM)
 	if err != nil {
-		return fmt.Errorf("failed to load authority public key: %w", err)
+		return nil, newBundleError(ErrKeyNotFound, fmt.Sprintf("failed to load authority public key: %v", err))
 	}
 
 	canonical, err := signingBytes(b)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sm := crypto.NewSignatureManager()
 	if !sm.VerifySignature([]byte(canonical), b.Signature, pub) {
-		return newBundleError(ErrSignatureInvalid, "trust bundle signature does not verify")
+		return nil, newBundleError(ErrSignatureInvalid, "trust bundle signature does not verify")
 	}
-	return nil
+	if pinResult == PinningResultFirstUse {
+		authorityPinStore.Pin(b.BundleAuthority.Kid, BundleAuthorityPinDomain, fingerprint)
+	}
+	return &BundleVerification{
+		Kid:         b.BundleAuthority.Kid,
+		Fingerprint: fingerprint,
+		FirstUse:    pinResult == PinningResultFirstUse,
+	}, nil
+}
+
+// mergeRank orders bundles for MergeTrustBundles: higher wins. The first
+// component is authority precedence, the second the parsed timestamp.
+type mergeRank struct {
+	precedence int
+	ts         time.Time
+}
+
+func (r mergeRank) greater(o mergeRank) bool {
+	if r.precedence != o.precedence {
+		return r.precedence > o.precedence
+	}
+	return r.ts.After(o.ts)
+}
+
+func rankOf(b *SchemaPinTrustBundle, precedence []string) mergeRank {
+	rank := 0
+	if len(precedence) > 0 {
+		rank = -len(precedence) - 1
+		if b.BundleAuthority != nil {
+			for i, kid := range precedence {
+				if kid == b.BundleAuthority.Kid {
+					rank = -i
+					break
+				}
+			}
+		}
+	}
+	raw := b.SignedAt
+	if raw == "" {
+		raw = b.CreatedAt
+	}
+	ts, ok := parseRFC3339Strict(raw)
+	if !ok {
+		ts = time.Time{}
+	}
+	return mergeRank{precedence: rank, ts: ts}
 }
 
 // MergeTrustBundles merges trust bundles, deduplicating discovery + revocation
 // documents by domain. When two bundles carry the same domain, the entry from
-// the bundle with the newer timestamp (signed_at, else created_at) wins.
-//
-// The result is an unsigned bundle (a merge cannot carry a single authority's
-// signature) stamped schemapin_bundle_version = "1.4" with created_at set to
-// the newest source timestamp, sorted by domain. Re-sign it with
-// SignTrustBundle before redistribution.
+// the bundle with the newer parsed timestamp (signed_at, else created_at)
+// wins; unparseable timestamps rank oldest. Equivalent to
+// MergeTrustBundlesWithPrecedence(bundles, nil).
 func MergeTrustBundles(bundles []*SchemaPinTrustBundle) *SchemaPinTrustBundle {
+	return MergeTrustBundlesWithPrecedence(bundles, nil)
+}
+
+// MergeTrustBundlesWithPrecedence is MergeTrustBundles with per-authority
+// precedence: authorityPrecedence lists authority kids, earlier wins; bundles
+// from unlisted or absent authorities rank last; the parsed timestamp breaks
+// ties. Merge only bundles you have already verified with VerifyTrustBundle.
+//
+// The result is an unsigned bundle stamped schemapin_bundle_version = "1.4"
+// with created_at set to the newest source timestamp, sorted by domain.
+// Re-sign it with SignTrustBundle before redistribution.
+func MergeTrustBundlesWithPrecedence(bundles []*SchemaPinTrustBundle, authorityPrecedence []string) *SchemaPinTrustBundle {
 	type docEntry struct {
-		ts  string
-		doc BundledDiscovery
+		rank mergeRank
+		doc  BundledDiscovery
 	}
 	type revEntry struct {
-		ts  string
-		rev revocation.RevocationDocument
+		rank mergeRank
+		rev  revocation.RevocationDocument
 	}
 
 	docs := map[string]docEntry{}
 	revs := map[string]revEntry{}
-	newestTS := ""
+	var newest *mergeRank
+	newestRaw := ""
 
 	for _, b := range bundles {
-		ts := b.SignedAt
-		if ts == "" {
-			ts = b.CreatedAt
-		}
-		if ts > newestTS {
-			newestTS = ts
+		rank := rankOf(b, authorityPrecedence)
+		if newest == nil || rank.ts.After(newest.ts) {
+			r := rank
+			newest = &r
+			newestRaw = b.SignedAt
+			if newestRaw == "" {
+				newestRaw = b.CreatedAt
+			}
 		}
 		for _, d := range b.Documents {
-			if existing, ok := docs[d.Domain]; ok && existing.ts >= ts {
+			if existing, ok := docs[d.Domain]; ok && !rank.greater(existing.rank) {
 				continue
 			}
-			docs[d.Domain] = docEntry{ts: ts, doc: d}
+			docs[d.Domain] = docEntry{rank: rank, doc: d}
 		}
 		for _, r := range b.Revocations {
-			if existing, ok := revs[r.Domain]; ok && existing.ts >= ts {
+			if existing, ok := revs[r.Domain]; ok && !rank.greater(existing.rank) {
 				continue
 			}
-			revs[r.Domain] = revEntry{ts: ts, rev: r}
+			revs[r.Domain] = revEntry{rank: rank, rev: r}
 		}
 	}
 
@@ -354,7 +505,7 @@ func MergeTrustBundles(bundles []*SchemaPinTrustBundle) *SchemaPinTrustBundle {
 
 	return &SchemaPinTrustBundle{
 		SchemapinBundleVersion: BundleVersionSigned,
-		CreatedAt:              newestTS,
+		CreatedAt:              newestRaw,
 		Documents:              documents,
 		Revocations:            revocations,
 	}
