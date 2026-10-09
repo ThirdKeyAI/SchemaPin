@@ -1,0 +1,8 @@
+{
+  "name": "34-float-17-digits",
+  "description": "Floats with 17 significant digits must be parsed with correct rounding; a best-effort parser (serde_json without float_roundtrip) yields a different double and therefore different bytes.",
+  "input": "[-118307074858543.23,0.30000000000000004,1.7976931348623157e-10,9007199254740991.0,0.1,123456789012.34567]",
+  "reject": false,
+  "expected_canonical": "[-118307074858543.23,0.30000000000000004,1.7976931348623158e-10,9007199254740991,0.1,123456789012.34567]",
+  "expected_sha256": "4ab42896d9ef9b7cdcfb50b9b9ff1b4994e6508e9cb9088405dbfed63e9c6818"
+}
