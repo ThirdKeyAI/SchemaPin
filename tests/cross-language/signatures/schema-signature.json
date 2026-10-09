@@ -1,0 +1,67 @@
+{
+  "name": "schema-signature-p256",
+  "description": "ECDSA P-256 schema signature. Scheme: DER(ECDSA(SHA-256(digest))) where digest = SHA-256(canonical UTF-8 bytes). Verifiers must accept `signature`, reject `signature_with_trailing_byte` (DER trailing data) and reject `signature` over `tampered_schema`.",
+  "scheme": "ecdsa-p256-sha256-over-sha256-digest",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdaZK0oMLh47IvVYYe8bP2g2ko4c0\nJUmPmN2ecEQreZ9u8oTd0dzrdZRiFDuKcYPGqjSJNCIl/aE5ebj7SRXxjQ==\n-----END PUBLIC KEY-----\n",
+  "key_fingerprint": "sha256:bbdd8a900c49dbc8600300a54422f79f24f45977c09907a09e0072528d903c13",
+  "schema": {
+    "name": "get_weather",
+    "description": "Get weather for a city & region",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "city": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "units": {
+          "type": "string",
+          "enum": [
+            "metric",
+            "imperial"
+          ]
+        },
+        "days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 14
+        }
+      },
+      "required": [
+        "city"
+      ]
+    }
+  },
+  "canonical": "{\"description\":\"Get weather for a city & region\",\"inputSchema\":{\"properties\":{\"city\":{\"maxLength\":100,\"type\":\"string\"},\"days\":{\"maximum\":14,\"minimum\":1,\"type\":\"integer\"},\"units\":{\"enum\":[\"metric\",\"imperial\"],\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"name\":\"get_weather\"}",
+  "sha256": "0a61bf006ee496152c71d4355f1c4c82d63df4093b33ef964a96347537f45277",
+  "signature": "MEYCIQD/59EsPUV+mrMLILxdqc4Pp42+HGr4xA8TWZ1UZnyOqwIhAOJN8r8kdZaUgDOR1sWXWt8nBZ6qdpR0WrM0EWmys41z",
+  "signature_with_trailing_byte": "MEYCIQD/59EsPUV+mrMLILxdqc4Pp42+HGr4xA8TWZ1UZnyOqwIhAOJN8r8kdZaUgDOR1sWXWt8nBZ6qdpR0WrM0EWmys41zAA==",
+  "tampered_schema": {
+    "name": "get_weather",
+    "description": "Get weather for a city & region",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "city": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "units": {
+          "type": "string",
+          "enum": [
+            "metric",
+            "imperial"
+          ]
+        },
+        "days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 15
+        }
+      },
+      "required": [
+        "city"
+      ]
+    }
+  }
+}

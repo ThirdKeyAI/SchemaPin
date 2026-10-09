@@ -45,3 +45,48 @@ def test_canonicalization_vector(vector):
         SchemaPinCore.canonicalize_schema(SchemaPinCore.parse_schema_json(canonical))
         == canonical
     )
+
+
+# ---------------------------------------------------------------------------
+# Fixed ECDSA signature vector (SP-2) and key-policy fixtures (SP-10, SP-19)
+# ---------------------------------------------------------------------------
+
+SIGNATURES = os.path.join(ROOT, "tests", "cross-language", "signatures")
+KEYS = os.path.join(ROOT, "tests", "cross-language", "keys")
+
+
+def _load_json(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def test_schema_signature_vector_verifies():
+    from schemapin.crypto import KeyManager, SignatureManager
+
+    v = _load_json(os.path.join(SIGNATURES, "schema-signature.json"))
+    canonical = SchemaPinCore.canonicalize_schema(v["schema"])
+    assert canonical == v["canonical"]
+    digest = SchemaPinCore.hash_canonical(canonical)
+    assert digest.hex() == v["sha256"]
+    public_key = KeyManager.load_public_key_pem(v["public_key_pem"])
+    assert KeyManager.calculate_key_fingerprint(public_key) == v["key_fingerprint"]
+    assert SignatureManager.verify_schema_signature(digest, v["signature"], public_key)
+    # Tampered schema must fail.
+    tampered = SchemaPinCore.canonicalize_and_hash(v["tampered_schema"])
+    assert not SignatureManager.verify_schema_signature(tampered, v["signature"], public_key)
+    # DER trailing bytes must fail.
+    assert not SignatureManager.verify_schema_signature(
+        digest, v["signature_with_trailing_byte"], public_key
+    )
+
+
+@pytest.mark.parametrize("name", ["reject-p384-public.pem", "reject-rsa2048-public.pem"])
+def test_non_p256_public_keys_rejected(name):
+    from schemapin.crypto import KeyManager
+
+    with open(os.path.join(KEYS, name), encoding="utf-8") as f:
+        pem = f.read()
+    with pytest.raises(ValueError):
+        KeyManager.load_public_key_pem(pem)
+    with pytest.raises(ValueError):
+        KeyManager.calculate_key_fingerprint_from_pem(pem)

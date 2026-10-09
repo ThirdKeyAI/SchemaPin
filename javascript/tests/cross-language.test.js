@@ -43,3 +43,45 @@ describe('cross-language canonicalization corpus', () => {
         });
     }
 });
+
+// ---------------------------------------------------------------------------
+// Fixed ECDSA signature vector (SP-2) and key-policy fixtures (SP-10, SP-19)
+// ---------------------------------------------------------------------------
+
+import { KeyManager, SignatureManager } from '../src/crypto.js';
+
+const SIGNATURES = resolve(HERE, '..', '..', 'tests', 'cross-language', 'signatures');
+const KEYS = resolve(HERE, '..', '..', 'tests', 'cross-language', 'keys');
+
+describe('cross-language signature vector', () => {
+    const v = JSON.parse(readFileSync(join(SIGNATURES, 'schema-signature.json'), 'utf-8'));
+
+    test('fixed P-256 schema signature verifies', () => {
+        const canonical = SchemaPinCore.canonicalizeSchema(v.schema);
+        assert.strictEqual(canonical, v.canonical);
+        const digest = SchemaPinCore.hashCanonical(canonical);
+        assert.strictEqual(digest.toString('hex'), v.sha256);
+        assert.strictEqual(KeyManager.calculateKeyFingerprint(v.public_key_pem), v.key_fingerprint);
+        assert.strictEqual(SignatureManager.verifySchemaSignature(digest, v.signature, v.public_key_pem), true);
+    });
+
+    test('tampered schema and DER trailing bytes are rejected', () => {
+        const digest = SchemaPinCore.hashCanonical(v.canonical);
+        const tampered = SchemaPinCore.canonicalizeAndHash(v.tampered_schema);
+        assert.strictEqual(SignatureManager.verifySchemaSignature(tampered, v.signature, v.public_key_pem), false);
+        assert.strictEqual(
+            SignatureManager.verifySchemaSignature(digest, v.signature_with_trailing_byte, v.public_key_pem),
+            false
+        );
+    });
+
+    for (const name of ['reject-p384-public.pem', 'reject-rsa2048-public.pem']) {
+        test(`non-P-256 key rejected: ${name}`, () => {
+            const pem = readFileSync(join(KEYS, name), 'utf-8');
+            assert.throws(() => KeyManager.loadPublicKeyPem(pem), /only prime256v1|not an ECDSA key/);
+            assert.throws(() => KeyManager.calculateKeyFingerprint(pem), /only prime256v1|not an ECDSA key/);
+            const digest = SchemaPinCore.hashCanonical(v.canonical);
+            assert.strictEqual(SignatureManager.verifySignature(digest, v.signature, pem), false);
+        });
+    }
+});

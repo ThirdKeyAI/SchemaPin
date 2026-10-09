@@ -2,7 +2,26 @@
  * Cryptographic operations for SchemaPin using ECDSA P-256.
  */
 
-import { createSign, createVerify, generateKeyPairSync, createHash, createPublicKey } from 'crypto';
+import { createSign, createVerify, generateKeyPairSync, createHash, createPublicKey, createPrivateKey } from 'crypto';
+
+/** The only curve SchemaPin accepts (spec section 10). */
+export const REQUIRED_CURVE = 'prime256v1';
+
+/**
+ * Throw unless `keyObject` is an EC key on P-256 (prime256v1 / secp256r1).
+ *
+ * @param {import('crypto').KeyObject} keyObject
+ * @param {string} what - label for the error message
+ */
+function assertP256(keyObject, what) {
+    if (keyObject.asymmetricKeyType !== 'ec') {
+        throw new Error(`${what} is not an ECDSA key (got ${keyObject.asymmetricKeyType})`);
+    }
+    const curve = keyObject.asymmetricKeyDetails?.namedCurve;
+    if (curve !== REQUIRED_CURVE) {
+        throw new Error(`${what} uses curve ${curve}; only ${REQUIRED_CURVE} (P-256) is accepted`);
+    }
+}
 
 /**
  * Manages ECDSA P-256 key generation and serialization.
@@ -50,22 +69,26 @@ export class KeyManager {
     }
 
     /**
-     * Load private key from PEM format.
-     * 
+     * Load private key from PEM format, rejecting anything but ECDSA P-256.
+     *
      * @param {string} pemData - PEM-encoded private key string
-     * @returns {string} ECDSA private key
+     * @returns {string} ECDSA private key (PEM)
+     * @throws {Error} if the key is not an EC key on prime256v1
      */
     static loadPrivateKeyPem(pemData) {
+        assertP256(createPrivateKey(pemData), 'private key');
         return pemData;
     }
 
     /**
-     * Load public key from PEM format.
-     * 
+     * Load public key from PEM format, rejecting anything but ECDSA P-256.
+     *
      * @param {string} pemData - PEM-encoded public key string
-     * @returns {string} ECDSA public key
+     * @returns {string} ECDSA public key (PEM)
+     * @throws {Error} if the key is not an EC key on prime256v1
      */
     static loadPublicKeyPem(pemData) {
+        assertP256(createPublicKey(pemData), 'public key');
         return pemData;
     }
 
@@ -78,6 +101,7 @@ export class KeyManager {
     static calculateKeyFingerprint(publicKeyPem) {
         // Convert PEM to DER format for consistent fingerprinting
         const keyObject = createPublicKey(publicKeyPem);
+        assertP256(keyObject, 'public key');
         const der = keyObject.export({ type: 'spki', format: 'der' });
         const hash = createHash('sha256').update(der).digest('hex');
         return `sha256:${hash}`;
@@ -89,16 +113,24 @@ export class KeyManager {
  */
 export class SignatureManager {
     /**
-     * Sign hash using ECDSA P-256 and return Base64-encoded signature.
-     * 
-     * @param {Buffer} hashBytes - SHA-256 hash to sign
-     * @param {string} privateKey - ECDSA private key in PEM format
-     * @returns {string} Base64-encoded signature
+     * Sign data using ECDSA P-256 with SHA-256 and return a Base64 signature.
+     *
+     * The ECDSA input is SHA-256(hashBytes); for schema and legacy skill
+     * signatures `hashBytes` is itself the canonical SHA-256 digest, for
+     * bundles and v1.4 skill signature documents it is the canonical bytes.
+     * Every SDK applies exactly this construction.
+     *
+     * @param {Buffer} hashBytes - Bytes to sign
+     * @param {string} privateKey - ECDSA P-256 private key in PEM format
+     * @returns {string} Base64-encoded DER signature
+     * @throws {Error} if the private key is not ECDSA P-256
      */
     static signHash(hashBytes, privateKey) {
+        const keyObject = createPrivateKey(privateKey);
+        assertP256(keyObject, 'private key');
         const sign = createSign('SHA256');
         sign.update(hashBytes);
-        const signature = sign.sign(privateKey);
+        const signature = sign.sign(keyObject);
         return signature.toString('base64');
     }
 
@@ -112,10 +144,12 @@ export class SignatureManager {
      */
     static verifySignature(hashBytes, signatureB64, publicKey) {
         try {
+            const keyObject = createPublicKey(publicKey);
+            assertP256(keyObject, 'public key');
             const verify = createVerify('SHA256');
             verify.update(hashBytes);
             const signature = Buffer.from(signatureB64, 'base64');
-            return verify.verify(publicKey, signature);
+            return verify.verify(keyObject, signature);
         } catch (error) {
             return false;
         }

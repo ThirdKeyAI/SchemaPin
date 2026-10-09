@@ -2,7 +2,7 @@
 
 import base64
 import hashlib
-from typing import Tuple
+from typing import Any, Tuple
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -10,6 +10,21 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
     EllipticCurvePrivateKey,
     EllipticCurvePublicKey,
 )
+
+
+#: The only curve SchemaPin accepts (spec section 10: "not valid ECDSA P-256
+#: keys MUST be rejected").
+REQUIRED_CURVE = "secp256r1"
+
+
+def _require_p256(key: Any, what: str) -> None:
+    """Raise ``ValueError`` unless ``key`` is an ECDSA key on secp256r1."""
+    if not isinstance(key, (EllipticCurvePrivateKey, EllipticCurvePublicKey)):
+        raise ValueError(f"{what} is not an ECDSA key (got {type(key).__name__})")
+    if key.curve.name != REQUIRED_CURVE:
+        raise ValueError(
+            f"{what} uses curve {key.curve.name}; only {REQUIRED_CURVE} (P-256) is accepted"
+        )
 
 
 class KeyManager:
@@ -72,11 +87,16 @@ class KeyManager:
 
         Returns:
             ECDSA private key
+
+        Raises:
+            ValueError: If the key is not an ECDSA P-256 (secp256r1) key.
         """
-        return serialization.load_pem_private_key(
+        key = serialization.load_pem_private_key(
             pem_data.encode('utf-8'),
             password=None
         )
+        _require_p256(key, "private key")
+        return key  # type: ignore[return-value]
 
     @staticmethod
     def load_public_key_pem(pem_data: str) -> EllipticCurvePublicKey:
@@ -88,8 +108,13 @@ class KeyManager:
 
         Returns:
             ECDSA public key
+
+        Raises:
+            ValueError: If the key is not an ECDSA P-256 (secp256r1) key.
         """
-        return serialization.load_pem_public_key(pem_data.encode('utf-8'))
+        key = serialization.load_pem_public_key(pem_data.encode('utf-8'))
+        _require_p256(key, "public key")
+        return key  # type: ignore[return-value]
 
     @staticmethod
     def calculate_key_fingerprint(public_key: EllipticCurvePublicKey) -> str:
@@ -130,15 +155,24 @@ class SignatureManager:
     @staticmethod
     def sign_hash(hash_bytes: bytes, private_key: EllipticCurvePrivateKey) -> str:
         """
-        Sign hash using ECDSA P-256 and return Base64-encoded signature.
+        Sign data using ECDSA P-256 with SHA-256 and return a Base64 signature.
+
+        The ECDSA input is ``SHA-256(hash_bytes)``; for schema and legacy skill
+        signatures ``hash_bytes`` is itself the canonical SHA-256 digest, for
+        bundles and v1.4 skill signature documents it is the canonical bytes.
+        Every SDK applies exactly this construction.
 
         Args:
-            hash_bytes: SHA-256 hash to sign
-            private_key: ECDSA private key
+            hash_bytes: Bytes to sign
+            private_key: ECDSA P-256 private key
 
         Returns:
-            Base64-encoded signature
+            Base64-encoded DER signature
+
+        Raises:
+            ValueError: If the private key is not ECDSA P-256.
         """
+        _require_p256(private_key, "private key")
         signature = private_key.sign(hash_bytes, ec.ECDSA(hashes.SHA256()))
         return base64.b64encode(signature).decode('ascii')
 
@@ -153,10 +187,12 @@ class SignatureManager:
             public_key: ECDSA public key
 
         Returns:
-            True if signature is valid, False otherwise
+            True if signature is valid, False otherwise (including when the
+            public key is not ECDSA P-256 or the DER signature is malformed)
         """
         try:
-            signature = base64.b64decode(signature_b64)
+            _require_p256(public_key, "public key")
+            signature = base64.b64decode(signature_b64, validate=True)
             public_key.verify(signature, hash_bytes, ec.ECDSA(hashes.SHA256()))
             return True
         except Exception:

@@ -23,7 +23,6 @@ package bundle
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -230,9 +229,10 @@ func SignTrustBundle(b *SchemaPinTrustBundle, privateKeyPEM, kid, signedAt, expi
 		return nil, err
 	}
 
-	hash := sha256.Sum256([]byte(canonical))
+	// SignHash applies SHA-256 itself, so pass the canonical bytes directly:
+	// the signature is ECDSA over SHA-256(canonical), identical to every SDK.
 	sm := crypto.NewSignatureManager()
-	sig, err := sm.SignHash(hash[:], priv)
+	sig, err := sm.SignHash([]byte(canonical), priv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign bundle: %w", err)
 	}
@@ -289,9 +289,8 @@ func VerifyTrustBundle(b *SchemaPinTrustBundle, authorityPinStore *AuthorityPinS
 	if err != nil {
 		return err
 	}
-	hash := sha256.Sum256([]byte(canonical))
 	sm := crypto.NewSignatureManager()
-	if !sm.VerifySignature(hash[:], b.Signature, pub) {
+	if !sm.VerifySignature([]byte(canonical), b.Signature, pub) {
 		return newBundleError(ErrSignatureInvalid, "trust bundle signature does not verify")
 	}
 	return nil
