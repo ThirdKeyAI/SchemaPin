@@ -203,7 +203,7 @@ A publisher rolling a chain SHOULD:
 2. When signing v_{n+1}, set `previous_hash = skill_hash_of_v_n`.
 3. Distribute v_{n+1} so verifiers can resolve v_n (e.g., publish both, or include v_n's hash in a registry).
 
-A verifier enforcing the chain SHOULD maintain a per-tool `latest_known_hash` next to the TOFU public-key pin. On encountering a new signature with `previous_hash`:
+A verifier enforcing the chain SHOULD maintain a per-tool `latest_known_hash` next to the TOFU public-key pin. Every SDK ships this as `LineageStore` (`check_and_advance(tool_id, domain, signature)` returns `first_use`, `unchanged` or `advanced`; `seed` pre-loads a trusted head; `to_json` / `from_json` persist it). Only feed it documents that already verified and that use the signed-document format (`schemapin_version >= "1.4"`); legacy 1.3 documents carry an unsigned `skill_hash` and are refused. On encountering a new signature with `previous_hash`:
 
 | State | Action |
 |-------|--------|

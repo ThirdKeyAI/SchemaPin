@@ -274,12 +274,15 @@ from schemapin.utils import SchemaVerificationWorkflow
 
 workflow = SchemaVerificationWorkflow()
 
+# auto_pin=False (the default) never pins: first-use keys must be accepted
+# interactively (KeyPinning in PinningMode.INTERACTIVE) or pre-seeded.
+# auto_pin=True trusts whatever the domain serves on first use -- only use
+# it where a human or a second channel (DNS TXT) has confirmed the key.
 result = workflow.verify_schema(
     schema=schema,
     signature_b64=signature,
     tool_id="example.com/calculate_sum",
     domain="example.com",
-    auto_pin=True,
 )
 
 if result["valid"]:
@@ -361,7 +364,7 @@ const result = verifySkillOffline('./my-skill/', discoveryData, sig, null, pinSt
 - [Skill Signing](skill-signing.md) — SkillSigner deep dive
 - [Trust Bundles](trust-bundles.md) — Offline and air-gapped verification
 - [Revocation](revocation.md) — Rotate keys and serve signed revocation documents
-- [Signature Expiration](signature-expiration.md) — v1.4-alpha (all 4 languages): `expires_at` and degraded-not-failed verification
+- [Signature Expiration](signature-expiration.md) — v1.4-alpha (all 4 languages): `expires_at`, signed and fail-closed
 - [DNS TXT Cross-Verification](dns-txt.md) — v1.4-alpha (all 4 languages): second-channel `_schemapin.{domain}` lookups
 - [Schema Version Binding](schema-version-binding.md) — v1.4-alpha (all 4 languages): `schema_version` + `previous_hash` lineage chain
 - [A2A Verification Context](a2a-context.md) — v1.4-alpha (all 4 languages): scope verification to caller-trusted domains

@@ -32,10 +32,30 @@ Consumers:
 - `go/pkg/core/cross_language_test.go`
 - `rust/tests/cross_language_canonicalization.rs`
 
+## `signatures/schema-signature.json`
+
+A fixed ECDSA P-256 schema signature: the schema, its canonical form and
+SHA-256, the public key and fingerprint, the signature, a copy of the signature
+with a trailing DER byte (must be rejected) and a tampered schema (must be
+rejected). Proves the signing construction `ECDSA(SHA-256(digest))` is shared.
+
+## `skill/`
+
+`fixture-skill/` is a skill directory with a v1.4 signed signature document
+(skill canonicalization v2); `legacy-v13-skill/` carries a pre-1.4 root-hash
+only signature. `expected.json` lists the expected `skill_hash` and
+`file_manifest` for both, the discovery document to verify against, and the
+signed fields whose tampering must fail. Both directories must verify in every
+SDK; the v1.4 one must fail for every tampered field and for any content
+change.
+
 ## `signed_bundle.json`
 
-A v1.4 signed trust bundle. See the `keys/` section below for the test
-authority that signed it.
+A v1.4 signed trust bundle signed by the test-only authority
+`schemapin-test-fixture-authority`. Each SDK's test seeds that authority from
+`keys/test-only-bundle-authority.pub.pem` and asserts the bundle verifies,
+that it is refused without seeding, and that a different seeded key is
+reported as `KEY_PIN_MISMATCH`.
 
 ## `keys/`
 
@@ -43,3 +63,9 @@ Test-only key material. Nothing in this directory is a production identity:
 the bundle authority kid is deliberately named `schemapin-test-fixture-authority`
 so it cannot be mistaken for a real authority, and verifiers must never seed a
 persistent authority store with it outside of a test run.
+
+| File | Purpose |
+|------|---------|
+| `test-only-signing-key.pem` / `.pub.pem` | Signs the schema vector and the skill fixtures |
+| `test-only-bundle-authority.pem` / `.pub.pem` | Signs `signed_bundle.json` |
+| `reject-p384-public.pem`, `reject-rsa2048-public.pem` | Keys every SDK must refuse (spec section 10) |

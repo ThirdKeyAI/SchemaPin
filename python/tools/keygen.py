@@ -2,8 +2,8 @@
 """SchemaPin key generation tool."""
 
 import argparse
-import os
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -88,14 +88,14 @@ def main():
         epilog="""
 Examples:
   %(prog)s --type ecdsa --output-dir ./keys --developer "Alice Corp"
-  %(prog)s --type rsa --key-size 4096 --format der --output-dir ./keys
+  %(prog)s --type ecdsa --format der --output-dir ./keys
   %(prog)s --type ecdsa --well-known --developer "Bob Inc" --contact "security@bob.com"
         """
     )
 
     parser.add_argument(
         '--type',
-        choices=['ecdsa', 'rsa'],
+        choices=['ecdsa'],
         default='ecdsa',
         help='Key type to generate (default: ecdsa)'
     )

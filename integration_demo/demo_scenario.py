@@ -8,6 +8,7 @@ implementations of SchemaPin.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -18,6 +19,7 @@ from typing import Dict, Any
 sys.path.insert(0, str(Path(__file__).parent.parent / "python"))
 
 from schemapin.crypto import KeyManager
+from schemapin.discovery import PublicKeyDiscovery
 from schemapin.utils import SchemaSigningWorkflow, SchemaVerificationWorkflow, create_well_known_response
 from schemapin.interactive import ConsoleInteractiveHandler
 
@@ -232,12 +234,21 @@ class DemoRunner:
                 return True
         
         verification_workflow = SchemaVerificationWorkflow()
-        
-        # Mock discovery for demo
+
+        # The demo runs offline, so discovery is served from the local demo
+        # keys through a resolver-style stub. Revocation is checked against
+        # the same local discovery document (no revoked keys) instead of being
+        # disabled: never bypass validate_key_not_revoked in real code.
         public_key_pem = (self.keys_dir / "bob.example.com_public.pem").read_text()
-        verification_workflow.discovery.get_public_key_pem = lambda domain: public_key_pem
+        local_discovery = {"schema_version": "1.4", "developer_name": "Bob Industries",
+                           "public_key_pem": public_key_pem, "revoked_keys": []}
+        verification_workflow.discovery.fetch_well_known = lambda domain, timeout=10: local_discovery
+        verification_workflow.discovery.get_public_key_pem = lambda domain: local_discovery["public_key_pem"]
         verification_workflow.discovery.get_developer_info = lambda domain: {"developer_name": "Bob Industries"}
-        verification_workflow.discovery.validate_key_not_revoked = lambda key_pem, domain: True
+        verification_workflow.discovery.validate_key_not_revoked = (
+            lambda key_pem, domain, timeout=10, allow_unreachable=False:
+            not PublicKeyDiscovery.check_key_revocation(key_pem, local_discovery["revoked_keys"])
+        )
         
         result = verification_workflow.verify_schema(
             signed_data["schema"],
@@ -298,8 +309,17 @@ class DemoRunner:
         verification_workflow = SchemaVerificationWorkflow()
         
         # Mock discovery to return new key but show old key as revoked
+        # Local discovery document that lists the old key as revoked; the
+        # revocation check is evaluated against it rather than bypassed.
+        old_fingerprint = KeyManager.calculate_key_fingerprint_from_pem(old_public_pem)
+        local_discovery = {"schema_version": "1.4", "developer_name": "Alice Corp",
+                           "public_key_pem": new_public_pem, "revoked_keys": [old_fingerprint]}
+        verification_workflow.discovery.fetch_well_known = lambda domain, timeout=10: local_discovery
         verification_workflow.discovery.get_public_key_pem = lambda domain: new_public_pem
-        verification_workflow.discovery.validate_key_not_revoked = lambda key_pem, domain: key_pem != old_public_pem
+        verification_workflow.discovery.validate_key_not_revoked = (
+            lambda key_pem, domain, timeout=10, allow_unreachable=False:
+            not PublicKeyDiscovery.check_key_revocation(key_pem, local_discovery["revoked_keys"])
+        )
         
         # This should fail because signature was made with revoked key
         result = verification_workflow.verify_schema(
@@ -371,8 +391,13 @@ class DemoRunner:
         # Verify all with Python
         verification_workflow = SchemaVerificationWorkflow()
         public_key_pem = (self.keys_dir / "alice.example.com_public.pem").read_text()
+        local_discovery = {"schema_version": "1.4", "public_key_pem": public_key_pem, "revoked_keys": []}
+        verification_workflow.discovery.fetch_well_known = lambda domain, timeout=10: local_discovery
         verification_workflow.discovery.get_public_key_pem = lambda domain: public_key_pem
-        verification_workflow.discovery.validate_key_not_revoked = lambda key_pem, domain: True
+        verification_workflow.discovery.validate_key_not_revoked = (
+            lambda key_pem, domain, timeout=10, allow_unreachable=False:
+            not PublicKeyDiscovery.check_key_revocation(key_pem, local_discovery["revoked_keys"])
+        )
         
         valid_count = 0
         for signed_item in signed_schemas:
@@ -403,23 +428,30 @@ class DemoRunner:
         print("\n🧪 Scenario 5: Server-based Discovery")
         print("=" * 70)
         
-        print("🌐 This scenario requires the .well-known server to be running")
-        print("   Start the server with: cd ../server && python well_known_server.py")
-        print("   Then run this scenario again")
-        
+        print("🌐 This scenario requires the .well-known server behind TLS")
+        print("   Start the server (cd ../server && python well_known_server.py), put a TLS")
+        print("   terminator in front of it, and point SCHEMAPIN_DEMO_SERVER_URL at the https URL.")
+        print("   SchemaPin clients refuse plaintext discovery, so http:// is not accepted here.")
+
+        server_url = os.environ.get("SCHEMAPIN_DEMO_SERVER_URL", "")
+        if not server_url.startswith("https://"):
+            print("   SCHEMAPIN_DEMO_SERVER_URL is not set to an https:// URL; skipping.")
+            return True
+
         # Check if server is running
         try:
             import requests
-            response = requests.get("http://localhost:8000/health", timeout=2)
+            response = requests.get(f"{server_url}/health", timeout=2, allow_redirects=False)
             if response.status_code == 200:
                 print("✅ Server is running!")
                 
-                # Test discovery endpoints
+                # Test discovery endpoints (RFC 8615 path, developer selected by Host)
                 developers = ["alice.example.com", "bob.example.com", "charlie.example.com"]
                 for domain in developers:
                     try:
-                        well_known_url = f"http://localhost:8000/.well-known/schemapin/{domain}.json"
-                        response = requests.get(well_known_url, timeout=2)
+                        well_known_url = f"{server_url}/.well-known/schemapin.json"
+                        response = requests.get(well_known_url, timeout=2, allow_redirects=False,
+                                                headers={"Host": domain})
                         if response.status_code == 200:
                             data = response.json()
                             print(f"   ✅ {domain}: {data.get('developer_name')}")

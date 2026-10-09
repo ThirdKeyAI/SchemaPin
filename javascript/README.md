@@ -86,7 +86,7 @@ const result = await verificationWorkflow.verifySchema(
     signature,
     "yourdomain.com/calculate_sum",
     "yourdomain.com",
-    true // auto-pin on first use
+    false // auto-pin is an opt-in; interactive or pre-seeded pins are recommended
 );
 
 if (result.valid) {
@@ -166,7 +166,7 @@ signSkillWithOptions(skillDir, privateKeyPem, 'example.com', {
 });
 ```
 
-Verifiers past the expiration treat the result as **degraded, not failed**:
+Verifiers past the expiration **fail** with `SIGNATURE_EXPIRED`; with `allowExpired` they treat the result as degraded instead:
 `result.valid` stays `true`, `result.expired` is set to `true`, and
 `'signature_expired'` is appended to `result.warnings`.
 

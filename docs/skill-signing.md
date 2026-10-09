@@ -1,6 +1,6 @@
-# Skill Signing with SkillSigner (v1.3)
+# Skill Signing with SkillSigner (v1.3 / v1.4)
 
-SchemaPin v1.3 introduces SkillSigner — sign entire skill directories with ECDSA P-256. This produces a `.schemapin.sig` manifest alongside the files, proving no file has been tampered with.
+SchemaPin v1.3 introduced SkillSigner — sign entire skill directories with ECDSA P-256. This produces a `.schemapin.sig` manifest alongside the files, proving no file has been tampered with. Since v1.4 the signature covers the **whole signature document** (name, domain, expiry, lineage fields and the file manifest), not just the root hash, and the directory hashing is length-prefixed and refuses symbolic links. Both changes are selected by `schemapin_version: "1.4"`; 1.3 signatures still verify with a `legacy_signature_format` warning.
 
 ---
 
@@ -17,7 +17,7 @@ my-skill/
 └── config.json         # Optional configuration
 ```
 
-SkillSigner hashes every file in the directory (except `.schemapin.sig` itself), creates a file manifest, signs the root hash, and writes the result to `.schemapin.sig`.
+SkillSigner hashes every regular file in the directory (except the top-level `.schemapin.sig`), creates a file manifest, builds the signature document, signs it, and writes the result to `.schemapin.sig`. Symbolic links, sockets and other special files are refused: unsigned content must never be reachable from a signed skill. Empty directories and file modes are not covered.
 
 ---
 
@@ -26,18 +26,14 @@ SkillSigner hashes every file in the directory (except `.schemapin.sig` itself),
 ### Python
 
 ```python
-from schemapin.skill import sign_skill
+from schemapin.skill import SkillSigner
 
-# Sign the skill directory (writes .schemapin.sig)
-sig = sign_skill(
-    skill_dir="./my-skill/",
-    private_key_pem=private_key_pem,
-    domain="example.com",
-)
+# Sign the skill directory (writes .schemapin.sig); returns the document as a dict
+sig = SkillSigner.sign_skill("./my-skill/", private_key_pem, "example.com")
 
-print(f"Skill signed: {sig.skill_name}")
-print(f"Root hash: {sig.skill_hash}")
-print(f"Files: {list(sig.file_manifest.keys())}")
+print(f"Skill signed: {sig['skill_name']}")
+print(f"Root hash: {sig['skill_hash']}")
+print(f"Files: {list(sig['file_manifest'])}")
 ```
 
 ### JavaScript
@@ -45,10 +41,10 @@ print(f"Files: {list(sig.file_manifest.keys())}")
 ```javascript
 import { signSkill } from 'schemapin/skill';
 
-const sig = await signSkill('./my-skill/', privateKeyPem, 'example.com');
-console.log('Skill signed:', sig.skillName);
-console.log('Root hash:', sig.skillHash);
-console.log('Files:', Object.keys(sig.fileManifest));
+const sig = signSkill('./my-skill/', privateKeyPem, 'example.com'); // synchronous
+console.log('Skill signed:', sig.skill_name);
+console.log('Root hash:', sig.skill_hash);
+console.log('Files:', Object.keys(sig.file_manifest));
 ```
 
 ### Go
@@ -66,9 +62,10 @@ fmt.Printf("Skill signed: %s\n", sig.SkillName)
 ### Rust
 
 ```rust
+use std::path::Path;
 use schemapin::skill::sign_skill;
 
-let sig = sign_skill("./my-skill/", &private_key_pem, "example.com", None, None)?;
+let sig = sign_skill(Path::new("./my-skill/"), &private_key_pem, "example.com", None, None)?;
 println!("Skill signed: {}", sig.skill_name);
 ```
 
@@ -80,7 +77,7 @@ After signing, `.schemapin.sig` contains:
 
 ```json
 {
-  "schemapin_version": "1.3",
+  "schemapin_version": "1.4",
   "skill_name": "my-skill",
   "skill_hash": "sha256:a1b2c3d4e5f6...",
   "signature": "MEUCIQD7y2F8...",
@@ -97,16 +94,17 @@ After signing, `.schemapin.sig` contains:
 
 | Field | Description |
 |-------|-------------|
-| `schemapin_version` | Protocol version (`1.3`) |
+| `schemapin_version` | Format version. `1.4` = signed document (current); `1.3` = legacy root-hash-only signature (verify only) |
 | `skill_name` | Name of the skill (from directory name or frontmatter) |
-| `skill_hash` | SHA-256 hash of the concatenated file hashes (root hash) |
-| `signature` | Base64-encoded ECDSA signature over the root hash |
-| `signed_at` | ISO 8601 timestamp of when the skill was signed |
-| `domain` | Domain of the signer |
+| `skill_hash` | `sha256:` + hex of the root hash (see below); verifiers recompute and compare it |
+| `signature` | Base64 DER ECDSA P-256 signature over the canonical signature document with `signature` set to `""` |
+| `signed_at` | RFC 3339 timestamp of when the skill was signed |
+| `expires_at`, `schema_version`, `previous_hash`, `canonicalization` | Optional v1.4 fields; all covered by the signature |
+| `domain` | Domain of the signer. Verifiers bind it to the domain they resolved; it is never used as a trust input on its own |
 | `signer_kid` | SHA-256 fingerprint of the signing key |
-| `file_manifest` | Map of relative file paths to their SHA-256 hashes |
+| `file_manifest` | Map of relative file paths to their entry hashes; covered by the signature |
 
-The `.schemapin.sig` file is automatically excluded from hashing — you can re-sign a directory without removing the old signature first.
+**Hashing (v1.4).** Each entry is hashed as `SHA-256("f" ‖ be64(len(path)) ‖ path ‖ be64(len(content)) ‖ content)` and the root hash is `SHA-256` over `be64(len(path)) ‖ path ‖ entry digest` for every entry in code-point path order. The length prefixes make it impossible to move bytes between a file name and its content without changing the hash. The top-level `.schemapin.sig` is excluded, so you can re-sign a directory without removing the old signature first; a nested file of that name is ordinary content. Entry count (10 000) and total size (256 MiB) are capped. The normative definition is spec section 4b and `tests/cross-language/skill/` is the reference fixture.
 
 ---
 
@@ -119,22 +117,24 @@ Verify a skill without HTTP calls using a pre-fetched discovery document:
 #### Python
 
 ```python
-from schemapin.skill import verify_skill_offline
+from schemapin.skill import SkillSigner
 from schemapin.verification import KeyPinStore
 
-result = verify_skill_offline(
-    skill_dir="./my-skill/",
-    discovery_data=discovery_doc,
-    signature=sig,
+result = SkillSigner.verify_skill_offline(
+    "./my-skill/",
+    discovery_doc,              # the .well-known document for `domain`
     revocation_doc=None,        # pass a parsed revocation doc to fail closed on revoked keys
     pin_store=KeyPinStore(),
+    domain="example.com",       # bind the skill to the domain the discovery doc belongs to
 )
 
 if result.valid:
     print("Skill verified successfully")
 else:
-    print(f"Verification failed: {result.error}")
+    print(f"Verification failed: {result.error_code}: {result.error_message}")
 ```
+
+Always pass `domain`: the signature's own `domain` field is display-only, and a mismatch is a hard `DOMAIN_MISMATCH` failure. Expired signatures fail with `SIGNATURE_EXPIRED` unless you pass `allow_expired=True`. The pin is written only after the signature verified.
 
 **Pass a `revocation_doc`** to fail closed when a publisher has rotated keys. Skill verification honours the same combined inline + standalone revocation rules as schema verification — see the [Revocation guide](revocation.md) for fetching, parsing, and operational guidance.
 
@@ -173,6 +173,8 @@ let result = verify_skill_offline(
 
 ## Tamper Detection
 
+`detect_tampered_files` compares the current manifest with the signed one and is a diagnostic aid that tells you *which* files changed. For `schemapin_version: "1.4"` documents the manifest is covered by the signature; for legacy 1.3 documents it is not, so an attacker can edit the files and the manifest together — rely on the signature result, not on the diff, for the trust decision.
+
 Check if files have been modified, added, or removed since signing:
 
 ### Python
@@ -200,7 +202,7 @@ if tampered.removed:
 import { detectTamperedFiles, canonicalizeSkill } from 'schemapin/skill';
 
 const { manifest: currentManifest } = canonicalizeSkill('./my-skill/');
-const tampered = detectTamperedFiles(currentManifest, sig.fileManifest);
+const tampered = detectTamperedFiles(currentManifest, sig.file_manifest);
 
 if (tampered.modified.length > 0) {
     console.log('Modified:', tampered.modified);
