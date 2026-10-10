@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Updated the pinned Python cryptography dependency and JavaScript development
+  dependency lockfile to clear current dependency advisories. The reference
+  server uses patched FastAPI, Starlette, AnyIO and Pydantic versions and no
+  longer installs unused JWT, password, multipart or file-helper libraries.
+
 Fixes from the 2026-10 security review of all four SDKs, the reference server
 and the demo. IDs refer to the review's findings. Wire-format changes are
 called out explicitly; everything else is behavior.
