@@ -55,28 +55,19 @@ class TestKeygenCLI:
             calculated_fingerprint = KeyManager.calculate_key_fingerprint_from_pem(public_key_pem)
             assert calculated_fingerprint == output["fingerprint"]
 
-    def test_keygen_rsa_basic(self):
-        """Test basic RSA key generation."""
+    def test_keygen_rejects_rsa(self):
+        """Only ECDSA P-256 keys are accepted by the protocol (SP-10), so the
+        key generator refuses to produce RSA keys."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir_path = Path(tmpdir)
-
-            # Run keygen
             result = subprocess.run([
                 sys.executable, "-m", "tools.keygen",
                 "--type", "rsa",
-                "--key-size", "2048",
-                "--output-dir", str(tmpdir_path),
+                "--output-dir", tmpdir,
                 "--json"
             ], capture_output=True, text=True, )
 
-            assert result.returncode == 0
-            output = json.loads(result.stdout)
-
-            assert output["key_type"] == "rsa"
-            assert output["key_size"] == 2048
-            assert output["format"] == "pem"
-            assert "fingerprint" in output
-            assert output["fingerprint"].startswith("sha256:")
+            assert result.returncode != 0
+            assert "invalid choice" in result.stderr
 
     def test_keygen_well_known_template(self):
         """Test .well-known template generation."""
@@ -279,9 +270,10 @@ class TestVerifySchema:
         assert result_data["verification_method"] == "public_key"
         assert "key_fingerprint" in result_data
 
+    @patch('schemapin.discovery.PublicKeyDiscovery.validate_key_not_revoked', return_value=True)
     @patch('schemapin.discovery.PublicKeyDiscovery.get_public_key_pem')
-    def test_verify_with_discovery(self, mock_get_key):
-        """Test verification with discovery."""
+    def test_verify_with_discovery(self, mock_get_key, _mock_not_revoked):
+        """Test verification with discovery (revocation check is fail-closed, so it is mocked)."""
         mock_get_key.return_value = self.public_key_pem
 
         # Test the underlying function directly instead of subprocess

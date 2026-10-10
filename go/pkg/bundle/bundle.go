@@ -120,11 +120,15 @@ func (b *SchemaPinTrustBundle) FindRevocation(domain string) *revocation.Revocat
 	return nil
 }
 
-// ParseTrustBundle parses a trust bundle from a JSON string.
+// ParseTrustBundle parses a trust bundle from a JSON string. Bundles with
+// duplicate domain entries are rejected so lookups are unambiguous.
 func ParseTrustBundle(jsonStr string) (*SchemaPinTrustBundle, error) {
 	var bundle SchemaPinTrustBundle
 	if err := json.Unmarshal([]byte(jsonStr), &bundle); err != nil {
 		return nil, fmt.Errorf("failed to parse trust bundle: %w", err)
+	}
+	if dup := DuplicateDomain(&bundle); dup != "" {
+		return nil, fmt.Errorf("failed to parse trust bundle: duplicate entries for domain %q", dup)
 	}
 	return &bundle, nil
 }

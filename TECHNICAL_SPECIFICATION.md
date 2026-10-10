@@ -42,12 +42,16 @@ To ensure universal compatibility and strong security, implementations of Schema
 
 ### **4. Schema Canonicalization**
 
-To ensure that a signature is valid across different platforms and environments, the tool schema's JSON object **MUST** be converted to a canonical string format before hashing and signing. The canonicalization process is as follows:
+To ensure that a signature is valid across different platforms and environments, the tool schema's JSON object **MUST** be converted to a canonical string format before hashing and signing. The algorithm is identified as `schemapin-v1` (see Section 19) and is defined normatively here; the shared conformance corpus in `tests/cross-language/canonicalization/` is the reference for the exact bytes, and every implementation **MUST** pass it.
 
-1. **Encoding:** The JSON string **MUST** be encoded using **UTF-8**.
+1. **Encoding:** The canonical string **MUST** be encoded as UTF-8. Input that is not valid UTF-8 **MUST** be rejected.
 2. **Whitespace:** All insignificant whitespace between JSON elements **MUST** be removed.
-3. **Key Sorting:** The keys (names) in all JSON objects **MUST** be sorted lexicographically (alphabetically). This must be applied recursively to any nested objects.
-4. **Serialization:** JSON data types MUST be serialized according to a strict, consistent format.
+3. **Key Sorting:** The names in every JSON object **MUST** be sorted by Unicode code point (equivalently, by the UTF-8 byte sequence of the name). This is *not* UTF-16 code-unit order: `"z"` (U+007A) sorts before U+FFFF, which sorts before U+1F600. Sorting is applied recursively to nested objects; array element order is preserved.
+4. **Duplicate Keys:** An object containing the same name more than once has no canonical form and **MUST** be rejected.
+5. **Strings:** Strings are emitted with the minimal escaping set: `"` as `\"`, `\` as `\\`, U+0008, U+000C, U+000A, U+000D and U+0009 as `\b`, `\f`, `\n`, `\r`, `\t`, and every other control character below U+0020 as lowercase `\u00xx`. Every other code point — including `/`, `<`, `>`, `&`, U+007F, U+2028 and U+2029 and all non-ASCII — **MUST** be emitted literally. Lone surrogates have no canonical form and **MUST** be rejected.
+6. **Numbers:** Numbers are interpreted as IEEE 754 binary64 values. Any number whose absolute value exceeds 2^53 − 1 (9007199254740991) **MUST** be rejected, so that no two distinct inputs can collide after rounding; `NaN` and infinities are not JSON and **MUST** be rejected. Integral values are emitted as plain decimal integers without a sign for zero (`1.0` → `1`, `1e3` → `1000`, `-0` → `0`). Non-integral values are emitted with the ECMAScript `Number::toString` algorithm (RFC 8785 Section 3.2.2.3): shortest round-trip digits, fixed notation for exponents between −7 and 21, otherwise `d.ddde±N` (`0.1`, `0.000001`, `1e-7`, `123.456`).
+7. **Literals:** `true`, `false` and `null` are emitted as such.
+8. **Special-looking keys:** Names such as `__proto__`, `constructor` or `prototype` are ordinary keys and **MUST** be preserved and signed; implementations in languages where such names have prototype semantics **MUST** serialize without materializing intermediate objects.
 
 Example:
 
@@ -64,6 +68,24 @@ The following non-canonical JSON:
 Becomes the following canonical string before signing:
 
 `{"description":"Calculates the sum","name":"calculate_sum","parameters":{"a":"integer","b":"integer"}}`
+
+#### **4.1. Signature Input**
+
+The schema signature is an ECDSA P-256 signature with SHA-256 whose message is the 32-byte SHA-256 digest of the canonical UTF-8 bytes (that is, ECDSA is applied to SHA-256(SHA-256(canonical))). All implementations **MUST** use exactly this construction; `tests/cross-language/signatures/schema-signature.json` is the reference vector.
+
+### **4b. Skill Directory Canonicalization (v1.4)**
+
+Skill signing (Section 16 and `docs/skill-signing.md`) hashes a directory tree rather than a JSON document. The algorithm, identified by `schemapin_version: "1.4"` in the signature document, is:
+
+1. Walk the directory. Directories themselves are not entries; empty directories are not covered. The top-level `.schemapin.sig` is excluded.
+2. Any symbolic link (to a file or a directory) or non-regular file **MUST** abort canonicalization: unsigned content must never be reachable from a signed skill. Paths that are not valid UTF-8 **MUST** be rejected. Implementations **MUST** cap the number of entries and the total size (the reference SDKs use 10 000 entries and 256 MiB).
+3. Each entry's path is its forward-slash-separated path relative to the skill root, encoded as UTF-8; entries are sorted by code point.
+4. Entry digest: `SHA-256(0x66 ‖ be64(len(path)) ‖ path ‖ be64(len(content)) ‖ content)` where `be64` is the 64-bit big-endian length. The `file_manifest` maps each path to `"sha256:" + hex(entry digest)`.
+5. Root hash: `SHA-256` over the concatenation, in sorted order, of `be64(len(path)) ‖ path ‖ entry digest` for every entry. `skill_hash` is `"sha256:" + hex(root hash)`.
+
+The signature document is then built with every field present and `signature` set to `""`, canonicalized with `schemapin-v1` (Section 4), and signed as ECDSA P-256 with SHA-256 over the canonical bytes. Verifiers **MUST** recompute the root hash, require `skill_hash` to equal it, rebuild the signing input from the parsed known fields (unknown fields are ignored and therefore unprotected) and verify the signature over those bytes. `tests/cross-language/skill/` holds the reference fixture.
+
+Documents with `schemapin_version` below `"1.4"` use the legacy algorithm (`SHA-256(path ‖ content)` per file, root hash over the concatenated hex digests, symlinks skipped, signature over the 32-byte root hash only). Verifiers **MAY** accept them for compatibility but **MUST** surface that none of their metadata fields is signed (the reference SDKs emit a `legacy_signature_format` warning), and **MUST NOT** anchor lineage (Section 18) on them. New signatures **MUST NOT** use the legacy format.
 
 ### **5. Signature and Key Formats**
 
@@ -124,7 +146,7 @@ The `contact` and `revocation_endpoint` fields are OPTIONAL. The `revocation_end
     a. Check for a locally "pinned" public key for this tool/developer.
     b. If no key is pinned, construct the .well-known URI based on the tool's domain and fetch the public key.
 
-    c. Pin the Key: Upon successful first fetch, store the public key locally and associate it with the tool's identifier. This is the "pinning" step. The user should be prompted for confirmation before trusting a new key.
+    c. Pin the Key: After the signature in step 3 has verified, store the public key locally and associate it with the tool's identifier *and* the domain it was fetched for. This is the "pinning" step; a failed verification **MUST NOT** leave a pin behind. The user **SHOULD** be prompted for confirmation before trusting a new key — automatic first-use pinning is an explicit opt-in, not the default — and a fingerprint obtained out of band (for example from a DNS TXT record, Section 17) **MAY** be seeded in advance.
 
 3. Verify:
     a. Canonicalize the fetched schema using the exact rules in Section 4.
@@ -217,7 +239,8 @@ Clients MUST check both revocation sources when available:
 
 - **Key Revocation:** Keys MUST be immediately revoked upon suspected compromise. Clients MUST check revocation status before each verification.
 - **Key Compromise:** A developer whose private key is compromised must generate a new key pair and work with client applications to transition trust to the new key.
-- **Transport Security:** All communications for public key discovery MUST use HTTPS to prevent man-in-the-middle attacks during the initial key fetch.
+- **Transport Security:** All communications for public key discovery MUST use HTTPS to prevent man-in-the-middle attacks during the initial key fetch. Implementations MUST refuse `http://` (including domain strings that carry a scheme), MUST NOT follow redirects, MUST apply connect and read timeouts, MUST cap the response body (the reference SDKs use 64 KiB), and MUST validate the domain against the RFC 1123 hostname grammar (ASCII, at least two labels, no scheme, path, port, userinfo or IP literal) before building a URL, a pin key or a local file path from it.
+- **Revocation Availability:** A declared `revocation_endpoint` (or `.well-known` document) that cannot be fetched is a verification failure (`DISCOVERY_FETCH_FAILED`), not "not revoked". Implementations MAY offer an explicit opt-out for air-gapped use, but the default MUST fail closed.
 - **Key Pinning:** Once a public key is pinned for a tool, clients MUST NOT automatically accept a different key without explicit user consent, even if served from the same `.well-known` endpoint.
 - **Signature Validation:** Clients MUST validate signatures before executing any tool functionality. Invalid signatures MUST result in immediate rejection of the tool.
 - **Canonical Form Consistency:** All implementations MUST use identical canonicalization rules to ensure signature compatibility across different platforms and libraries.
@@ -320,10 +343,10 @@ SchemaPin v1.2 defines `verify_schema_offline()` as the core verification primit
 1. **Validate discovery document** — Check that the well-known response is structurally valid (non-empty PEM key, valid schema version).
 2. **Extract public key and compute fingerprint** — Parse the PEM public key and calculate its SHA-256 fingerprint.
 3. **Check revocation** — Check both the simple `revoked_keys` list and any standalone revocation document.
-4. **TOFU key pinning** — Check the key fingerprint against the pin store. On first use, pin the key. On match, continue. On change, reject.
+4. **TOFU key pinning check** — Compare the key fingerprint with the pin store for `tool_id@domain` without writing. On match, continue. On change, reject with `KEY_PIN_MISMATCH`. On first use, remember that a pin must be written later.
 5. **Canonicalize schema** — Apply the canonicalization rules from Section 4 and compute the SHA-256 hash.
 6. **Verify ECDSA signature** — Verify the Base64-encoded signature against the schema hash using the public key.
-7. **Return result** — Return a structured `VerificationResult` with the domain, developer name, key pinning status, and any errors or warnings.
+7. **Pin and return** — Only after step 6 succeeds, pin the fingerprint on first use, then return a structured `VerificationResult` with the domain, developer name, key pinning status, and any errors or warnings. A failed verification never writes a pin. The `domain` argument MUST be validated (Section 9) and is the only source of the pin key and of the reported domain.
 
 ### **16. Signature Expiration (v1.4)**
 
@@ -347,20 +370,15 @@ The `expires_at` field is an ISO 8601 / RFC 3339 timestamp in UTC:
 }
 ```
 
-A signature document with `expires_at` MUST set `schemapin_version` to `"1.4"` or higher; documents without `expires_at` MAY retain the v1.3 version string.
+A signature document with `expires_at` MUST set `schemapin_version` to `"1.4"` or higher, which also selects the signed-document format of Section 4b so that `expires_at` is covered by the signature. New signatures use `"1.4"` whether or not they expire.
 
 #### **16.2. Verifier Semantics**
 
-When the current time is past `expires_at`, verifiers MUST treat the result as **degraded**, not failed:
+Expiration is **fail-closed**. When the current time is more than the clock-skew allowance (300 seconds) past `expires_at`, verifiers MUST fail with `SIGNATURE_EXPIRED` and MUST set `expired: true` and mirror `expires_at` on the result. `expires_at` MUST be a strict RFC 3339 timestamp (`T` separator, mandatory `Z` or numeric offset); a value that does not parse MUST also fail with `SIGNATURE_EXPIRED` — a malformed expiry is indistinguishable from a stripped one.
 
-- `valid` remains `true` (the cryptographic signature is intact)
-- An `expired: true` flag is set on the result
-- A `signature_expired` warning is appended
-- The `expires_at` value is mirrored on the result for confidence scoring
+Verifiers MAY offer an explicit per-call opt-in (`allow_expired`) that restores the original "degraded" behavior: `valid` stays `true`, `expired` is set, and a `signature_expired` (or `signature_expires_at_unparseable`) warning is appended for confidence scoring. That mode is a policy decision by the host and MUST NOT be the default.
 
-A degraded result is intended to feed policy decisions: clients MAY refuse to load expired skills, or downgrade them to a lower trust tier, while preserving the ability to inspect signed metadata.
-
-If `expires_at` cannot be parsed as RFC 3339, verifiers MUST emit a `signature_expires_at_unparseable` warning and MUST NOT treat the signature as expired (fail-open on parse, not fail-closed — malformed metadata should not silently invalidate otherwise-valid signatures).
+**Risk statement.** The degraded mode was the default in v1.4.0-alpha.1 through alpha.4. Because every library exit reported `valid: true` for expired signatures and no shipped consumer checked `expired`, expiry provided no security property; combined with the then-unsigned `expires_at` field (Section 4b) it could be stripped or altered freely. From this revision `expires_at` is covered by the signature and expiry fails closed.
 
 #### **16.3. Backward Compatibility**
 
@@ -368,6 +386,8 @@ If `expires_at` cannot be parsed as RFC 3339, verifiers MUST emit a `signature_e
 - v1.4 signatures without `expires_at` behave identically to v1.3 signatures.
 
 ### **17. DNS TXT Cross-Verification (v1.4)**
+
+The cross-check applies to both skill and schema verification (`verify_skill_offline_with_dns` and `verify_schema_offline_with_dns`), runs before any pin is written, and a mismatch is a hard `DOMAIN_MISMATCH` failure.
 
 SchemaPin v1.4 adds an OPTIONAL second-channel verification mechanism via DNS TXT records. The DNS credential chain is independent of the HTTPS hosting credential chain, so an attacker compromising one does not automatically gain control of the other.
 
@@ -484,12 +504,12 @@ A publisher MAINTAINING a chain SHOULD:
 2. When signing v_{n+1}, set `previous_hash = skill_hash_of_v_n`.
 3. Distribute v_{n+1} alongside (or with the ability for verifiers to fetch) v_n.
 
-A verifier APPLYING chain enforcement SHOULD maintain a per-tool `latest_known_hash` pinned alongside the TOFU public key. On encountering a signature with `previous_hash`:
+A verifier APPLYING chain enforcement SHOULD maintain a per-tool `latest_known_hash` pinned alongside the TOFU public key. The reference SDKs provide this as `LineageStore` (`check_and_advance(tool_id, domain, signature)`), keyed by `tool_id@domain` and persisted as JSON. On encountering a new, already-verified `schemapin_version >= "1.4"` signature:
 
-- Match against `latest_known_hash` → accept and roll forward.
-- No match → prompt the operator (similar to TOFU key rotation) before accepting; an unauthorized substitution would either omit `previous_hash` or claim a hash the verifier has not seen.
-
-This pairs cleanly with `schema_version`: the verifier can also enforce monotonic version progression as a policy (e.g., refuse downgrades).
+- `skill_hash` equals `latest_known_hash` → unchanged.
+- `previous_hash` equals `latest_known_hash` and `schema_version` (when both carry one) increases numerically (`major.minor.patch`) → accept and roll forward.
+- `previous_hash` absent or naming any other hash → reject (fork or rollback); an unauthorized substitution would either omit `previous_hash` or claim a hash the verifier has not seen. Operators MAY override after inspection, exactly like a TOFU key rotation.
+- A legacy 1.3 document MUST be refused as a lineage anchor: its `skill_hash` and `previous_hash` are not covered by its signature.
 
 #### **18.5. Backward Compatibility**
 
@@ -593,7 +613,9 @@ Implementations SHOULD copy these helpers from this section rather than taking a
 
 #### **21.1. Purpose**
 
-Allow a **bundle authority** to sign a trust bundle so it can be exchanged between agents over A2A without per-bundle out-of-band trust establishment. The receiving verifier authenticates the bundle and TOFU-pins the authority key by `kid`, the same trust model used for tool signing keys. All fields are optional and additive — an unsigned bundle is unchanged from v1.2/v1.3.
+Allow a **bundle authority** to sign a trust bundle so it can be exchanged between agents over A2A without per-bundle out-of-band trust establishment. The receiving verifier authenticates the bundle against an **authority allow-list**: the authority's key fingerprint MUST be known to the verifier before a bundle from that `kid` is accepted. All fields are optional and additive — an unsigned bundle is unchanged from v1.2/v1.3.
+
+**Risk statement.** A bundle carries its own authority public key, so the `kid` inside the bundle is attacker-chosen. Pinning the authority on first use by `kid` (the alpha.4 behavior) accepted any self-signed bundle under a fresh `kid`, which let a malicious A2A peer load keys for arbitrary domains. First-use trust therefore requires an explicit opt-in and MUST be surfaced to the operator like any other first-use key.
 
 #### **21.2. Wire Format**
 
@@ -618,20 +640,23 @@ The authority public key is carried as `public_key_pem` (consistent with discove
 
 #### **21.3. Signing Input**
 
-The signature covers the `schemapin-v1` canonicalization (§19; recursive sorted keys, compact, UTF-8) of the entire bundle object with the `signature` field set to the empty string `""`. All four SDKs MUST produce the identical byte string so a bundle signed by any SDK verifies in every other.
+The signature covers the `schemapin-v1` canonicalization (Section 4) of the bundle's **known fields** with the `signature` field set to the empty string `""`: `schemapin_bundle_version`, `created_at`, `documents` (each entry's `domain`, `schema_version`, `public_key_pem`, `revoked_keys` — always present, possibly empty — and, when present, `developer_name`, `contact`, `revocation_endpoint`), `revocations` (always present), `bundle_authority`, `signed_at` and `expires_at` when present. Unknown fields are not part of the signing input and are therefore unprotected. The signature is ECDSA P-256 with SHA-256 over the canonical bytes. All four SDKs MUST produce the identical byte string so a bundle signed by any SDK verifies in every other; `tests/cross-language/signed_bundle.json` (authority `kid` `schemapin-test-fixture-authority`, a test-only identity) is the reference.
 
 #### **21.4. Operations**
 
 - `sign_trust_bundle(bundle, private_key_pem, kid, signed_at, expires_at?)` — derive the authority public key, stamp `bundle_authority` / `signed_at` / `expires_at`, and write the signature.
-- `verify_trust_bundle(bundle, authority_pin_store)`:
+- `seed_bundle_authority(store, kid, fingerprint)` / `seed_bundle_authority_from_pem(store, kid, public_key_pem)` — record an expected authority (the allow-list). The fingerprint is obtained out of band, for example from the authority domain's own `.well-known/schemapin.json` or DNS TXT record.
+- `verify_trust_bundle(bundle, authority_pin_store, allow_first_use=false)`:
   1. Require `bundle_authority` and `signature` — else `BUNDLE_UNSIGNED`.
-  2. Reject when `expires_at` is present and in the past or unparseable — `BUNDLE_EXPIRED`.
-  3. TOFU-pin the authority key fingerprint by `kid`; a different key under a pinned `kid` is `KEY_PIN_MISMATCH`.
-  4. Verify the signature over the canonical bytes — failure is `SIGNATURE_INVALID`.
-- `merge_trust_bundles(bundles)` — deduplicate `documents` and `revocations` by domain, the newer source (`signed_at`, else `created_at`) winning. Returns an UNSIGNED bundle to be re-signed before redistribution.
+  2. Reject bundles with duplicate domain entries — `DISCOVERY_INVALID`.
+  3. Reject when `expires_at` is present and in the past or not strict RFC 3339 — `BUNDLE_EXPIRED`.
+  4. Look the authority's key fingerprint up by `kid`: a different seeded key is `KEY_PIN_MISMATCH`; an unknown `kid` is `BUNDLE_AUTHORITY_UNTRUSTED` unless `allow_first_use` is set.
+  5. Verify the signature over the canonical bytes — failure is `SIGNATURE_INVALID`.
+  6. Pin the authority on first use only after step 5, and return a structured result carrying `kid`, `fingerprint` and `first_use` so hosts can gate on it.
+- `merge_trust_bundles(bundles, authority_precedence?)` — deduplicate `documents` and `revocations` by domain. The winner is chosen first by authority precedence (an ordered list of `kid`s; unlisted or absent authorities rank last) and then by the newer **parsed** RFC 3339 timestamp (`signed_at`, else `created_at`); unparseable timestamps rank oldest. Only verified bundles MUST be merged. Returns an UNSIGNED bundle to be re-signed before redistribution.
 - `schemapin/trustBundle` JSON-RPC envelope helpers — `build_trust_bundle_request` / `build_trust_bundle_response` / `parse_trust_bundle_response`. The libraries define the message envelope; transport and the receiving pin-store update are the host application's responsibility.
 
 #### **21.5. Backward Compatibility**
 
 - Unsigned bundles omit all four fields and are byte-identical to pre-v1.4 bundles; existing resolvers ignore the new fields.
-- The `BUNDLE_UNSIGNED` and `BUNDLE_EXPIRED` error codes are new in v1.4.
+- The `BUNDLE_UNSIGNED`, `BUNDLE_EXPIRED` and `BUNDLE_AUTHORITY_UNTRUSTED` error codes are new in v1.4.

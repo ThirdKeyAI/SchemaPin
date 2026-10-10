@@ -4,26 +4,54 @@ package verification
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/ThirdKeyAi/schemapin/go/pkg/core"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/crypto"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/discovery"
+	"github.com/ThirdKeyAi/schemapin/go/pkg/dns"
+	"github.com/ThirdKeyAi/schemapin/go/pkg/domain"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/resolver"
 	"github.com/ThirdKeyAi/schemapin/go/pkg/revocation"
 )
 
+// ExpirationSkewSeconds is the clock-skew tolerance applied to expires_at
+// comparisons.
+const ExpirationSkewSeconds = 300
+
+var rfc3339Re = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$`)
+
+// ParseRFC3339 parses a strict RFC 3339 timestamp (T separator, mandatory
+// offset). Date-only strings and local times without an offset are rejected.
+func ParseRFC3339(value string) (time.Time, bool) {
+	if !rfc3339Re.MatchString(value) {
+		return time.Time{}, false
+	}
+	ts, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return ts.UTC(), true
+}
+
 // Warning constants for v1.4 signature expiration semantics.
 const (
 	// WarningSignatureExpired is appended to VerificationResult.Warnings when
-	// a signature carried an expires_at field that has passed. The result
-	// remains Valid (degraded, not failed).
+	// a signature carried an expires_at field that has passed and the caller
+	// opted in with allowExpired (degraded, not failed).
 	WarningSignatureExpired = "signature_expired"
 	// WarningSignatureExpiresAtUnparseable is appended when a signature's
-	// expires_at field could not be parsed as RFC 3339. The result remains
-	// Valid (fail-open) and is not marked Expired.
+	// expires_at field could not be parsed as RFC 3339 and the caller opted
+	// in with allowExpired.
 	WarningSignatureExpiresAtUnparseable = "signature_expires_at_unparseable"
+	// WarningLegacySignatureFormat is appended when a skill signature uses the
+	// pre-1.4 root-hash-only format whose metadata fields are unsigned.
+	WarningLegacySignatureFormat = "legacy_signature_format"
+	// WarningDomainUnbound is appended when the caller did not bind the
+	// expected domain and the signature's own domain field was used.
+	WarningDomainUnbound = "domain_unbound"
 )
 
 // ErrorCode represents structured error codes for verification results.
@@ -51,6 +79,14 @@ const (
 	// ErrBundleExpired (v1.4) — a signed trust bundle's expires_at is in the
 	// past (or unparseable).
 	ErrBundleExpired ErrorCode = "bundle_expired"
+	// ErrSignatureExpired — a signature's expires_at is in the past (or
+	// unparseable) and the caller did not opt in with AllowExpired. Hard failure.
+	ErrSignatureExpired ErrorCode = "signature_expired"
+	// ErrDomainInvalid — the caller-supplied domain is not a valid RFC 1123 hostname.
+	ErrDomainInvalid ErrorCode = "domain_invalid"
+	// ErrBundleAuthorityUntrusted — a trust bundle's authority key is not
+	// pre-seeded in the authority store and first-use trust was not allowed.
+	ErrBundleAuthorityUntrusted ErrorCode = "bundle_authority_untrusted"
 )
 
 // CanonicalizationV1 is the algorithm identifier (v1.4 alpha.3) for the
@@ -110,32 +146,51 @@ type VerificationResult struct {
 	PreviousHash string `json:"previous_hash,omitempty"`
 }
 
-// WithExpirationCheck applies a v1.4 signature expiration check to a
-// successful VerificationResult and returns the (possibly mutated) receiver.
+// WithExpirationCheck applies a v1.4 signature expiration check and returns
+// the (possibly mutated) receiver. It is fail-closed: see WithExpirationPolicy.
+// Equivalent to WithExpirationPolicy(expiresAt, false).
+func (r *VerificationResult) WithExpirationCheck(expiresAt string) *VerificationResult {
+	return r.WithExpirationPolicy(expiresAt, false)
+}
+
+// WithExpirationPolicy applies a signature expiration check:
 //
-// Semantics mirror the Rust reference implementation:
 //   - expiresAt == "" returns the receiver unchanged.
-//   - Parseable RFC 3339 timestamp in the past sets Expired = true, copies
-//     ExpiresAt, and appends a "signature_expired" warning. Valid is left
-//     intact (degraded, not failed).
-//   - Parseable timestamp in the future just records ExpiresAt.
-//   - Unparseable input appends a "signature_expires_at_unparseable" warning
-//     and does not mark the result as expired (fail-open).
+//   - A value that is not strict RFC 3339 fails with ErrSignatureExpired
+//     (allowExpired downgrades this to a WarningSignatureExpiresAtUnparseable
+//     warning).
+//   - A timestamp more than ExpirationSkewSeconds in the past fails with
+//     ErrSignatureExpired and sets Expired. With allowExpired the result stays
+//     Valid but is marked Expired and carries a WarningSignatureExpired
+//     warning (the pre-1.4.0 "degraded, not failed" behavior).
+//   - A future timestamp just records ExpiresAt.
 //
 // The receiver may be nil; in that case it is returned unchanged.
-func (r *VerificationResult) WithExpirationCheck(expiresAt string) *VerificationResult {
+func (r *VerificationResult) WithExpirationPolicy(expiresAt string, allowExpired bool) *VerificationResult {
 	if r == nil || expiresAt == "" {
 		return r
 	}
-	ts, err := time.Parse(time.RFC3339, expiresAt)
-	if err != nil {
-		r.Warnings = append(r.Warnings, WarningSignatureExpiresAtUnparseable)
+	ts, ok := ParseRFC3339(expiresAt)
+	if !ok {
+		if allowExpired {
+			r.Warnings = append(r.Warnings, WarningSignatureExpiresAtUnparseable)
+			return r
+		}
+		r.Valid = false
+		r.ErrorCode = ErrSignatureExpired
+		r.ErrorMessage = fmt.Sprintf("expires_at is not a valid RFC 3339 timestamp: %q", expiresAt)
 		return r
 	}
 	r.ExpiresAt = expiresAt
-	if time.Now().UTC().After(ts.UTC()) {
+	if time.Now().UTC().After(ts.Add(ExpirationSkewSeconds * time.Second)) {
 		r.Expired = true
-		r.Warnings = append(r.Warnings, WarningSignatureExpired)
+		if allowExpired {
+			r.Warnings = append(r.Warnings, WarningSignatureExpired)
+		} else {
+			r.Valid = false
+			r.ErrorCode = ErrSignatureExpired
+			r.ErrorMessage = fmt.Sprintf("signature expired at %s", expiresAt)
+		}
 	}
 	return r
 }
@@ -170,7 +225,11 @@ const (
 )
 
 // KeyPinStore is a lightweight in-memory fingerprint-based pin store.
-// Keys are stored by tool_id@domain.
+//
+// Keys are stored by tool_id@domain. Verification flows use Check before the
+// signature check and Pin only after it succeeds, so a failed verification
+// never leaves a pin behind. Operators can pre-seed expected fingerprints with
+// Seed.
 type KeyPinStore struct {
 	pins map[string]string
 }
@@ -184,18 +243,36 @@ func pinKey(toolID, domain string) string {
 	return toolID + "@" + domain
 }
 
-// CheckAndPin checks and optionally pins a key fingerprint.
-func (s *KeyPinStore) CheckAndPin(toolID, domain, fingerprint string) PinResult {
-	k := pinKey(toolID, domain)
-	existing, ok := s.pins[k]
+// Check compares fingerprint with the pinned value without mutating the store.
+func (s *KeyPinStore) Check(toolID, domain, fingerprint string) PinResult {
+	existing, ok := s.pins[pinKey(toolID, domain)]
 	if !ok {
-		s.pins[k] = fingerprint
 		return PinFirstUse
 	}
 	if existing == fingerprint {
 		return PinPinned
 	}
 	return PinChanged
+}
+
+// Pin stores fingerprint for tool@domain (overwrites).
+func (s *KeyPinStore) Pin(toolID, domain, fingerprint string) {
+	s.pins[pinKey(toolID, domain)] = fingerprint
+}
+
+// Seed pre-seeds an expected fingerprint (out-of-band trust establishment).
+func (s *KeyPinStore) Seed(toolID, domain, fingerprint string) {
+	s.Pin(toolID, domain, fingerprint)
+}
+
+// CheckAndPin checks and pins on first use in one step. Prefer Check + Pin so
+// that pinning can be deferred until after signature verification.
+func (s *KeyPinStore) CheckAndPin(toolID, domain, fingerprint string) PinResult {
+	result := s.Check(toolID, domain, fingerprint)
+	if result == PinFirstUse {
+		s.Pin(toolID, domain, fingerprint)
+	}
+	return result
 }
 
 // GetPinned returns the pinned fingerprint for a tool@domain, or empty string.
@@ -218,22 +295,26 @@ func FromJSON(jsonStr string) (*KeyPinStore, error) {
 	if err := json.Unmarshal([]byte(jsonStr), &store.pins); err != nil {
 		return nil, err
 	}
+	if store.pins == nil {
+		return nil, fmt.Errorf("pin store JSON must be an object of string fingerprints")
+	}
 	return store, nil
 }
 
 // VerifySchemaOffline verifies a schema offline using pre-fetched discovery and revocation data.
 //
-// 7-step verification flow:
-// 1. Validate discovery document
-// 2. Extract public key and compute fingerprint
-// 3. Check revocation (both simple list + standalone doc)
-// 4. TOFU key pinning check
-// 5. Canonicalize schema and compute hash
-// 6. Verify ECDSA signature against hash
-// 7. Return structured result
+// Verification flow:
+//  1. Validate the canonicalization identifier and the domain syntax
+//  2. Validate discovery document
+//  3. Extract public key and compute fingerprint
+//  4. Check revocation (both simple list + standalone doc)
+//  5. TOFU pin check (read-only)
+//  6. Canonicalize schema, compute hash, verify ECDSA signature
+//  7. Pin the key on first use (only after a successful verification)
+//  8. Return structured result
 //
 // Use VerifySchemaOfflineWithCanonicalization when the signature carries
-// a v1.4 alpha.3 canonicalization algorithm identifier; this thin wrapper
+// a v1.4 canonicalization algorithm identifier; this thin wrapper
 // passes the empty string (== default schemapin-v1).
 func VerifySchemaOffline(
 	schema map[string]interface{},
@@ -250,7 +331,7 @@ func VerifySchemaOffline(
 }
 
 // VerifySchemaOfflineWithCanonicalization is VerifySchemaOffline plus the
-// optional v1.4 alpha.3 canonicalization algorithm parameter.
+// optional v1.4 canonicalization algorithm parameter.
 //
 // `canonicalization` mirrors the optional "canonicalization" field on
 // .schemapin.sig documents. Empty string or "schemapin-v1" are equivalent
@@ -259,40 +340,50 @@ func VerifySchemaOffline(
 func VerifySchemaOfflineWithCanonicalization(
 	schema map[string]interface{},
 	signatureB64 string,
-	domain string,
+	domainName string,
 	toolID string,
 	disc *discovery.WellKnownResponse,
 	rev *revocation.RevocationDocument,
 	pinStore *KeyPinStore,
 	canonicalization string,
 ) *VerificationResult {
-	// Step 0 (v1.4 alpha.3): canonicalization algorithm check.
+	// Step 1: canonicalization algorithm + domain syntax.
 	if bad := CheckCanonicalization(canonicalization); bad != "" {
 		return &VerificationResult{
 			Valid:        false,
-			Domain:       domain,
+			Domain:       domainName,
 			ErrorCode:    ErrCanonicalizationUnsupported,
 			ErrorMessage: fmt.Sprintf("Unsupported canonicalization algorithm: %s", bad),
 		}
 	}
+	normalized, err := domain.ValidateDomain(domainName)
+	if err != nil {
+		return &VerificationResult{
+			Valid:        false,
+			Domain:       domainName,
+			ErrorCode:    ErrDomainInvalid,
+			ErrorMessage: err.Error(),
+		}
+	}
+	domainName = normalized
 
-	// Step 1: Validate discovery document
+	// Step 2: Validate discovery document
 	if disc == nil || disc.PublicKeyPEM == "" || !strings.Contains(disc.PublicKeyPEM, "-----BEGIN PUBLIC KEY-----") {
 		return &VerificationResult{
 			Valid:        false,
-			Domain:       domain,
+			Domain:       domainName,
 			ErrorCode:    ErrDiscoveryInvalid,
 			ErrorMessage: "Discovery document missing or invalid public_key_pem",
 		}
 	}
 
-	// Step 2: Extract public key and compute fingerprint
+	// Step 3: Extract public key and compute fingerprint
 	keyManager := crypto.NewKeyManager()
 	publicKey, err := keyManager.LoadPublicKeyPEM(disc.PublicKeyPEM)
 	if err != nil {
 		return &VerificationResult{
 			Valid:        false,
-			Domain:       domain,
+			Domain:       domainName,
 			ErrorCode:    ErrKeyNotFound,
 			ErrorMessage: fmt.Sprintf("Failed to load public key: %v", err),
 		}
@@ -302,62 +393,69 @@ func VerifySchemaOfflineWithCanonicalization(
 	if err != nil {
 		return &VerificationResult{
 			Valid:        false,
-			Domain:       domain,
+			Domain:       domainName,
 			ErrorCode:    ErrKeyNotFound,
 			ErrorMessage: fmt.Sprintf("Failed to calculate fingerprint: %v", err),
 		}
 	}
 
-	// Step 3: Check revocation
+	// Step 4: Check revocation
 	if err := revocation.CheckRevocationCombined(disc.RevokedKeys, rev, fingerprint); err != nil {
 		return &VerificationResult{
 			Valid:        false,
-			Domain:       domain,
+			Domain:       domainName,
 			ErrorCode:    ErrKeyRevoked,
 			ErrorMessage: err.Error(),
 		}
 	}
 
-	// Step 4: TOFU key pinning
-	pinResult := pinStore.CheckAndPin(toolID, domain, fingerprint)
+	// Step 5: TOFU pin check (no write yet)
+	if pinStore == nil {
+		pinStore = NewKeyPinStore()
+	}
+	pinResult := pinStore.Check(toolID, domainName, fingerprint)
 	if pinResult == PinChanged {
 		return &VerificationResult{
 			Valid:        false,
-			Domain:       domain,
+			Domain:       domainName,
 			ErrorCode:    ErrKeyPinMismatch,
 			ErrorMessage: "Key fingerprint changed since last use",
 		}
 	}
 
-	// Step 5: Canonicalize and hash
+	// Step 6: Canonicalize, hash, verify
 	c := core.NewSchemaPinCore()
 	schemaHash, err := c.CanonicalizeAndHash(schema)
 	if err != nil {
 		return &VerificationResult{
 			Valid:        false,
-			Domain:       domain,
+			Domain:       domainName,
 			ErrorCode:    ErrSchemaCanonicalizationFailed,
 			ErrorMessage: fmt.Sprintf("Failed to canonicalize schema: %v", err),
 		}
 	}
 
-	// Step 6: Verify signature
 	sigManager := crypto.NewSignatureManager()
 	valid := sigManager.VerifySchemaSignature(schemaHash, signatureB64, publicKey)
 
 	if !valid {
 		return &VerificationResult{
 			Valid:        false,
-			Domain:       domain,
+			Domain:       domainName,
 			ErrorCode:    ErrSignatureInvalid,
 			ErrorMessage: "Signature verification failed",
 		}
 	}
 
-	// Step 7: Return success
+	// Step 7: Pin only after the signature verified
+	if pinResult == PinFirstUse {
+		pinStore.Pin(toolID, domainName, fingerprint)
+	}
+
+	// Step 8: Return success
 	result := &VerificationResult{
 		Valid:         true,
-		Domain:        domain,
+		Domain:        domainName,
 		DeveloperName: disc.DeveloperName,
 		KeyPinning: &KeyPinningStatus{
 			Status: string(pinResult),
@@ -373,28 +471,106 @@ func VerifySchemaOfflineWithCanonicalization(
 	return result
 }
 
+// VerifySchemaOfflineWithDNS is VerifySchemaOffline plus a DNS TXT
+// second-channel check. When txt is non-nil the discovery key's fingerprint
+// must match the TXT record or the result is a hard ErrDomainMismatch failure.
+// The DNS check runs before anything is pinned.
+func VerifySchemaOfflineWithDNS(
+	schema map[string]interface{},
+	signatureB64 string,
+	domainName string,
+	toolID string,
+	disc *discovery.WellKnownResponse,
+	rev *revocation.RevocationDocument,
+	pinStore *KeyPinStore,
+	txt *dns.DnsTxtRecord,
+	canonicalization string,
+) *VerificationResult {
+	if txt != nil {
+		if err := dns.VerifyDnsMatch(disc, txt); err != nil {
+			return &VerificationResult{
+				Valid:        false,
+				Domain:       domainName,
+				ErrorCode:    ErrDomainMismatch,
+				ErrorMessage: err.Error(),
+			}
+		}
+	}
+	return VerifySchemaOfflineWithCanonicalization(schema, signatureB64, domainName, toolID, disc, rev, pinStore, canonicalization)
+}
+
 // VerifySchemaWithResolver verifies a schema using a resolver for discovery and revocation.
+//
+// Revocation is fail-closed: if the discovery document declares a
+// revocation_endpoint that cannot be fetched, verification fails with
+// ErrDiscoveryFetchFailed. Use VerifySchemaWithResolverOptions to opt out.
 func VerifySchemaWithResolver(
 	schema map[string]interface{},
 	signatureB64 string,
-	domain string,
+	domainName string,
 	toolID string,
 	r resolver.SchemaResolver,
 	pinStore *KeyPinStore,
 ) *VerificationResult {
-	disc, err := r.ResolveDiscovery(domain)
+	return VerifySchemaWithResolverOptions(schema, signatureB64, domainName, toolID, r, pinStore, ResolverOptions{})
+}
+
+// ResolverOptions tunes the resolver-based verification flows.
+type ResolverOptions struct {
+	// AllowUnreachableRevocation treats a revocation fetch failure as "no
+	// revocations" instead of failing closed.
+	AllowUnreachableRevocation bool
+	// AllowExpired accepts expired skill signatures (degraded) instead of
+	// failing with ErrSignatureExpired. Ignored for schema signatures.
+	AllowExpired bool
+}
+
+// VerifySchemaWithResolverOptions is VerifySchemaWithResolver with explicit
+// policy knobs.
+func VerifySchemaWithResolverOptions(
+	schema map[string]interface{},
+	signatureB64 string,
+	domainName string,
+	toolID string,
+	r resolver.SchemaResolver,
+	pinStore *KeyPinStore,
+	opts ResolverOptions,
+) *VerificationResult {
+	normalized, err := domain.ValidateDomain(domainName)
 	if err != nil {
 		return &VerificationResult{
 			Valid:        false,
-			Domain:       domain,
+			Domain:       domainName,
+			ErrorCode:    ErrDomainInvalid,
+			ErrorMessage: err.Error(),
+		}
+	}
+	domainName = normalized
+
+	disc, err := r.ResolveDiscovery(domainName)
+	if err != nil {
+		return &VerificationResult{
+			Valid:        false,
+			Domain:       domainName,
 			ErrorCode:    ErrDiscoveryFetchFailed,
-			ErrorMessage: fmt.Sprintf("Could not resolve discovery for domain: %s", domain),
+			ErrorMessage: fmt.Sprintf("Could not resolve discovery for domain: %s", domainName),
 		}
 	}
 
-	rev, _ := r.ResolveRevocation(domain, disc)
+	rev, err := r.ResolveRevocation(domainName, disc)
+	if err != nil {
+		if !opts.AllowUnreachableRevocation {
+			return &VerificationResult{
+				Valid:        false,
+				Domain:       domainName,
+				ErrorCode:    ErrDiscoveryFetchFailed,
+				ErrorMessage: fmt.Sprintf("Revocation document unreachable (fail-closed): %v", err),
+			}
+		}
+		rev = nil
+	}
 
-	return VerifySchemaOffline(schema, signatureB64, domain, toolID, disc, rev, pinStore)
+	return VerifySchemaOffline(schema, signatureB64, domainName, toolID, disc, rev, pinStore)
 }
 
 // VerifySchemaForA2A verifies a schema in the context of an A2A interaction

@@ -1,0 +1,8 @@
+{
+  "name": "19-mcp-tool",
+  "description": "A realistic MCP tool schema.",
+  "input": "{\"name\":\"get_weather\",\"description\":\"Get weather for a city & region\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\",\"maxLength\":100},\"units\":{\"type\":\"string\",\"enum\":[\"metric\",\"imperial\"]},\"days\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":14}},\"required\":[\"city\"]}}",
+  "reject": false,
+  "expected_canonical": "{\"description\":\"Get weather for a city & region\",\"inputSchema\":{\"properties\":{\"city\":{\"maxLength\":100,\"type\":\"string\"},\"days\":{\"maximum\":14,\"minimum\":1,\"type\":\"integer\"},\"units\":{\"enum\":[\"metric\",\"imperial\"],\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"name\":\"get_weather\"}",
+  "expected_sha256": "0a61bf006ee496152c71d4355f1c4c82d63df4093b33ef964a96347537f45277"
+}

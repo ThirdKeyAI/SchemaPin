@@ -77,7 +77,7 @@ All four implementations use identical crypto (ECDSA P-256 + SHA-256) — cross-
 | [Skill Signing](skill-signing.md) | Sign and verify skill directories (v1.3) |
 | [Trust Bundles](trust-bundles.md) | Offline verification and pluggable resolvers |
 | [Revocation](revocation.md) | Rotate keys, publish revocation documents, fail closed |
-| [Signature Expiration](signature-expiration.md) | `expires_at` field for degraded-not-failed verification (v1.4-alpha, all 4 languages) |
+| [Signature Expiration](signature-expiration.md) | `expires_at` field, signed and fail-closed (v1.4, all 4 languages) |
 | [DNS TXT Cross-Verification](dns-txt.md) | Second-channel `_schemapin.{domain}` lookups (v1.4-alpha, all 4 languages) |
 | [Schema Version Binding](schema-version-binding.md) | `schema_version` + `previous_hash` lineage chain to defend against rug-pull substitutions (v1.4-alpha, all 4 languages) |
 | [A2A Verification Context](a2a-context.md) | Scope schema verification to caller-trusted domains across A2A boundaries (v1.4-alpha, all 4 languages) |

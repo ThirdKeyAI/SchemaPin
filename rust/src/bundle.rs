@@ -5,27 +5,86 @@
 //! establishment. Provides:
 //!
 //! - [`sign_trust_bundle`] / [`verify_trust_bundle`] — ECDSA P-256 over the
-//!   canonical bundle bytes, with TOFU pinning of the authority key by `kid`.
-//! - [`merge_trust_bundles`] — combine bundles from multiple sources, newest
-//!   entry wins per domain.
+//!   canonical bundle bytes, with an **authority allow-list**: the authority
+//!   key must be pre-seeded in the authority store ([`seed_bundle_authority`])
+//!   unless the caller explicitly opts in to first-use trust.
+//! - [`merge_trust_bundles`] — combine bundles from multiple sources with
+//!   per-authority precedence and parsed-timestamp tie-breaking.
 //! - [`build_trust_bundle_request`] / [`build_trust_bundle_response`] /
 //!   [`parse_trust_bundle_response`] — the `schemapin/trustBundle` JSON-RPC
 //!   envelope for A2A bundle exchange.
 //!
 //! ## Signing input
 //!
-//! The signature covers the `schemapin-v1` canonicalization (recursive sorted
-//! keys, compact, UTF-8) of the entire bundle object with the `signature` field
-//! set to the empty string `""`. All four SDKs build the identical byte string,
-//! so a bundle signed by any SDK verifies in every other.
+//! The signature covers the `schemapin-v1` canonicalization of the bundle's
+//! known fields (the serde representation; unknown fields are dropped on parse
+//! and therefore unprotected) with the `signature` field set to `""`. All
+//! four SDKs build the identical byte string, so a bundle signed by any SDK
+//! verifies in every other.
 
 use serde_json::{json, Value};
 
 use crate::canonicalize::canonicalize_schema;
 use crate::crypto::{calculate_key_id, sign_data, verify_signature, KeyManager};
 use crate::error::{Error, ErrorCode};
-use crate::pinning::{check_pinning, KeyPinStore};
+use crate::pinning::{KeyPinStore, PinningResult};
 use crate::types::bundle::{BundleAuthority, SchemaPinTrustBundle};
+use crate::verification::parse_rfc3339_strict;
+
+/// Successful [`verify_trust_bundle_with_options`] outcome. `first_use` is
+/// `true` when the authority key was not pre-seeded and the caller allowed
+/// first-use trust; hosts should surface this exactly like a first-use tool key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleVerification {
+    pub kid: String,
+    pub fingerprint: String,
+    pub first_use: bool,
+}
+
+/// Policy knobs for [`verify_trust_bundle_with_options`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BundleVerifyOptions {
+    /// Pin an unknown authority on first use (TOFU) instead of failing with
+    /// `BUNDLE_AUTHORITY_UNTRUSTED`.
+    pub allow_first_use: bool,
+}
+
+/// Pre-seed the expected fingerprint (`sha256:<hex>`) of a bundle authority.
+/// This is the allow-list entry [`verify_trust_bundle`] requires.
+pub fn seed_bundle_authority(store: &mut KeyPinStore, kid: &str, fingerprint: &str) {
+    store.seed(kid, BUNDLE_AUTHORITY_PIN_DOMAIN, fingerprint);
+}
+
+/// Seed an authority from its PEM public key (for example the
+/// `public_key_pem` of the authority's own discovery document). Returns the
+/// fingerprint.
+pub fn seed_bundle_authority_from_pem(
+    store: &mut KeyPinStore,
+    kid: &str,
+    public_key_pem: &str,
+) -> Result<String, Error> {
+    let fingerprint = calculate_key_id(public_key_pem)?;
+    seed_bundle_authority(store, kid, &fingerprint);
+    Ok(fingerprint)
+}
+
+/// Return a domain that appears more than once in the bundle's documents or
+/// revocations.
+pub fn duplicate_domain(bundle: &SchemaPinTrustBundle) -> Option<String> {
+    let mut seen = std::collections::HashSet::new();
+    for d in &bundle.documents {
+        if !seen.insert(d.domain.as_str()) {
+            return Some(d.domain.clone());
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    for r in &bundle.revocations {
+        if !seen.insert(r.domain.as_str()) {
+            return Some(r.domain.clone());
+        }
+    }
+    None
+}
 
 /// Bundle-distribution wire format version stamped on signed bundles.
 pub const BUNDLE_VERSION_SIGNED: &str = "1.4";
@@ -41,7 +100,7 @@ fn signing_bytes(bundle: &SchemaPinTrustBundle) -> Result<String, Error> {
     if let Value::Object(map) = &mut value {
         map.insert("signature".to_string(), Value::String(String::new()));
     }
-    Ok(canonicalize_schema(&value))
+    canonicalize_schema(&value)
 }
 
 /// Sign a trust bundle with a bundle-authority key.
@@ -58,6 +117,12 @@ pub fn sign_trust_bundle(
     signed_at: &str,
     expires_at: Option<&str>,
 ) -> Result<SchemaPinTrustBundle, Error> {
+    if let Some(dup) = duplicate_domain(bundle) {
+        return Err(Error::Verification {
+            code: ErrorCode::DiscoveryInvalid,
+            message: format!("trust bundle has duplicate entries for domain {:?}", dup),
+        });
+    }
     let secret = KeyManager::load_private_key_pem(private_key_pem)?;
     let public_key_pem = KeyManager::export_public_key_pem(&secret.public_key())?;
 
@@ -76,31 +141,61 @@ pub fn sign_trust_bundle(
     Ok(signed)
 }
 
-/// Verify a signed trust bundle and TOFU-pin its authority key by `kid`.
-///
-/// Steps: require `bundle_authority` + `signature`; reject when `expires_at`
-/// is in the past; TOFU-pin the authority's key fingerprint by `kid` (mismatch
-/// → `KEY_PIN_MISMATCH`); verify the signature over the canonical bytes
-/// (failure → `SIGNATURE_INVALID`).
+/// Verify a signed trust bundle against the authority allow-list: the
+/// authority `kid` must already be seeded in `authority_pin_store`
+/// ([`seed_bundle_authority`]) or verification fails with
+/// `BUNDLE_AUTHORITY_UNTRUSTED`. Use [`verify_trust_bundle_with_options`] to
+/// allow first-use pinning.
 pub fn verify_trust_bundle(
     bundle: &SchemaPinTrustBundle,
     authority_pin_store: &mut KeyPinStore,
 ) -> Result<(), Error> {
-    let authority = bundle.bundle_authority.as_ref().ok_or(Error::Verification {
-        code: ErrorCode::BundleUnsigned,
-        message: "trust bundle has no bundle_authority".to_string(),
-    })?;
+    verify_trust_bundle_with_options(bundle, authority_pin_store, &BundleVerifyOptions::default())
+        .map(|_| ())
+}
+
+/// Verify a signed trust bundle.
+///
+/// Steps: require `bundle_authority` + `signature` (`BUNDLE_UNSIGNED`);
+/// reject duplicate domains (`DISCOVERY_INVALID`); reject when `expires_at`
+/// is in the past or not strict RFC 3339 (`BUNDLE_EXPIRED`); look the
+/// authority's key fingerprint up by `kid` — a different pinned key is
+/// `KEY_PIN_MISMATCH`, an unknown `kid` is `BUNDLE_AUTHORITY_UNTRUSTED`
+/// unless `opts.allow_first_use`; verify the signature over the canonical
+/// bytes (`SIGNATURE_INVALID`); pin the authority on first use only after the
+/// signature verified.
+///
+/// The bundle carries its own public key, so without an allow-list any
+/// self-signed bundle under a fresh `kid` would pass. Treat `allow_first_use`
+/// exactly like TOFU for a tool key (prompt the user, log it).
+pub fn verify_trust_bundle_with_options(
+    bundle: &SchemaPinTrustBundle,
+    authority_pin_store: &mut KeyPinStore,
+    opts: &BundleVerifyOptions,
+) -> Result<BundleVerification, Error> {
+    let authority = bundle
+        .bundle_authority
+        .as_ref()
+        .ok_or(Error::Verification {
+            code: ErrorCode::BundleUnsigned,
+            message: "trust bundle has no bundle_authority".to_string(),
+        })?;
     let signature = bundle.signature.as_ref().ok_or(Error::Verification {
         code: ErrorCode::BundleUnsigned,
         message: "trust bundle has no signature".to_string(),
     })?;
 
+    if let Some(dup) = duplicate_domain(bundle) {
+        return Err(Error::Verification {
+            code: ErrorCode::DiscoveryInvalid,
+            message: format!("trust bundle has duplicate entries for domain {:?}", dup),
+        });
+    }
+
     if let Some(expires_at) = &bundle.expires_at {
-        let exp = chrono::DateTime::parse_from_rfc3339(expires_at).map_err(|e| {
-            Error::Verification {
-                code: ErrorCode::BundleExpired,
-                message: format!("unparseable expires_at '{}': {}", expires_at, e),
-            }
+        let exp = parse_rfc3339_strict(expires_at).ok_or_else(|| Error::Verification {
+            code: ErrorCode::BundleExpired,
+            message: format!("unparseable expires_at '{}'", expires_at),
         })?;
         if chrono::Utc::now() > exp {
             return Err(Error::Verification {
@@ -110,62 +205,121 @@ pub fn verify_trust_bundle(
         }
     }
 
-    let fingerprint = calculate_key_id(&authority.public_key_pem)?;
-    check_pinning(
-        authority_pin_store,
-        &authority.kid,
-        BUNDLE_AUTHORITY_PIN_DOMAIN,
-        &fingerprint,
-    )?;
+    let fingerprint =
+        calculate_key_id(&authority.public_key_pem).map_err(|e| Error::Verification {
+            code: ErrorCode::KeyNotFound,
+            message: format!("bundle authority key is invalid: {}", e),
+        })?;
+    let pin_result =
+        authority_pin_store.check(&authority.kid, BUNDLE_AUTHORITY_PIN_DOMAIN, &fingerprint);
+    match pin_result {
+        PinningResult::Changed => {
+            return Err(Error::Verification {
+                code: ErrorCode::KeyPinMismatch,
+                message: format!(
+                    "bundle authority key for kid '{}' does not match the seeded authority key",
+                    authority.kid
+                ),
+            });
+        }
+        PinningResult::FirstUse if !opts.allow_first_use => {
+            return Err(Error::Verification {
+                code: ErrorCode::BundleAuthorityUntrusted,
+                message: format!(
+                    "bundle authority kid '{}' is not in the authority allow-list; seed it with seed_bundle_authority or set allow_first_use",
+                    authority.kid
+                ),
+            });
+        }
+        _ => {}
+    }
 
     let canonical = signing_bytes(bundle)?;
-    if verify_signature(&authority.public_key_pem, canonical.as_bytes(), signature)? {
-        Ok(())
-    } else {
-        Err(Error::Verification {
+    if !verify_signature(&authority.public_key_pem, canonical.as_bytes(), signature)? {
+        return Err(Error::Verification {
             code: ErrorCode::SignatureInvalid,
             message: "trust bundle signature does not verify".to_string(),
-        })
+        });
     }
+    if pin_result == PinningResult::FirstUse {
+        authority_pin_store.pin(&authority.kid, BUNDLE_AUTHORITY_PIN_DOMAIN, &fingerprint);
+    }
+    Ok(BundleVerification {
+        kid: authority.kid.clone(),
+        fingerprint,
+        first_use: pin_result == PinningResult::FirstUse,
+    })
+}
+
+/// Rank used by [`merge_trust_bundles_with_precedence`]: higher wins.
+fn merge_rank(
+    bundle: &SchemaPinTrustBundle,
+    precedence: Option<&[&str]>,
+) -> (i64, chrono::DateTime<chrono::Utc>) {
+    let mut rank: i64 = 0;
+    if let Some(list) = precedence {
+        if !list.is_empty() {
+            rank = -(list.len() as i64) - 1;
+            if let Some(auth) = &bundle.bundle_authority {
+                if let Some(i) = list.iter().position(|k| *k == auth.kid) {
+                    rank = -(i as i64);
+                }
+            }
+        }
+    }
+    let raw = bundle.signed_at.as_deref().unwrap_or(&bundle.created_at);
+    let ts = parse_rfc3339_strict(raw).unwrap_or(chrono::DateTime::<chrono::Utc>::MIN_UTC);
+    (rank, ts)
 }
 
 /// Merge trust bundles, deduplicating discovery + revocation documents by
 /// domain. When two bundles carry the same domain, the entry from the bundle
-/// with the newer timestamp (`signed_at`, else `created_at`) wins.
-///
-/// The result is an *unsigned* bundle (a merge cannot carry a single
-/// authority's signature) stamped `schemapin_bundle_version = "1.4"` with
-/// `created_at` set to the newest source timestamp. Re-sign it with
-/// [`sign_trust_bundle`] before redistribution.
+/// with the newer **parsed** timestamp (`signed_at`, else `created_at`) wins;
+/// unparseable timestamps rank oldest. Equivalent to
+/// [`merge_trust_bundles_with_precedence`] with no precedence list.
 pub fn merge_trust_bundles(bundles: &[SchemaPinTrustBundle]) -> SchemaPinTrustBundle {
+    merge_trust_bundles_with_precedence(bundles, None)
+}
+
+/// [`merge_trust_bundles`] with per-authority precedence: `authority_precedence`
+/// lists authority `kid`s, earlier wins; bundles from unlisted or absent
+/// authorities rank last; the parsed timestamp breaks ties. Merge only
+/// bundles you have already verified with [`verify_trust_bundle`].
+///
+/// The result is an *unsigned* bundle stamped `schemapin_bundle_version =
+/// "1.4"` with `created_at` set to the newest source timestamp. Re-sign it
+/// with [`sign_trust_bundle`] before redistribution.
+pub fn merge_trust_bundles_with_precedence(
+    bundles: &[SchemaPinTrustBundle],
+    authority_precedence: Option<&[&str]>,
+) -> SchemaPinTrustBundle {
     use std::collections::HashMap;
 
-    // domain -> (timestamp, document)
-    let mut docs: HashMap<String, (String, _)> = HashMap::new();
-    let mut revs: HashMap<String, (String, _)> = HashMap::new();
-    let mut newest_ts = String::new();
+    type Rank = (i64, chrono::DateTime<chrono::Utc>);
+    let mut docs: HashMap<String, (Rank, _)> = HashMap::new();
+    let mut revs: HashMap<String, (Rank, _)> = HashMap::new();
+    let mut newest: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut newest_raw = String::new();
 
     for b in bundles {
-        let ts = b
-            .signed_at
-            .clone()
-            .unwrap_or_else(|| b.created_at.clone());
-        if ts > newest_ts {
-            newest_ts = ts.clone();
+        let rank = merge_rank(b, authority_precedence);
+        if newest.is_none_or(|n| rank.1 > n) {
+            newest = Some(rank.1);
+            newest_raw = b.signed_at.clone().unwrap_or_else(|| b.created_at.clone());
         }
         for d in &b.documents {
             match docs.get(&d.domain) {
-                Some((existing_ts, _)) if *existing_ts >= ts => {}
+                Some((existing, _)) if *existing >= rank => {}
                 _ => {
-                    docs.insert(d.domain.clone(), (ts.clone(), d.clone()));
+                    docs.insert(d.domain.clone(), (rank, d.clone()));
                 }
             }
         }
         for r in &b.revocations {
             match revs.get(&r.domain) {
-                Some((existing_ts, _)) if *existing_ts >= ts => {}
+                Some((existing, _)) if *existing >= rank => {}
                 _ => {
-                    revs.insert(r.domain.clone(), (ts.clone(), r.clone()));
+                    revs.insert(r.domain.clone(), (rank, r.clone()));
                 }
             }
         }
@@ -178,7 +332,7 @@ pub fn merge_trust_bundles(bundles: &[SchemaPinTrustBundle]) -> SchemaPinTrustBu
 
     SchemaPinTrustBundle {
         schemapin_bundle_version: BUNDLE_VERSION_SIGNED.to_string(),
-        created_at: newest_ts,
+        created_at: newest_raw,
         documents,
         revocations,
         ..Default::default()
@@ -214,13 +368,14 @@ pub fn build_trust_bundle_response(
 
 /// Extract the bundle from a `schemapin/trustBundle` JSON-RPC response.
 pub fn parse_trust_bundle_response(response: &Value) -> Result<SchemaPinTrustBundle, Error> {
-    let bundle = response
-        .get("result")
-        .and_then(|r| r.get("bundle"))
-        .ok_or(Error::Verification {
-            code: ErrorCode::DiscoveryInvalid,
-            message: "JSON-RPC response missing result.bundle".to_string(),
-        })?;
+    let bundle =
+        response
+            .get("result")
+            .and_then(|r| r.get("bundle"))
+            .ok_or(Error::Verification {
+                code: ErrorCode::DiscoveryInvalid,
+                message: "JSON-RPC response missing result.bundle".to_string(),
+            })?;
     Ok(serde_json::from_value(bundle.clone())?)
 }
 
@@ -230,6 +385,20 @@ mod tests {
     use crate::crypto::generate_key_pair;
     use crate::types::bundle::BundledDiscovery;
     use crate::types::discovery::WellKnownResponse;
+
+    fn verify_first_use(
+        bundle: &SchemaPinTrustBundle,
+        store: &mut KeyPinStore,
+    ) -> Result<(), Error> {
+        verify_trust_bundle_with_options(
+            bundle,
+            store,
+            &BundleVerifyOptions {
+                allow_first_use: true,
+            },
+        )
+        .map(|_| ())
+    }
 
     fn make_bundle(domain: &str, created_at: &str) -> SchemaPinTrustBundle {
         SchemaPinTrustBundle {
@@ -266,10 +435,13 @@ mod tests {
 
         assert_eq!(signed.schemapin_bundle_version, "1.4");
         assert!(signed.signature.is_some());
-        assert_eq!(signed.bundle_authority.as_ref().unwrap().kid, "auth-2026-05");
+        assert_eq!(
+            signed.bundle_authority.as_ref().unwrap().kid,
+            "auth-2026-05"
+        );
 
         let mut store = KeyPinStore::new();
-        verify_trust_bundle(&signed, &mut store).unwrap();
+        verify_first_use(&signed, &mut store).unwrap();
     }
 
     #[test]
@@ -288,7 +460,7 @@ mod tests {
         signed.documents[0].domain = "evil.com".to_string();
 
         let mut store = KeyPinStore::new();
-        let err = verify_trust_bundle(&signed, &mut store).unwrap_err();
+        let err = verify_first_use(&signed, &mut store).unwrap_err();
         assert!(matches!(
             err,
             Error::Verification {
@@ -302,7 +474,7 @@ mod tests {
     fn test_unsigned_bundle_rejected() {
         let bundle = make_bundle("example.com", "2026-05-15T00:00:00Z");
         let mut store = KeyPinStore::new();
-        let err = verify_trust_bundle(&bundle, &mut store).unwrap_err();
+        let err = verify_first_use(&bundle, &mut store).unwrap_err();
         assert!(matches!(
             err,
             Error::Verification {
@@ -325,7 +497,7 @@ mod tests {
         )
         .unwrap();
         let mut store = KeyPinStore::new();
-        let err = verify_trust_bundle(&signed, &mut store).unwrap_err();
+        let err = verify_first_use(&signed, &mut store).unwrap_err();
         assert!(matches!(
             err,
             Error::Verification {
@@ -360,8 +532,8 @@ mod tests {
         .unwrap();
 
         let mut store = KeyPinStore::new();
-        verify_trust_bundle(&signed1, &mut store).unwrap(); // pins kp1
-        let err = verify_trust_bundle(&signed2, &mut store).unwrap_err();
+        verify_first_use(&signed1, &mut store).unwrap(); // pins kp1
+        let err = verify_first_use(&signed2, &mut store).unwrap_err();
         assert!(matches!(
             err,
             Error::Verification {
@@ -427,6 +599,157 @@ mod tests {
 
         // And the parsed bundle still verifies.
         let mut store = KeyPinStore::new();
-        verify_trust_bundle(&parsed, &mut store).unwrap();
+        verify_first_use(&parsed, &mut store).unwrap();
+    }
+
+    // ── authority allow-list (SP-6), parity (SP-19), merge precedence ──
+
+    #[test]
+    fn test_authority_allow_list() {
+        let kp = generate_key_pair().unwrap();
+        let signed = sign_trust_bundle(
+            &make_bundle("victim.com", "2026-05-15T00:00:00Z"),
+            &kp.private_key_pem,
+            "victim-authority-2026",
+            "2026-05-15T00:00:00Z",
+            None,
+        )
+        .unwrap();
+        let mut empty = KeyPinStore::new();
+        match verify_trust_bundle(&signed, &mut empty).unwrap_err() {
+            Error::Verification { code, .. } => {
+                assert_eq!(code, ErrorCode::BundleAuthorityUntrusted)
+            }
+            e => panic!("unexpected error {:?}", e),
+        }
+
+        let mut store = KeyPinStore::new();
+        let fp = seed_bundle_authority_from_pem(
+            &mut store,
+            "victim-authority-2026",
+            &signed.bundle_authority.as_ref().unwrap().public_key_pem,
+        )
+        .unwrap();
+        let res =
+            verify_trust_bundle_with_options(&signed, &mut store, &BundleVerifyOptions::default())
+                .unwrap();
+        assert!(!res.first_use);
+        assert_eq!(res.fingerprint, fp);
+
+        let mut fresh = KeyPinStore::new();
+        let res = verify_trust_bundle_with_options(
+            &signed,
+            &mut fresh,
+            &BundleVerifyOptions {
+                allow_first_use: true,
+            },
+        )
+        .unwrap();
+        assert!(res.first_use);
+        assert!(verify_trust_bundle(&signed, &mut fresh).is_ok());
+
+        // A failed signature never pins.
+        let mut tampered = sign_trust_bundle(
+            &make_bundle("example.com", "2026-05-15T00:00:00Z"),
+            &kp.private_key_pem,
+            "auth",
+            "2026-05-15T00:00:00Z",
+            None,
+        )
+        .unwrap();
+        tampered.documents[0].domain = "evil.com".to_string();
+        let mut s2 = KeyPinStore::new();
+        assert!(verify_first_use(&tampered, &mut s2).is_err());
+        assert!(s2.get_tool("auth", BUNDLE_AUTHORITY_PIN_DOMAIN).is_none());
+    }
+
+    #[test]
+    fn test_strict_expires_at_and_duplicates() {
+        let kp = generate_key_pair().unwrap();
+        for bad in ["2099-01-01", "2099-01-01T00:00:00", "2099-01-01 00:00:00Z"] {
+            let signed = sign_trust_bundle(
+                &make_bundle("example.com", "2026-05-15T00:00:00Z"),
+                &kp.private_key_pem,
+                "auth",
+                "2026-05-15T00:00:00Z",
+                Some(bad),
+            )
+            .unwrap();
+            match verify_first_use(&signed, &mut KeyPinStore::new()).unwrap_err() {
+                Error::Verification { code, .. } => {
+                    assert_eq!(code, ErrorCode::BundleExpired, "{}", bad)
+                }
+                e => panic!("unexpected error {:?}", e),
+            }
+        }
+        let mut dup = make_bundle("example.com", "2026-05-15T00:00:00Z");
+        dup.documents.push(dup.documents[0].clone());
+        assert!(sign_trust_bundle(
+            &dup,
+            &kp.private_key_pem,
+            "auth",
+            "2026-05-15T00:00:00Z",
+            None
+        )
+        .is_err());
+        assert!(crate::resolver::TrustBundleResolver::from_json(
+            &serde_json::to_string(&dup).unwrap()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_merge_precedence() {
+        let trusted = generate_key_pair().unwrap();
+        let rogue = generate_key_pair().unwrap();
+        let named = |name: &str, ts: &str| {
+            let mut b = make_bundle("example.com", ts);
+            b.documents[0].well_known.developer_name = Some(name.to_string());
+            b
+        };
+        let good = sign_trust_bundle(
+            &named("Good", "2026-01-01T00:00:00Z"),
+            &trusted.private_key_pem,
+            "trusted",
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .unwrap();
+        let bad = sign_trust_bundle(
+            &named("Rogue", "2099-01-01T00:00:00Z"),
+            &rogue.private_key_pem,
+            "rogue",
+            "2099-01-01T00:00:00Z",
+            None,
+        )
+        .unwrap();
+        let merged =
+            merge_trust_bundles_with_precedence(&[bad.clone(), good.clone()], Some(&["trusted"]));
+        assert_eq!(
+            merged.documents[0].well_known.developer_name.as_deref(),
+            Some("Good")
+        );
+        let merged = merge_trust_bundles(&[good, bad]);
+        assert_eq!(
+            merged.documents[0].well_known.developer_name.as_deref(),
+            Some("Rogue")
+        );
+        let real = named("Real", "2026-01-01T00:00:00Z");
+        let bogus = named("Bogus", "9999-99-99 bogus");
+        assert_eq!(
+            merge_trust_bundles(&[real.clone(), bogus]).documents[0]
+                .well_known
+                .developer_name
+                .as_deref(),
+            Some("Real")
+        );
+        let offset = named("Offset", "2026-02-01T00:00:00+00:00");
+        assert_eq!(
+            merge_trust_bundles(&[real, offset]).documents[0]
+                .well_known
+                .developer_name
+                .as_deref(),
+            Some("Offset")
+        );
     }
 }

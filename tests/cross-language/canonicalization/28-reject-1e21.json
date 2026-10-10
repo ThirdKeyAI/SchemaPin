@@ -1,0 +1,6 @@
+{
+  "name": "28-reject-1e21",
+  "description": "1e21 exceeds the safe range.",
+  "input": "{\"a\":1e21}",
+  "reject": true
+}

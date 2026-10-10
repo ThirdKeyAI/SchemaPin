@@ -20,15 +20,18 @@ from .bundle import (
 from .bundle_distribution import (
     BUNDLE_AUTHORITY_PIN_DOMAIN,
     BUNDLE_VERSION_SIGNED,
+    BundleVerification,
     BundleVerificationError,
     build_trust_bundle_request,
     build_trust_bundle_response,
     merge_trust_bundles,
     parse_trust_bundle_response,
+    seed_bundle_authority,
+    seed_bundle_authority_from_pem,
     sign_trust_bundle,
     verify_trust_bundle,
 )
-from .core import SchemaPinCore
+from .core import CanonicalizationError, SchemaPinCore
 from .crypto import KeyManager, SignatureManager
 from .discovery import PublicKeyDiscovery
 from .dns import (
@@ -38,6 +41,7 @@ from .dns import (
     txt_record_name,
     verify_dns_match,
 )
+from .domain import InvalidDomainError, is_valid_domain, validate_domain
 from .interactive import (
     CallbackInteractiveHandler,
     ConsoleInteractiveHandler,
@@ -48,6 +52,7 @@ from .interactive import (
     PromptType,
     UserDecision,
 )
+from .lineage import LineageError, LineageRecord, LineageStore, version_increases
 from .pinning import KeyPinning, PinningMode, PinningPolicy
 from .resolver import (
     ChainResolver,
@@ -58,6 +63,7 @@ from .resolver import (
 )
 from .revocation import (
     RevocationDocument,
+    RevocationFetchError,
     RevocationReason,
     RevokedKey,
     add_revoked_key,
@@ -67,10 +73,15 @@ from .revocation import (
     fetch_revocation_document,
 )
 from .skill import (
+    SCHEMAPIN_VERSION,
+    SCHEMAPIN_VERSION_LEGACY,
     SCHEMAPIN_VERSION_V1_4,
     SIGNATURE_FILENAME,
+    ChainError,
     SignOptions,
+    SkillCanonicalizationError,
     SkillSigner,
+    verify_chain,
 )
 from .utils import (
     SchemaSigningWorkflow,
@@ -80,6 +91,7 @@ from .utils import (
 from .verification import (
     A2A_MAX_DELEGATION_DEPTH,
     CANONICALIZATION_V1,
+    EXPIRATION_SKEW_SECONDS,
     ErrorCode,
     KeyPinningStatus,
     KeyPinStore,
@@ -87,6 +99,7 @@ from .verification import (
     check_canonicalization,
     verify_schema_for_a2a,
     verify_schema_offline,
+    verify_schema_offline_with_dns,
     verify_schema_with_resolver,
 )
 
@@ -131,7 +144,23 @@ __all__ = [
     "KeyPinningStatus",
     "VerificationResult",
     "verify_schema_offline",
+    "verify_schema_offline_with_dns",
     "verify_schema_with_resolver",
+    "EXPIRATION_SKEW_SECONDS",
+    "CanonicalizationError",
+    "InvalidDomainError",
+    "validate_domain",
+    "is_valid_domain",
+    "RevocationFetchError",
+    "SCHEMAPIN_VERSION",
+    "SCHEMAPIN_VERSION_LEGACY",
+    "ChainError",
+    "SkillCanonicalizationError",
+    "verify_chain",
+    "LineageStore",
+    "LineageRecord",
+    "LineageError",
+    "version_increases",
     # v1.3.0
     "SkillSigner",
     "SIGNATURE_FILENAME",
@@ -159,6 +188,9 @@ __all__ = [
     "BUNDLE_AUTHORITY_PIN_DOMAIN",
     "sign_trust_bundle",
     "verify_trust_bundle",
+    "BundleVerification",
+    "seed_bundle_authority",
+    "seed_bundle_authority_from_pem",
     "merge_trust_bundles",
     "build_trust_bundle_request",
     "build_trust_bundle_response",

@@ -11,7 +11,7 @@ except FileNotFoundError:
 
 setup(
     name="schemapin",
-    version="1.1.4",
+    version="1.4.0a4",
     author="ThirdKey",
     author_email="contact@thirdkey.ai",
     description="Cryptographic schema integrity verification for AI tools",
@@ -25,18 +25,16 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Topic :: Security :: Cryptography",
         "Topic :: Software Development :: Libraries :: Python Modules",
     ],
-    python_requires=">=3.8",
+    python_requires=">=3.10",
     install_requires=[
-        "cryptography>=41.0.0",
-        "requests>=2.31.0",
+        "cryptography==50.0.0",
+        "requests==2.33.0",
     ],
     extras_require={
         "dev": [

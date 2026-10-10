@@ -118,8 +118,8 @@ schemapin-verify --schema signed.json --public-key public.pem
 # Verify with domain discovery and interactive pinning
 schemapin-verify --schema signed.json --domain example.com --tool-id my-tool --interactive
 
-# Batch verify with auto-pinning
-schemapin-verify --batch ./signed/ --domain example.com --auto-pin
+# Batch verify, pinning on first use (opt-in: trusts whatever the domain serves)
+schemapin-verify --batch ./signed/ --domain example.com --tool-id my-tool --auto-pin
 
 # Verify from stdin with JSON output
 echo '{"schema": {...}, "signature": "..."}' | schemapin-verify --stdin --public-key public.pem --json
@@ -181,13 +181,14 @@ from schemapin.utils import SchemaVerificationWorkflow
 
 verification_workflow = SchemaVerificationWorkflow()
 
-# Verify schema with automatic key pinning
+# Verify the schema. auto_pin defaults to False: first-use keys must be
+# accepted interactively or pre-seeded; pass auto_pin=True only where a human
+# or a second channel (DNS TXT) has confirmed the key.
 result = verification_workflow.verify_schema(
     schema,
     signature,
     "yourdomain.com/calculate_sum",
     "yourdomain.com",
-    auto_pin=True
 )
 
 if result['valid']:
@@ -273,7 +274,7 @@ bandit -r . --exclude tests/
 
 ## Requirements
 
-- Python 3.8 or higher
+- Python 3.10 or higher
 - cryptography library for ECDSA operations
 - requests library for HTTP operations
 - sqlite3 (built-in) for key storage

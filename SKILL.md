@@ -357,7 +357,7 @@ Both features are **additive optional fields/records**: v1.3 verifiers ignore th
 
 ### Signature Expiration (`expires_at`)
 
-Optional ISO 8601 / RFC 3339 timestamp on `.schemapin.sig`. Verifiers past the timestamp degrade the result (warning) instead of failing — `valid` stays `true`, `expired` becomes `true`, and a `signature_expired` warning is appended.
+Optional RFC 3339 timestamp on `.schemapin.sig`, covered by the signature. Verifiers past the timestamp (plus 5 minutes of skew) fail with `SIGNATURE_EXPIRED`; with the explicit `allow_expired` opt-in the result degrades instead — `valid` stays `true`, `expired` becomes `true`, and a `signature_expired` warning is appended.
 
 ```rust
 use schemapin::skill::{sign_skill_with_options, SignOptions, verify_skill_offline};

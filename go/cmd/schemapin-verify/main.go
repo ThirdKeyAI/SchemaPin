@@ -90,7 +90,7 @@ key pinning for Trust-On-First-Use (TOFU) security.`,
 	rootCmd.Flags().StringVar(&toolID, "tool-id", "", "Tool identifier for key pinning")
 	rootCmd.Flags().StringVar(&pinningDB, "pinning-db", "", "Path to key pinning database")
 	rootCmd.Flags().BoolVar(&interactiveMode, "interactive", false, "Enable interactive key pinning prompts")
-	rootCmd.Flags().BoolVar(&autoPin, "auto-pin", false, "Automatically pin keys on first use")
+	rootCmd.Flags().BoolVar(&autoPin, "auto-pin", false, "Automatically pin keys on first use (requires --tool-id; pins without --interactive)")
 
 	// Batch processing options
 	rootCmd.Flags().StringVar(&pattern, "pattern", "*.json", "File pattern for batch processing")
@@ -333,11 +333,15 @@ func verifyWithDiscovery(schema map[string]interface{}, signature string) (Verif
 		return VerificationResult{}, fmt.Errorf("failed to load discovered public key: %w", err)
 	}
 
-	// Check if key is revoked
+	// Check if key is revoked. Fail-closed: if the revocation status cannot
+	// be determined the key is not trusted.
 	isNotRevoked, err := discoveryClient.ValidateKeyNotRevoked(ctx, publicKeyPEM, domain)
 	if err != nil {
-		// If we can't check revocation, proceed with caution
-		isNotRevoked = true
+		return VerificationResult{
+			Valid:              false,
+			VerificationMethod: "discovery",
+			Error:              fmt.Sprintf("revocation status unavailable (fail-closed): %v", err),
+		}, nil
 	}
 
 	if !isNotRevoked {
@@ -348,8 +352,10 @@ func verifyWithDiscovery(schema map[string]interface{}, signature string) (Verif
 		}, nil
 	}
 
-	// Handle interactive pinning if enabled
-	if interactiveMode && toolID != "" {
+	// Handle pinning when --interactive or --auto-pin is given. --auto-pin
+	// alone pins on first use without prompting (automatic mode); with
+	// --interactive the console handler decides.
+	if (interactiveMode || autoPin) && toolID != "" {
 		pinningManager, err := createPinningManager()
 		if err != nil {
 			return VerificationResult{}, fmt.Errorf("failed to create pinning manager: %w", err)

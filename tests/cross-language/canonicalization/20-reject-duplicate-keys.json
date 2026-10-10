@@ -1,0 +1,6 @@
+{
+  "name": "20-reject-duplicate-keys",
+  "description": "Duplicate object keys have no canonical form.",
+  "input": "{\"a\":1,\"a\":2}",
+  "reject": true
+}

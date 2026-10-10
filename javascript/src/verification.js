@@ -4,44 +4,84 @@
 
 import { SchemaPinCore } from './core.js';
 import { KeyManager, SignatureManager } from './crypto.js';
-import { checkRevocationCombined } from './revocation.js';
+import { checkRevocationCombined, RevocationFetchError } from './revocation.js';
 import { a2aAllows } from './a2a.js';
+import { verifyDnsMatch } from './dns.js';
+import { InvalidDomainError, validateDomain } from './domain.js';
+
+/** Clock-skew tolerance applied to `expires_at` comparisons (seconds). */
+export const EXPIRATION_SKEW_SECONDS = 300;
+
+const RFC3339_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Parse a strict RFC 3339 timestamp (`T` separator, mandatory offset).
+ *
+ * `new Date(string)` accepts date-only and local-time strings that the other
+ * SDKs reject; this helper only accepts `YYYY-MM-DDTHH:MM:SS[.frac](Z|±HH:MM)`.
+ *
+ * @param {*} value
+ * @returns {number|null} milliseconds since the epoch, or null when invalid
+ */
+export function parseRfc3339(value) {
+    if (typeof value !== 'string' || !RFC3339_RE.test(value)) {
+        return null;
+    }
+    const ms = Date.parse(value);
+    return Number.isNaN(ms) ? null : ms;
+}
 
 /**
  * Apply a signature `expires_at` check to a verification result (v1.4).
  *
- * Mirrors the Rust `VerificationResult::with_expiration_check` behaviour:
+ * Expiration is **fail-closed** by default:
  *
- * - If `expiresAt` is null/undefined, the result is returned unchanged.
- * - If parseable and in the past, sets `expired = true`, copies `expiresAt`,
- *   and pushes a `'signature_expired'` warning. `valid` is left intact —
- *   expired signatures are *degraded*, not failed.
- * - If parseable and in the future, just records `expiresAt`.
- * - If unparseable, pushes a `'signature_expires_at_unparseable'` warning
- *   (fail-open) and does not mark expired.
+ * - `expiresAt` of null/undefined leaves the result unchanged.
+ * - A value that is not strict RFC 3339 fails with `SIGNATURE_EXPIRED`
+ *   (`allowExpired` downgrades this to a `signature_expires_at_unparseable`
+ *   warning).
+ * - A timestamp more than `skewSeconds` in the past fails with
+ *   `SIGNATURE_EXPIRED` and sets `expired = true`. With `allowExpired` the
+ *   result stays valid but is marked `expired` and carries a
+ *   `signature_expired` warning (the pre-1.4.0 "degraded" behavior).
+ * - A future timestamp just records `expires_at`.
  *
  * Mutates and returns the same `result` object for ergonomic chaining.
  *
  * @param {Object} result - VerificationResult-shaped object
- * @param {string|null|undefined} expiresAt - ISO 8601 / RFC 3339 timestamp
+ * @param {string|null|undefined} expiresAt - RFC 3339 timestamp
+ * @param {boolean} [allowExpired=false]
+ * @param {number} [skewSeconds=EXPIRATION_SKEW_SECONDS]
  * @returns {Object} The (possibly mutated) result
  */
-export function applyExpirationCheck(result, expiresAt) {
+export function applyExpirationCheck(result, expiresAt, allowExpired = false, skewSeconds = EXPIRATION_SKEW_SECONDS) {
     if (expiresAt === null || expiresAt === undefined) {
         return result;
     }
     if (!Array.isArray(result.warnings)) {
         result.warnings = [];
     }
-    const ts = new Date(expiresAt);
-    if (Number.isNaN(ts.getTime())) {
-        result.warnings.push('signature_expires_at_unparseable');
+    const ms = parseRfc3339(expiresAt);
+    if (ms === null) {
+        if (allowExpired) {
+            result.warnings.push('signature_expires_at_unparseable');
+            return result;
+        }
+        result.valid = false;
+        result.error_code = ErrorCode.SIGNATURE_EXPIRED;
+        result.error_message = `expires_at is not a valid RFC 3339 timestamp: ${JSON.stringify(expiresAt)}`;
         return result;
     }
     result.expires_at = expiresAt;
-    if (ts.getTime() < Date.now()) {
+    if (Date.now() > ms + skewSeconds * 1000) {
         result.expired = true;
-        result.warnings.push('signature_expired');
+        if (allowExpired) {
+            result.warnings.push('signature_expired');
+        } else {
+            result.valid = false;
+            result.error_code = ErrorCode.SIGNATURE_EXPIRED;
+            result.error_message = `signature expired at ${expiresAt}`;
+        }
     }
     return result;
 }
@@ -69,7 +109,15 @@ export const ErrorCode = Object.freeze({
     BUNDLE_UNSIGNED: 'bundle_unsigned',
     // v1.4 alpha.3 (bundle distribution): a trust bundle is past its
     // expires_at (or has an unparseable expires_at).
-    BUNDLE_EXPIRED: 'bundle_expired'
+    BUNDLE_EXPIRED: 'bundle_expired',
+    // A signature's expires_at is in the past (or unparseable) and the
+    // caller did not opt in with allowExpired. Hard failure.
+    SIGNATURE_EXPIRED: 'signature_expired',
+    // The caller-supplied domain is not a valid RFC 1123 hostname.
+    DOMAIN_INVALID: 'domain_invalid',
+    // A trust bundle's authority key is not pre-seeded in the authority store
+    // and the caller did not opt in to first-use trust.
+    BUNDLE_AUTHORITY_UNTRUSTED: 'bundle_authority_untrusted'
 });
 
 /**
@@ -102,7 +150,11 @@ export function checkCanonicalization(algorithm) {
 
 /**
  * Lightweight in-memory fingerprint-based pin store.
- * Keys are stored by tool_id@domain.
+ *
+ * Keys are stored by tool_id@domain. Verification flows use {@link check}
+ * before the signature check and {@link pin} only after it succeeds, so a
+ * failed verification never leaves a pin behind. Operators can pre-seed
+ * expected fingerprints with {@link seed}.
  */
 export class KeyPinStore {
     constructor() {
@@ -114,7 +166,46 @@ export class KeyPinStore {
     }
 
     /**
-     * Check and optionally pin a key fingerprint.
+     * Compare `fingerprint` with the pinned value without mutating.
+     *
+     * @param {string} toolId
+     * @param {string} domain
+     * @param {string} fingerprint
+     * @returns {string} "first_use", "pinned", or "changed"
+     */
+    check(toolId, domain, fingerprint) {
+        const existing = this._pins.get(this._key(toolId, domain));
+        if (existing === undefined) {
+            return 'first_use';
+        }
+        return existing === fingerprint ? 'pinned' : 'changed';
+    }
+
+    /**
+     * Pin `fingerprint` for tool@domain (overwrites).
+     *
+     * @param {string} toolId
+     * @param {string} domain
+     * @param {string} fingerprint
+     */
+    pin(toolId, domain, fingerprint) {
+        this._pins.set(this._key(toolId, domain), fingerprint);
+    }
+
+    /**
+     * Pre-seed an expected fingerprint (out-of-band trust establishment).
+     *
+     * @param {string} toolId
+     * @param {string} domain
+     * @param {string} fingerprint
+     */
+    seed(toolId, domain, fingerprint) {
+        this.pin(toolId, domain, fingerprint);
+    }
+
+    /**
+     * Check and pin on first use in one step. Prefer `check` + `pin` so that
+     * pinning can be deferred until after signature verification.
      *
      * @param {string} toolId
      * @param {string} domain
@@ -122,16 +213,11 @@ export class KeyPinStore {
      * @returns {string} "first_use", "pinned", or "changed"
      */
     checkAndPin(toolId, domain, fingerprint) {
-        const k = this._key(toolId, domain);
-        const existing = this._pins.get(k);
-        if (existing === undefined) {
-            this._pins.set(k, fingerprint);
-            return 'first_use';
+        const result = this.check(toolId, domain, fingerprint);
+        if (result === 'first_use') {
+            this.pin(toolId, domain, fingerprint);
         }
-        if (existing === fingerprint) {
-            return 'pinned';
-        }
-        return 'changed';
+        return result;
     }
 
     /**
@@ -163,7 +249,13 @@ export class KeyPinStore {
     static fromJSON(jsonStr) {
         const store = new KeyPinStore();
         const data = JSON.parse(jsonStr);
+        if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+            throw new Error('pin store JSON must be an object of string fingerprints');
+        }
         for (const [key, value] of Object.entries(data)) {
+            if (typeof value !== 'string') {
+                throw new Error('pin store JSON must be an object of string fingerprints');
+            }
             store._pins.set(key, value);
         }
         return store;
@@ -173,14 +265,15 @@ export class KeyPinStore {
 /**
  * Verify a schema offline using pre-fetched discovery and revocation data.
  *
- * 7-step verification flow:
- * 1. Validate discovery document
- * 2. Extract public key and compute fingerprint
- * 3. Check revocation (both simple list + standalone doc)
- * 4. TOFU key pinning check
- * 5. Canonicalize schema and compute hash
- * 6. Verify ECDSA signature against hash
- * 7. Return structured result
+ * Verification flow:
+ * 1. Validate the canonicalization identifier and the domain syntax
+ * 2. Validate discovery document
+ * 3. Extract public key and compute fingerprint
+ * 4. Check revocation (both simple list + standalone doc)
+ * 5. TOFU pin check (read-only)
+ * 6. Canonicalize schema, compute hash, verify ECDSA signature
+ * 7. Pin the key on first use (only after a successful verification)
+ * 8. Return structured result
  *
  * @param {Object} schema
  * @param {string} signatureB64
@@ -189,14 +282,14 @@ export class KeyPinStore {
  * @param {Object} discovery - Well-known response
  * @param {Object|null} revocation - Standalone revocation document
  * @param {KeyPinStore} pinStore
- * @param {string|null} [canonicalization] - v1.4 alpha.3 optional canonicalization
+ * @param {string|null} [canonicalization] - v1.4 optional canonicalization
  *   algorithm identifier from the signature. `null` / `undefined` /
  *   `'schemapin-v1'` are equivalent and accepted; any other value fails with
  *   `CANONICALIZATION_UNSUPPORTED`.
  * @returns {Object} Verification result
  */
 export function verifySchemaOffline(schema, signatureB64, domain, toolId, discovery, revocation, pinStore, canonicalization = null) {
-    // Step 0 (v1.4 alpha.3): canonicalization algorithm check
+    // Step 1: canonicalization algorithm + domain syntax
     const unsupportedAlgo = checkCanonicalization(canonicalization);
     if (unsupportedAlgo !== null) {
         return {
@@ -206,8 +299,16 @@ export function verifySchemaOffline(schema, signatureB64, domain, toolId, discov
             error_message: `Unsupported canonicalization algorithm: ${unsupportedAlgo}`
         };
     }
+    try {
+        domain = validateDomain(domain);
+    } catch (e) {
+        if (e instanceof InvalidDomainError) {
+            return { valid: false, domain, error_code: ErrorCode.DOMAIN_INVALID, error_message: e.message };
+        }
+        throw e;
+    }
 
-    // Step 1: Validate discovery document
+    // Step 2: Validate discovery document
     const publicKeyPem = discovery?.public_key_pem;
     if (!publicKeyPem || !publicKeyPem.includes('-----BEGIN PUBLIC KEY-----')) {
         return {
@@ -218,7 +319,7 @@ export function verifySchemaOffline(schema, signatureB64, domain, toolId, discov
         };
     }
 
-    // Step 2: Extract public key and compute fingerprint
+    // Step 3: Extract public key and compute fingerprint
     let publicKey, fingerprint;
     try {
         publicKey = KeyManager.loadPublicKeyPem(publicKeyPem);
@@ -232,7 +333,7 @@ export function verifySchemaOffline(schema, signatureB64, domain, toolId, discov
         };
     }
 
-    // Step 3: Check revocation
+    // Step 4: Check revocation
     const simpleRevoked = discovery.revoked_keys || [];
     try {
         checkRevocationCombined(simpleRevoked, revocation, fingerprint);
@@ -245,8 +346,8 @@ export function verifySchemaOffline(schema, signatureB64, domain, toolId, discov
         };
     }
 
-    // Step 4: TOFU key pinning
-    const pinResult = pinStore.checkAndPin(toolId, domain, fingerprint);
+    // Step 5: TOFU pin check (no write yet)
+    const pinResult = pinStore.check(toolId, domain, fingerprint);
     if (pinResult === 'changed') {
         return {
             valid: false,
@@ -256,7 +357,7 @@ export function verifySchemaOffline(schema, signatureB64, domain, toolId, discov
         };
     }
 
-    // Step 5: Canonicalize and hash
+    // Step 6: Canonicalize, hash, verify
     let schemaHash;
     try {
         schemaHash = SchemaPinCore.canonicalizeAndHash(schema);
@@ -269,7 +370,6 @@ export function verifySchemaOffline(schema, signatureB64, domain, toolId, discov
         };
     }
 
-    // Step 6: Verify signature
     const valid = SignatureManager.verifySchemaSignature(schemaHash, signatureB64, publicKey);
 
     if (!valid) {
@@ -281,7 +381,12 @@ export function verifySchemaOffline(schema, signatureB64, domain, toolId, discov
         };
     }
 
-    // Step 7: Return success
+    // Step 7: Pin only after the signature verified
+    if (pinResult === 'first_use') {
+        pinStore.pin(toolId, domain, fingerprint);
+    }
+
+    // Step 8: Return success
     const result = {
         valid: true,
         domain,
@@ -301,7 +406,40 @@ export function verifySchemaOffline(schema, signatureB64, domain, toolId, discov
 }
 
 /**
+ * {@link verifySchemaOffline} plus a DNS TXT second-channel check.
+ *
+ * When `dnsTxt` is given (see `fetchDnsTxt`), the discovery key's
+ * fingerprint must match the TXT record or the result is a hard
+ * `DOMAIN_MISMATCH` failure. The DNS check runs before anything is pinned.
+ *
+ * @param {Object} schema
+ * @param {string} signatureB64
+ * @param {string} domain
+ * @param {string} toolId
+ * @param {Object} discovery
+ * @param {Object|null} revocation
+ * @param {KeyPinStore} pinStore
+ * @param {Object|null} dnsTxt - Parsed DNS TXT record (`{ version, kid, fingerprint }`)
+ * @param {string|null} [canonicalization=null]
+ * @returns {Object} Verification result
+ */
+export function verifySchemaOfflineWithDns(schema, signatureB64, domain, toolId, discovery, revocation, pinStore, dnsTxt, canonicalization = null) {
+    if (dnsTxt !== null && dnsTxt !== undefined) {
+        try {
+            verifyDnsMatch(discovery, dnsTxt);
+        } catch (e) {
+            return { valid: false, domain, error_code: ErrorCode.DOMAIN_MISMATCH, error_message: e.message };
+        }
+    }
+    return verifySchemaOffline(schema, signatureB64, domain, toolId, discovery, revocation, pinStore, canonicalization);
+}
+
+/**
  * Verify a schema using a resolver for discovery and revocation.
+ *
+ * Revocation is fail-closed: if the discovery document declares a
+ * `revocation_endpoint` that cannot be fetched, verification fails with
+ * `DISCOVERY_FETCH_FAILED` unless `allowUnreachableRevocation` is true.
  *
  * @param {Object} schema
  * @param {string} signatureB64
@@ -309,9 +447,19 @@ export function verifySchemaOffline(schema, signatureB64, domain, toolId, discov
  * @param {string} toolId
  * @param {SchemaResolver} resolver
  * @param {KeyPinStore} pinStore
+ * @param {boolean} [allowUnreachableRevocation=false]
  * @returns {Promise<Object>} Verification result
  */
-export async function verifySchemaWithResolver(schema, signatureB64, domain, toolId, resolver, pinStore) {
+export async function verifySchemaWithResolver(schema, signatureB64, domain, toolId, resolver, pinStore, allowUnreachableRevocation = false) {
+    try {
+        domain = validateDomain(domain);
+    } catch (e) {
+        if (e instanceof InvalidDomainError) {
+            return { valid: false, domain, error_code: ErrorCode.DOMAIN_INVALID, error_message: e.message };
+        }
+        throw e;
+    }
+
     const discovery = await resolver.resolveDiscovery(domain);
     if (!discovery) {
         return {
@@ -322,7 +470,23 @@ export async function verifySchemaWithResolver(schema, signatureB64, domain, too
         };
     }
 
-    const revocation = await resolver.resolveRevocation(domain, discovery);
+    let revocation;
+    try {
+        revocation = await resolver.resolveRevocation(domain, discovery);
+    } catch (e) {
+        if (!(e instanceof RevocationFetchError)) {
+            throw e;
+        }
+        if (!allowUnreachableRevocation) {
+            return {
+                valid: false,
+                domain,
+                error_code: ErrorCode.DISCOVERY_FETCH_FAILED,
+                error_message: `Revocation document unreachable (fail-closed): ${e.message}`
+            };
+        }
+        revocation = null;
+    }
 
     return verifySchemaOffline(schema, signatureB64, domain, toolId, discovery, revocation, pinStore);
 }

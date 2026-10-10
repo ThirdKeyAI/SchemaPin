@@ -1,7 +1,10 @@
 package crypto
 
 import (
+	"crypto/ecdsa"
 	"crypto/sha256"
+	"encoding/asn1"
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -411,5 +414,33 @@ func TestCrossCompatibility(t *testing.T) {
 	isValid := sm.VerifySignature(hash[:], signature, publicKey)
 	if !isValid {
 		t.Error("Cross-compatibility test failed")
+	}
+}
+
+// TestSignHashMatchesOtherSDKConvention pins the SP-2 fix: the DER signature
+// must verify under ECDSA(SHA-256(input)), which is what Python, JavaScript
+// and Rust compute, and must not verify under raw ecdsa.Verify(input).
+func TestSignHashMatchesOtherSDKConvention(t *testing.T) {
+	km := NewKeyManager()
+	priv, err := km.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := sha256.Sum256([]byte("canonical schema"))
+	sigB64, err := NewSignatureManager().SignHash(input[:], priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := base64.StdEncoding.DecodeString(sigB64)
+	var sig ecdsaSignature
+	if _, err := asn1.Unmarshal(der, &sig); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(input[:])
+	if !ecdsa.Verify(&priv.PublicKey, digest[:], sig.R, sig.S) {
+		t.Fatal("signature must be over SHA-256(input)")
+	}
+	if ecdsa.Verify(&priv.PublicKey, input[:], sig.R, sig.S) {
+		t.Fatal("signature must not be over the raw input")
 	}
 }

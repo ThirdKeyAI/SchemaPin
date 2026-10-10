@@ -1,0 +1,8 @@
+{
+  "name": "15-literals",
+  "description": "true, false, null.",
+  "input": "{\"t\":true,\"f\":false,\"n\":null,\"arr\":[null,true,false]}",
+  "reject": false,
+  "expected_canonical": "{\"arr\":[null,true,false],\"f\":false,\"n\":null,\"t\":true}",
+  "expected_sha256": "20e35b45af849c02536a892e3554a0ce5132a920414df85a6185f15be9138e6e"
+}

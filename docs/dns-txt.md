@@ -1,6 +1,6 @@
 # DNS TXT Cross-Verification
 
-> **Status:** v1.4.0-alpha.1 — **Rust only.** Python, JavaScript, and Go ports follow in subsequent alphas before the v1.4.0 release. The wire format is frozen; only the implementations need to catch up.
+> **Status:** v1.4 — implemented in **Rust, Python, JavaScript, and Go** for both skills (`verify_skill_offline_with_dns`) and schemas (`verify_schema_offline_with_dns`). The cross-check runs before any key is pinned; a mismatch is a hard `DOMAIN_MISMATCH` failure.
 
 SchemaPin v1.3 anchors trust in HTTPS: a public key published at `https://example.com/.well-known/schemapin.json`, served over TLS, fingerprinted, and pinned. That works — but it leans on a single credential chain. An attacker with control of the TLS cert, the web origin, or the static-asset bucket can publish a forged discovery document and serve it as if it were the real one.
 

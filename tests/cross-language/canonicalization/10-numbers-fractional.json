@@ -1,0 +1,8 @@
+{
+  "name": "10-numbers-fractional",
+  "description": "Non-integral values use ECMAScript Number::toString.",
+  "input": "[0.1,1e-7,0.000001,0.0000015,1.5e-7,123.456,1.5e-10,5e-324,-2.5,2.5e-5,1.7976931348623157e-300]",
+  "reject": false,
+  "expected_canonical": "[0.1,1e-7,0.000001,0.0000015,1.5e-7,123.456,1.5e-10,5e-324,-2.5,0.000025,1.7976931348623157e-300]",
+  "expected_sha256": "b3e2784888fc7d1b3fc2700c3ee13c7c94c612f91081bf086092374d3e3d956d"
+}

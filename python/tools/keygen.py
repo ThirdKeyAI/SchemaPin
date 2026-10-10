@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -69,6 +70,16 @@ def calculate_rsa_fingerprint(public_key):
     return f"sha256:{fingerprint.finalize().hex()}"
 
 
+def write_private_file(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` with owner-only permissions (0600)."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    os.chmod(path, 0o600)
+
+
 def main():
     """Main entry point for keygen tool."""
     parser = argparse.ArgumentParser(
@@ -77,14 +88,14 @@ def main():
         epilog="""
 Examples:
   %(prog)s --type ecdsa --output-dir ./keys --developer "Alice Corp"
-  %(prog)s --type rsa --key-size 4096 --format der --output-dir ./keys
+  %(prog)s --type ecdsa --format der --output-dir ./keys
   %(prog)s --type ecdsa --well-known --developer "Bob Inc" --contact "security@bob.com"
         """
     )
 
     parser.add_argument(
         '--type',
-        choices=['ecdsa', 'rsa'],
+        choices=['ecdsa'],
         default='ecdsa',
         help='Key type to generate (default: ecdsa)'
     )
@@ -191,12 +202,13 @@ Examples:
         private_key_file = args.output_dir / f"{args.prefix}_private{ext}"
         public_key_file = args.output_dir / f"{args.prefix}_public{ext}"
 
-        # Write key files
+        # Write key files. The private key is created with mode 0600 so it is
+        # never world-readable, regardless of the process umask.
         if args.format == 'pem':
-            private_key_file.write_text(private_key_data)
+            write_private_file(private_key_file, private_key_data.encode('utf-8'))
             public_key_file.write_text(public_key_data)
         else:  # DER
-            private_key_file.write_bytes(private_key_data)
+            write_private_file(private_key_file, private_key_data)
             public_key_file.write_bytes(public_key_data)
 
         # Generate .well-known template if requested

@@ -418,7 +418,7 @@ All v1.4 additions are optional fields/parameters — v1.3 clients are unaffecte
 
 ### Signature Expiration — alpha.1
 
-Optional `expires_at` on signatures; expired signatures degrade to a warning rather than failing. See [Signature Expiration](signature-expiration.md).
+Optional `expires_at` on signatures; expired signatures fail with `SIGNATURE_EXPIRED` unless the caller opts in with `allow_expired`. See [Signature Expiration](signature-expiration.md).
 
 ### DNS TXT Cross-Verification — alpha.1
 

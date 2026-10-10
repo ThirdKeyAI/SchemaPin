@@ -3,11 +3,31 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 
 import { PublicKeyDiscovery } from './discovery.js';
-import { fetchRevocationDocument } from './revocation.js';
-import { findDiscovery, findRevocation, parseTrustBundle } from './bundle.js';
+import { fetchRevocationDocument, RevocationFetchError } from './revocation.js';
+import { findDiscovery, findDuplicateDomain, findRevocation, parseTrustBundle } from './bundle.js';
+import { validateDomain } from './domain.js';
+
+/**
+ * Join a validated domain-derived file name onto `baseDir` and make sure the
+ * result stays inside `baseDir` (SP-16).
+ *
+ * @param {string} baseDir
+ * @param {string} domain
+ * @param {string} suffix
+ * @returns {string}
+ */
+function safeDomainPath(baseDir, domain, suffix) {
+    const normalized = validateDomain(domain);
+    const root = resolve(baseDir);
+    const path = resolve(root, `${normalized}${suffix}`);
+    if (path !== root && !path.startsWith(root + sep)) {
+        throw new Error(`resolved path ${path} escapes ${root}`);
+    }
+    return path;
+}
 
 /**
  * Abstract base class for discovery resolution.
@@ -52,6 +72,12 @@ export class WellKnownResolver extends SchemaResolver {
         }
     }
 
+    /**
+     * Fetch revocation from the discovery's revocation_endpoint.
+     *
+     * @throws {RevocationFetchError} when the endpoint is declared but cannot
+     *   be fetched or parsed (callers fail closed)
+     */
     async resolveRevocation(domain, discovery) {
         const endpoint = discovery?.revocation_endpoint;
         if (!endpoint) return null;
@@ -61,6 +87,10 @@ export class WellKnownResolver extends SchemaResolver {
 
 /**
  * Resolves discovery from local JSON files.
+ *
+ * The domain is validated and the resolved path must stay inside the
+ * configured directory, so a hostile domain string cannot select an
+ * arbitrary file.
  */
 export class LocalFileResolver extends SchemaResolver {
     constructor(discoveryDir, revocationDir = null) {
@@ -71,7 +101,7 @@ export class LocalFileResolver extends SchemaResolver {
 
     async resolveDiscovery(domain) {
         try {
-            const path = join(this._discoveryDir, `${domain}.json`);
+            const path = safeDomainPath(this._discoveryDir, domain, '.json');
             const data = readFileSync(path, 'utf-8');
             return JSON.parse(data);
         } catch {
@@ -82,7 +112,7 @@ export class LocalFileResolver extends SchemaResolver {
     async resolveRevocation(domain, discovery) {
         if (!this._revocationDir) return null;
         try {
-            const path = join(this._revocationDir, `${domain}.revocations.json`);
+            const path = safeDomainPath(this._revocationDir, domain, '.revocations.json');
             const data = readFileSync(path, 'utf-8');
             return JSON.parse(data);
         } catch {
@@ -93,10 +123,17 @@ export class LocalFileResolver extends SchemaResolver {
 
 /**
  * Resolves discovery from an in-memory trust bundle.
+ *
+ * Only load bundles you have verified with `verifyTrustBundle`. Bundles with
+ * duplicate domain entries are rejected so lookups are unambiguous.
  */
 export class TrustBundleResolver extends SchemaResolver {
     constructor(bundle) {
         super();
+        const dup = findDuplicateDomain(bundle);
+        if (dup !== null) {
+            throw new Error(`trust bundle has duplicate entries for domain ${JSON.stringify(dup)}`);
+        }
         this._bundle = bundle;
     }
 
@@ -116,6 +153,10 @@ export class TrustBundleResolver extends SchemaResolver {
 
 /**
  * Tries multiple resolvers in order, returning the first success.
+ *
+ * Precedence is positional: put the most trusted source first. A revocation
+ * fetch failure from any member propagates (fail-closed) instead of being
+ * skipped.
  */
 export class ChainResolver extends SchemaResolver {
     constructor(resolvers) {
@@ -133,9 +174,13 @@ export class ChainResolver extends SchemaResolver {
 
     async resolveRevocation(domain, discovery) {
         for (const resolver of this._resolvers) {
+            // RevocationFetchError propagates: a declared-but-unreachable
+            // revocation source must not be silently skipped.
             const result = await resolver.resolveRevocation(domain, discovery);
             if (result !== null) return result;
         }
         return null;
     }
 }
+
+export { RevocationFetchError };

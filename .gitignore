@@ -224,3 +224,8 @@ yarn-error.log*
 # Claude / AI tooling
 .claude/
 docs/superpowers/
+# Private keys must never be committed (SP-18). Test-only key material lives
+# under tests/cross-language/keys/ and is listed explicitly there.
+*_private.pem
+*_private_key.pem
+schemapin_private.pem

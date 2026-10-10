@@ -8,6 +8,7 @@ from typing import Any, Dict, Tuple
 import pytest
 
 from schemapin.crypto import KeyManager, SignatureManager
+from schemapin.resolver import SchemaResolver
 from schemapin.revocation import (
     RevocationReason,
     add_revoked_key,
@@ -17,6 +18,7 @@ from schemapin.skill import (
     SIGNATURE_FILENAME,
     ChainError,
     SignOptions,
+    SkillCanonicalizationError,
     SkillSigner,
     verify_chain,
 )
@@ -255,7 +257,7 @@ class TestSignAndVerify:
             {"SKILL.md": "---\nname: test-skill\n---\n# Hello"},
         )
         sig = SkillSigner.sign_skill(skill, priv_pem, "example.com")
-        assert sig["schemapin_version"] == "1.3"
+        assert sig["schemapin_version"] == "1.4"
         assert sig["skill_name"] == "test-skill"
         assert sig["skill_hash"].startswith("sha256:")
         assert isinstance(sig["signature"], str)
@@ -562,13 +564,20 @@ class TestSkillCLI:
         )
         assert sig_doc["skill_name"] == "cli-test"
 
-        # Verify with public key
+        # Verify with public key: the signature covers the whole document,
+        # so verification goes through verify_skill_offline with a synthetic
+        # discovery document (exactly what the CLI --public-key path does).
         root_hash, _manifest = SkillSigner.canonicalize_skill(skill)
+        assert sig_doc["skill_hash"] == f"sha256:{root_hash.hex()}"
         pub_key = KeyManager.load_public_key_pem(pub_pem)
         valid = SignatureManager.verify_signature(
-            root_hash, sig_doc["signature"], pub_key
+            SkillSigner.signing_input(sig_doc), sig_doc["signature"], pub_key
         )
         assert valid is True
+        result = SkillSigner.verify_skill_offline(
+            skill, {"schema_version": "1.4", "public_key_pem": pub_pem}, domain="example.com"
+        )
+        assert result.valid is True
 
     def test_sign_requires_domain(self, tmp_path: Path) -> None:
         """sign_skill requires a domain argument."""
@@ -610,7 +619,7 @@ class TestSignatureExpiration:
         assert on_disk["expires_at"] == sig["expires_at"]
 
     def test_sign_without_ttl_omits_expires_at(self, tmp_path: Path) -> None:
-        """Default ``sign_skill`` keeps the v1.3 wire format unchanged."""
+        """Default ``sign_skill`` writes no ``expires_at`` (signed-document format)."""
         priv_pem, _pub_pem = _make_keypair()
         skill = _create_skill_dir(
             tmp_path / "skill",
@@ -618,7 +627,7 @@ class TestSignatureExpiration:
         )
         sig = SkillSigner.sign_skill(skill, priv_pem, "example.com")
         assert "expires_at" not in sig
-        assert sig["schemapin_version"] == "1.3"
+        assert sig["schemapin_version"] == "1.4"
         raw = (skill / SIGNATURE_FILENAME).read_text(encoding="utf-8")
         assert "expires_at" not in raw
 
@@ -639,53 +648,88 @@ class TestSignatureExpiration:
         assert result.expires_at is not None
         assert "signature_expired" not in result.warnings
 
-    def test_verify_with_past_ttl_passes_with_expired_warning(
-        self, tmp_path: Path
-    ) -> None:
-        """Past expiration degrades the result (warning) but stays valid."""
+    def test_verify_with_past_ttl_fails_closed(self, tmp_path: Path) -> None:
+        """Past expiration is a hard SIGNATURE_EXPIRED failure by default."""
         priv_pem, pub_pem = _make_keypair()
         skill = _create_skill_dir(
             tmp_path / "skill",
             {"SKILL.md": "---\nname: past\n---\n# hi"},
         )
-        # Sign normally, then rewrite ``.schemapin.sig`` with a past
-        # ``expires_at`` to simulate an aged signature.
-        SkillSigner.sign_skill(skill, priv_pem, "example.com")
-        sig = SkillSigner.load_signature(skill)
-        sig["schemapin_version"] = "1.4"
-        sig["expires_at"] = "2020-01-01T00:00:00Z"
-        (skill / SIGNATURE_FILENAME).write_text(
-            json.dumps(sig, indent=2) + "\n", encoding="utf-8"
-        )
+        # Sign with a TTL that is already in the past (allowed at sign time).
+        opts = SignOptions(expires_in=timedelta(days=-30))
+        SkillSigner.sign_with_options(skill, priv_pem, "example.com", opts)
 
         result = SkillSigner.verify_skill_offline(
             skill, _discovery(pub_pem), tool_id="past"
         )
-        assert result.valid is True, "expired sigs are degraded, not failed"
+        assert result.valid is False
+        assert result.error_code == ErrorCode.SIGNATURE_EXPIRED
         assert result.expired is True
-        assert "signature_expired" in result.warnings
-        assert result.expires_at == "2020-01-01T00:00:00Z"
+        assert result.expires_at is not None
 
-    def test_verify_with_unparseable_expires_at_warns(self, tmp_path: Path) -> None:
-        """Unparseable expires_at triggers a warning, not expired/fail."""
+    def test_verify_with_past_ttl_allow_expired_degrades(self, tmp_path: Path) -> None:
+        """``allow_expired=True`` restores the degraded-not-failed behavior."""
         priv_pem, pub_pem = _make_keypair()
         skill = _create_skill_dir(
             tmp_path / "skill",
-            {"SKILL.md": "---\nname: bad\n---\n# hi"},
+            {"SKILL.md": "---\nname: past\n---\n# hi"},
         )
-        SkillSigner.sign_skill(skill, priv_pem, "example.com")
-        sig = SkillSigner.load_signature(skill)
-        sig["expires_at"] = "not-a-timestamp"
-        (skill / SIGNATURE_FILENAME).write_text(
-            json.dumps(sig, indent=2) + "\n", encoding="utf-8"
-        )
+        opts = SignOptions(expires_in=timedelta(days=-30))
+        SkillSigner.sign_with_options(skill, priv_pem, "example.com", opts)
 
         result = SkillSigner.verify_skill_offline(
-            skill, _discovery(pub_pem), tool_id="bad"
+            skill, _discovery(pub_pem), tool_id="past", allow_expired=True
         )
         assert result.valid is True
-        assert result.expired is False
-        assert "signature_expires_at_unparseable" in result.warnings
+        assert result.expired is True
+        assert "signature_expired" in result.warnings
+
+    def test_expiration_skew_window(self) -> None:
+        """A timestamp inside the skew window is not expired."""
+        from datetime import datetime, timezone
+
+        from schemapin.verification import VerificationResult
+
+        just_now = (datetime.now(timezone.utc) - timedelta(seconds=60)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        r = VerificationResult(valid=True).with_expiration_check(just_now)
+        assert r.valid is True and r.expired is False
+        long_ago = "2020-01-01T00:00:00Z"
+        r = VerificationResult(valid=True).with_expiration_check(long_ago)
+        assert r.valid is False and r.error_code == ErrorCode.SIGNATURE_EXPIRED
+
+    def test_unparseable_expires_at_fails_closed(self) -> None:
+        """Unparseable / non-RFC-3339 expires_at is rejected unless allow_expired."""
+        from schemapin.verification import VerificationResult
+
+        for bad in ("not-a-timestamp", "2020-01-01", "2020-01-01T00:00:00", "2020-01-01 00:00:00Z"):
+            r = VerificationResult(valid=True).with_expiration_check(bad)
+            assert r.valid is False, bad
+            assert r.error_code == ErrorCode.SIGNATURE_EXPIRED
+            r = VerificationResult(valid=True).with_expiration_check(bad, allow_expired=True)
+            assert r.valid is True
+            assert "signature_expires_at_unparseable" in r.warnings
+
+    def test_expires_at_is_covered_by_signature(self, tmp_path: Path) -> None:
+        """SP-1 regression: editing expires_at after signing invalidates the signature."""
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(
+            tmp_path / "skill",
+            {"SKILL.md": "---\nname: strip\n---\n# hi"},
+        )
+        opts = SignOptions(expires_in=timedelta(days=-30))
+        SkillSigner.sign_with_options(skill, priv_pem, "example.com", opts)
+        sig = SkillSigner.load_signature(skill)
+        # Expiry stripping: delete expires_at (and try the v1.3 downgrade).
+        del sig["expires_at"]
+        (skill / SIGNATURE_FILENAME).write_text(json.dumps(sig), encoding="utf-8")
+        r = SkillSigner.verify_skill_offline(skill, _discovery(pub_pem), tool_id="strip")
+        assert r.valid is False and r.error_code == ErrorCode.SIGNATURE_INVALID
+        sig["schemapin_version"] = "1.3"
+        (skill / SIGNATURE_FILENAME).write_text(json.dumps(sig), encoding="utf-8")
+        r = SkillSigner.verify_skill_offline(skill, _discovery(pub_pem), tool_id="strip")
+        assert r.valid is False and r.error_code == ErrorCode.SIGNATURE_INVALID
 
     def test_to_dict_includes_v1_4_fields(self, tmp_path: Path) -> None:
         """Serialized result surfaces ``expired`` / ``expires_at`` only when set."""
@@ -811,3 +855,253 @@ class TestSchemaVersionBinding:
         assert on_disk["expires_at"] == sig["expires_at"]
         assert on_disk["schema_version"] == "1.0.0"
         assert on_disk["previous_hash"] == "sha256:cafebabe"
+
+
+# ---------------------------------------------------------------------------
+# Signed signature document, domain binding, hashing v2 (SP-1, 8, 12, 13, 14)
+# ---------------------------------------------------------------------------
+
+
+def _sign_legacy_v13(skill: Path, priv_pem: str, domain: str) -> Dict[str, Any]:
+    """Produce a pre-1.4 root-hash-only signature document for compatibility tests."""
+    root_hash, manifest = SkillSigner.canonicalize_skill_v1(skill)
+    priv = KeyManager.load_private_key_pem(priv_pem)
+    sig = {
+        "schemapin_version": "1.3",
+        "skill_name": "legacy",
+        "skill_hash": f"sha256:{root_hash.hex()}",
+        "signature": SignatureManager.sign_hash(root_hash, priv),
+        "signed_at": "2026-01-01T00:00:00Z",
+        "domain": domain,
+        "signer_kid": KeyManager.calculate_key_fingerprint(priv.public_key()),
+        "file_manifest": manifest,
+    }
+    (skill / SIGNATURE_FILENAME).write_text(json.dumps(sig), encoding="utf-8")
+    return sig
+
+
+class TestSignedSignatureDocument:
+    """SP-1: every metadata field is covered by the signature."""
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("schema_version", "9.9.9"),
+            ("previous_hash", "sha256:" + "ab" * 32),
+            ("skill_name", "payments-tool"),
+            ("domain", "good.example.com"),
+            ("signer_kid", "sha256:" + "00" * 32),
+            ("signed_at", "2030-01-01T00:00:00Z"),
+            ("canonicalization", "schemapin-v1"),
+        ],
+    )
+    def test_metadata_tamper_invalidates(self, tmp_path: Path, field: str, value: str) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "---\nname: s\n---\n# hi"})
+        SkillSigner.sign_with_options(
+            skill, priv_pem, "example.com", SignOptions(schema_version="1.0.0")
+        )
+        sig = SkillSigner.load_signature(skill)
+        sig[field] = value
+        (skill / SIGNATURE_FILENAME).write_text(json.dumps(sig), encoding="utf-8")
+        r = SkillSigner.verify_skill_offline(skill, _discovery(pub_pem))
+        assert r.valid is False
+        assert r.error_code in (ErrorCode.SIGNATURE_INVALID, ErrorCode.DOMAIN_INVALID)
+
+    def test_manifest_tamper_invalidates(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi", "a.txt": "A"})
+        SkillSigner.sign_skill(skill, priv_pem, "example.com")
+        sig = SkillSigner.load_signature(skill)
+        sig["file_manifest"]["extra.txt"] = "sha256:" + "00" * 32
+        (skill / SIGNATURE_FILENAME).write_text(json.dumps(sig), encoding="utf-8")
+        r = SkillSigner.verify_skill_offline(skill, _discovery(pub_pem))
+        assert r.valid is False and r.error_code == ErrorCode.SIGNATURE_INVALID
+
+    def test_skill_hash_is_verified(self, tmp_path: Path) -> None:
+        """SP-14: skill_hash must equal the recomputed root hash."""
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        sig = SkillSigner.sign_skill(skill, priv_pem, "example.com")
+        root_hash, _ = SkillSigner.canonicalize_skill(skill)
+        assert sig["skill_hash"] == f"sha256:{root_hash.hex()}"
+        # Lineage splice attempt: a different (validly signed) artifact
+        # whose doc claims to be this skill fails on skill_hash.
+        other = _create_skill_dir(tmp_path / "other", {"SKILL.md": "# other"})
+        SkillSigner.sign_skill(other, priv_pem, "example.com")
+        other_sig = SkillSigner.load_signature(other)
+        (skill / SIGNATURE_FILENAME).write_text(json.dumps(other_sig), encoding="utf-8")
+        r = SkillSigner.verify_skill_offline(skill, _discovery(pub_pem))
+        assert r.valid is False and r.error_code == ErrorCode.SIGNATURE_INVALID
+        assert "skill_hash" in (r.error_message or "")
+
+    def test_unknown_fields_are_ignored_not_signed(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        SkillSigner.sign_skill(skill, priv_pem, "example.com")
+        sig = SkillSigner.load_signature(skill)
+        sig["x-extra"] = "ignored"
+        (skill / SIGNATURE_FILENAME).write_text(json.dumps(sig), encoding="utf-8")
+        assert SkillSigner.verify_skill_offline(skill, _discovery(pub_pem)).valid is True
+
+    def test_legacy_v13_document_still_verifies_with_warning(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi", "sub/x.txt": "x"})
+        _sign_legacy_v13(skill, priv_pem, "example.com")
+        r = SkillSigner.verify_skill_offline(skill, _discovery(pub_pem), domain="example.com")
+        assert r.valid is True
+        assert "legacy_signature_format" in r.warnings
+
+    def test_legacy_signature_cannot_be_upgraded_to_v14(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        sig = _sign_legacy_v13(skill, priv_pem, "example.com")
+        sig["schemapin_version"] = "1.4"
+        (skill / SIGNATURE_FILENAME).write_text(json.dumps(sig), encoding="utf-8")
+        r = SkillSigner.verify_skill_offline(skill, _discovery(pub_pem))
+        assert r.valid is False
+
+    def test_verify_chain_rejects_legacy_documents(self) -> None:
+        with pytest.raises(ChainError):
+            verify_chain(
+                {"schemapin_version": "1.4", "previous_hash": "sha256:aa"},
+                {"schemapin_version": "1.3", "skill_hash": "sha256:aa"},
+            )
+
+
+class TestDomainBinding:
+    """SP-8: the signature's domain is display-only; the caller binds the domain."""
+
+    def test_offline_domain_mismatch(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        SkillSigner.sign_skill(skill, priv_pem, "evil.example.com")
+        store = KeyPinStore()
+        r = SkillSigner.verify_skill_offline(
+            skill, _discovery(pub_pem), pin_store=store, tool_id="calc", domain="good.example.com"
+        )
+        assert r.valid is False and r.error_code == ErrorCode.DOMAIN_MISMATCH
+        assert store.get_pinned("calc", "good.example.com") is None
+        assert store.get_pinned("calc", "evil.example.com") is None
+
+    def test_offline_domain_bound_reports_bound_domain(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        SkillSigner.sign_skill(skill, priv_pem, "Example.COM")
+        r = SkillSigner.verify_skill_offline(skill, _discovery(pub_pem), domain="example.com")
+        assert r.valid is True and r.domain == "example.com"
+        assert "domain_unbound" not in r.warnings
+        r2 = SkillSigner.verify_skill_offline(skill, _discovery(pub_pem))
+        assert r2.valid is True and "domain_unbound" in r2.warnings
+
+    def test_resolver_path_binds_domain_before_network(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        SkillSigner.sign_skill(skill, priv_pem, "good.example.com")
+
+        class Exploding(SchemaResolver):
+            def resolve_discovery(self, domain):  # pragma: no cover - must not run
+                raise AssertionError("network must not be touched on domain mismatch")
+
+            def resolve_revocation(self, domain, discovery):  # pragma: no cover
+                raise AssertionError("unreachable")
+
+        r = SkillSigner.verify_skill_with_resolver(skill, "evil.example.com", resolver=Exploding())
+        assert r.valid is False and r.error_code == ErrorCode.DOMAIN_MISMATCH
+
+    def test_invalid_domain_rejected(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        SkillSigner.sign_skill(skill, priv_pem, "example.com")
+        for bad in ("../skills/evil/key", "localhost", "http://example.com", "10.0.0.1"):
+            r = SkillSigner.verify_skill_offline(skill, _discovery(pub_pem), domain=bad)
+            assert r.valid is False and r.error_code == ErrorCode.DOMAIN_INVALID, bad
+
+
+class TestPinAfterVerify:
+    """A failed verification must never leave a pin behind."""
+
+    def test_failed_signature_does_not_pin(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        _other_priv, other_pub = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        SkillSigner.sign_skill(skill, priv_pem, "example.com")
+        store = KeyPinStore()
+        r = SkillSigner.verify_skill_offline(
+            skill, _discovery(other_pub), pin_store=store, tool_id="t", domain="example.com"
+        )
+        assert r.valid is False and r.error_code == ErrorCode.SIGNATURE_INVALID
+        assert store.get_pinned("t", "example.com") is None
+        r = SkillSigner.verify_skill_offline(
+            skill, _discovery(pub_pem), pin_store=store, tool_id="t", domain="example.com"
+        )
+        assert r.valid is True and r.key_pinning.status == "first_use"
+        assert store.get_pinned("t", "example.com") is not None
+
+    def test_expired_does_not_pin(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        SkillSigner.sign_with_options(
+            skill, priv_pem, "example.com", SignOptions(expires_in=timedelta(days=-1))
+        )
+        store = KeyPinStore()
+        r = SkillSigner.verify_skill_offline(
+            skill, _discovery(pub_pem), pin_store=store, tool_id="t", domain="example.com"
+        )
+        assert r.valid is False and store.get_pinned("t", "example.com") is None
+
+
+class TestSkillHashingV2:
+    """SP-12 / SP-13: symlink policy and length-prefixed hashing."""
+
+    def test_symlink_file_rejected(self, tmp_path: Path) -> None:
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        (tmp_path / "outside.txt").write_text("unsigned")
+        (skill / "link.txt").symlink_to(tmp_path / "outside.txt")
+        with pytest.raises(SkillCanonicalizationError):
+            SkillSigner.canonicalize_skill(skill)
+
+    def test_symlink_dir_rejected(self, tmp_path: Path) -> None:
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        (tmp_path / "other").mkdir()
+        (tmp_path / "other" / "x.txt").write_text("x")
+        (skill / "examples").symlink_to(tmp_path / "other", target_is_directory=True)
+        with pytest.raises(SkillCanonicalizationError):
+            SkillSigner.canonicalize_skill(skill)
+
+    def test_symlink_added_after_signing_fails_verification(self, tmp_path: Path) -> None:
+        priv_pem, pub_pem = _make_keypair()
+        skill = _create_skill_dir(tmp_path / "skill", {"SKILL.md": "# hi"})
+        SkillSigner.sign_skill(skill, priv_pem, "example.com")
+        (tmp_path / "outside.txt").write_text("unsigned")
+        (skill / "helper.sh").symlink_to(tmp_path / "outside.txt")
+        r = SkillSigner.verify_skill_offline(skill, _discovery(pub_pem))
+        assert r.valid is False
+        assert r.error_code == ErrorCode.SCHEMA_CANONICALIZATION_FAILED
+
+    def test_path_content_boundary_is_not_malleable(self, tmp_path: Path) -> None:
+        a = _create_skill_dir(tmp_path / "a", {"run.sh.disabled": "\necho hi"})
+        b = _create_skill_dir(tmp_path / "b", {"run.sh": ".disabled\necho hi"})
+        ha, _ = SkillSigner.canonicalize_skill(a)
+        hb, _ = SkillSigner.canonicalize_skill(b)
+        assert ha != hb
+        # The legacy algorithm collides on exactly this re-split (SP-13).
+        la, _ = SkillSigner.canonicalize_skill_v1(a)
+        lb, _ = SkillSigner.canonicalize_skill_v1(b)
+        assert la == lb
+
+    def test_nested_sig_file_is_content(self, tmp_path: Path) -> None:
+        skill = _create_skill_dir(
+            tmp_path / "skill", {"SKILL.md": "# hi", "nested/.schemapin.sig": "{}"}
+        )
+        _, manifest = SkillSigner.canonicalize_skill(skill)
+        assert "nested/.schemapin.sig" in manifest
+        assert ".schemapin.sig" not in manifest
+
+    def test_file_count_cap(self, tmp_path: Path, monkeypatch) -> None:
+        import schemapin.skill as skill_mod
+
+        skill = _create_skill_dir(tmp_path / "skill", {"a": "1", "b": "2", "c": "3"})
+        monkeypatch.setattr(skill_mod, "MAX_SKILL_FILES", 2)
+        with pytest.raises(SkillCanonicalizationError):
+            SkillSigner.canonicalize_skill(skill)

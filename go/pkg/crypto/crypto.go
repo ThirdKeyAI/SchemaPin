@@ -70,10 +70,14 @@ func (k *KeyManager) LoadPrivateKeyPEM(pemData string) (*ecdsa.PrivateKey, error
 
 	// Try PKCS#8 format first (preferred)
 	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
-		if ecdsaKey, ok := key.(*ecdsa.PrivateKey); ok {
-			return ecdsaKey, nil
+		ecdsaKey, ok := key.(*ecdsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("not an ECDSA private key")
 		}
-		return nil, fmt.Errorf("not an ECDSA private key")
+		if err := requireP256(ecdsaKey.Curve, "private key"); err != nil {
+			return nil, err
+		}
+		return ecdsaKey, nil
 	}
 
 	// Fall back to EC private key format
@@ -81,8 +85,24 @@ func (k *KeyManager) LoadPrivateKeyPEM(pemData string) (*ecdsa.PrivateKey, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse private key: %w", err)
 	}
+	if err := requireP256(key.Curve, "private key"); err != nil {
+		return nil, err
+	}
 
 	return key, nil
+}
+
+// requireP256 enforces spec section 10: keys that are not ECDSA P-256 MUST be
+// rejected.
+func requireP256(curve elliptic.Curve, what string) error {
+	if curve != elliptic.P256() {
+		name := "unknown"
+		if curve != nil && curve.Params() != nil {
+			name = curve.Params().Name
+		}
+		return fmt.Errorf("%s uses curve %s; only P-256 is accepted", what, name)
+	}
+	return nil
 }
 
 // LoadPublicKeyPEM loads public key from PEM format
@@ -100,6 +120,9 @@ func (k *KeyManager) LoadPublicKeyPEM(pemData string) (*ecdsa.PublicKey, error) 
 	ecdsaKey, ok := pub.(*ecdsa.PublicKey)
 	if !ok {
 		return nil, fmt.Errorf("not an ECDSA public key")
+	}
+	if err := requireP256(ecdsaKey.Curve, "public key"); err != nil {
+		return nil, err
 	}
 
 	return ecdsaKey, nil
@@ -138,9 +161,25 @@ type ecdsaSignature struct {
 	R, S *big.Int
 }
 
-// SignHash signs a hash with the private key and returns base64-encoded signature
+// SignHash signs data with ECDSA P-256 over SHA-256(hashBytes) and returns a
+// base64-encoded DER signature.
+//
+// The ECDSA input is SHA-256(hashBytes): for schema and legacy skill
+// signatures hashBytes is itself the canonical SHA-256 digest, for bundles and
+// v1.4 skill signature documents it is the canonical bytes. This matches the
+// Python (cryptography), JavaScript (createSign('SHA256')) and Rust (p256
+// SigningKey::sign) SDKs, which all hash their input before ECDSA. Earlier Go
+// releases passed hashBytes to ecdsa.Sign directly and were therefore
+// incompatible with every other SDK.
 func (s *SignatureManager) SignHash(hashBytes []byte, privateKey *ecdsa.PrivateKey) (string, error) {
-	r, sig, err := ecdsa.Sign(rand.Reader, privateKey, hashBytes)
+	if privateKey == nil {
+		return "", fmt.Errorf("private key is nil")
+	}
+	if err := requireP256(privateKey.Curve, "private key"); err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(hashBytes)
+	r, sig, err := ecdsa.Sign(rand.Reader, privateKey, digest[:])
 	if err != nil {
 		return "", fmt.Errorf("failed to sign hash: %w", err)
 	}
@@ -155,20 +194,30 @@ func (s *SignatureManager) SignHash(hashBytes []byte, privateKey *ecdsa.PrivateK
 	return base64.StdEncoding.EncodeToString(derBytes), nil
 }
 
-// VerifySignature verifies a base64-encoded signature against a hash
+// VerifySignature verifies a base64-encoded DER signature against
+// SHA-256(hashBytes). See SignHash for the hashing convention. Trailing bytes
+// after the DER structure, non-P-256 keys and malformed base64 all fail.
 func (s *SignatureManager) VerifySignature(hashBytes []byte, signatureB64 string, publicKey *ecdsa.PublicKey) bool {
+	if publicKey == nil || requireP256(publicKey.Curve, "public key") != nil {
+		return false
+	}
 	signature, err := base64.StdEncoding.DecodeString(signatureB64)
 	if err != nil {
 		return false
 	}
 
-	// Decode ASN.1 DER signature
+	// Decode ASN.1 DER signature; reject trailing garbage.
 	var sig ecdsaSignature
-	if _, err := asn1.Unmarshal(signature, &sig); err != nil {
+	rest, err := asn1.Unmarshal(signature, &sig)
+	if err != nil || len(rest) != 0 {
+		return false
+	}
+	if sig.R == nil || sig.S == nil || sig.R.Sign() <= 0 || sig.S.Sign() <= 0 {
 		return false
 	}
 
-	return ecdsa.Verify(publicKey, hashBytes, sig.R, sig.S)
+	digest := sha256.Sum256(hashBytes)
+	return ecdsa.Verify(publicKey, digest[:], sig.R, sig.S)
 }
 
 // SignSchemaHash signs a schema hash (convenience method)

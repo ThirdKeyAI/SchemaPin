@@ -3,14 +3,15 @@ package discovery
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/ThirdKeyAi/schemapin/go/pkg/crypto"
+	"github.com/ThirdKeyAi/schemapin/go/pkg/domain"
+	"github.com/ThirdKeyAi/schemapin/go/pkg/revocation"
+	"github.com/ThirdKeyAi/schemapin/go/pkg/transport"
 )
 
 // WellKnownResponse represents .well-known/schemapin.json structure
@@ -29,46 +30,51 @@ type PublicKeyDiscovery struct {
 	keyManager *crypto.KeyManager
 }
 
-// NewPublicKeyDiscovery creates a new PublicKeyDiscovery instance
+// NewPublicKeyDiscovery creates a new PublicKeyDiscovery instance. The HTTP
+// client refuses redirects, caps response bodies and applies a 10s timeout.
 func NewPublicKeyDiscovery() *PublicKeyDiscovery {
-	return &PublicKeyDiscovery{
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		keyManager: crypto.NewKeyManager(),
-	}
+	return NewPublicKeyDiscoveryWithTimeout(transport.DefaultTimeout)
 }
 
 // NewPublicKeyDiscoveryWithTimeout creates a new PublicKeyDiscovery instance with custom timeout
 func NewPublicKeyDiscoveryWithTimeout(timeout time.Duration) *PublicKeyDiscovery {
+	return NewPublicKeyDiscoveryWithClient(transport.NewClient(timeout))
+}
+
+// NewPublicKeyDiscoveryWithClient creates a PublicKeyDiscovery that issues
+// requests through client. The URL policy (https only, validated domain,
+// capped body) still applies; the client is responsible for its own timeout
+// and redirect policy (use transport.NewClient for the hardened defaults).
+func NewPublicKeyDiscoveryWithClient(client *http.Client) *PublicKeyDiscovery {
+	if client == nil {
+		client = transport.NewClient(transport.DefaultTimeout)
+	}
 	return &PublicKeyDiscovery{
-		client: &http.Client{
-			Timeout: timeout,
-		},
+		client:     client,
 		keyManager: crypto.NewKeyManager(),
 	}
 }
 
-// ConstructWellKnownURL constructs the .well-known URL for a domain
-func ConstructWellKnownURL(domain string) string {
-	// Handle domains with or without protocol
-	if !strings.HasPrefix(domain, "http://") && !strings.HasPrefix(domain, "https://") {
-		domain = "https://" + domain
+// ConstructWellKnownURL constructs the .well-known URL for a domain.
+//
+// The domain must be a bare hostname (an https:// prefix is tolerated and
+// stripped). http:// is refused: the spec requires HTTPS and a plaintext
+// first fetch would let a network attacker pin their own key.
+func ConstructWellKnownURL(domainName string) (string, error) {
+	if strings.HasPrefix(domainName, "http://") {
+		return "", fmt.Errorf("%w: SchemaPin discovery requires https; http:// is not permitted", domain.ErrInvalidDomain)
 	}
-
-	baseURL, err := url.Parse(domain)
+	domainName = strings.TrimRight(strings.TrimPrefix(domainName, "https://"), "/")
+	normalized, err := domain.ValidateDomain(domainName)
 	if err != nil {
-		// Fallback to simple concatenation if URL parsing fails
-		return fmt.Sprintf("https://%s/.well-known/schemapin.json", strings.TrimPrefix(strings.TrimPrefix(domain, "https://"), "http://"))
+		return "", err
 	}
-
-	baseURL.Path = "/.well-known/schemapin.json"
-	return baseURL.String()
+	return "https://" + normalized + "/.well-known/schemapin.json", nil
 }
 
 // ConstructWellKnownURL constructs the .well-known URL for a domain (instance method)
-func (p *PublicKeyDiscovery) ConstructWellKnownURL(domain string) string {
-	return ConstructWellKnownURL(domain)
+func (p *PublicKeyDiscovery) ConstructWellKnownURL(domainName string) (string, error) {
+	return ConstructWellKnownURL(domainName)
 }
 
 // ValidateWellKnownResponse validates .well-known response structure
@@ -79,27 +85,15 @@ func ValidateWellKnownResponse(response *WellKnownResponse) bool {
 }
 
 // FetchWellKnown fetches and validates .well-known/schemapin.json from domain
-func (p *PublicKeyDiscovery) FetchWellKnown(ctx context.Context, domain string) (*WellKnownResponse, error) {
-	url := p.ConstructWellKnownURL(domain)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+func (p *PublicKeyDiscovery) FetchWellKnown(ctx context.Context, domainName string) (*WellKnownResponse, error) {
+	wellKnownURL, err := p.ConstructWellKnownURL(domainName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	resp, err := p.client.Do(req) // #nosec G704 -- URL constructed from ConstructWellKnownURL with domain validation
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch .well-known file: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, err
 	}
 
 	var wellKnown WellKnownResponse
-	if err := json.NewDecoder(resp.Body).Decode(&wellKnown); err != nil {
-		return nil, fmt.Errorf("failed to decode .well-known response: %w", err)
+	if err := transport.FetchJSON(ctx, p.client, wellKnownURL, &wellKnown); err != nil {
+		return nil, fmt.Errorf("failed to fetch .well-known file: %w", err)
 	}
 
 	if !ValidateWellKnownResponse(&wellKnown) {
@@ -154,8 +148,8 @@ func CheckKeyRevocation(publicKeyPEM string, revokedKeys []string) bool {
 	keyManager := crypto.NewKeyManager()
 	fingerprint, err := keyManager.CalculateKeyFingerprintFromPEM(publicKeyPEM)
 	if err != nil {
-		// If we can't calculate fingerprint, assume not revoked
-		return false
+		// A key that cannot be fingerprinted cannot be trusted either.
+		return true
 	}
 
 	for _, revokedKey := range revokedKeys {
@@ -188,15 +182,34 @@ func (p *PublicKeyDiscovery) GetRevokedKeysWithTimeout(domain string, timeout ti
 	return p.GetRevokedKeys(ctx, domain)
 }
 
-// ValidateKeyNotRevoked validates that a public key is not revoked
-func (p *PublicKeyDiscovery) ValidateKeyNotRevoked(ctx context.Context, publicKeyPEM, domain string) (bool, error) {
-	revokedKeys, err := p.GetRevokedKeys(ctx, domain)
+// ValidateKeyNotRevoked validates that a public key is not revoked (fail-closed).
+//
+// Consults both the inline revoked_keys list and, when the discovery document
+// declares one, the standalone revocation_endpoint. If either cannot be fetched
+// the key is treated as not validated: (false, err) is returned. Callers that
+// want to proceed anyway must do so explicitly.
+func (p *PublicKeyDiscovery) ValidateKeyNotRevoked(ctx context.Context, publicKeyPEM, domainName string) (bool, error) {
+	wellKnown, err := p.FetchWellKnown(ctx, domainName)
 	if err != nil {
-		// If we can't fetch revocation list, assume not revoked
-		return true, nil
+		return false, fmt.Errorf("revocation status unavailable (fail-closed): %w", err)
 	}
-
-	return !CheckKeyRevocation(publicKeyPEM, revokedKeys), nil
+	if CheckKeyRevocation(publicKeyPEM, wellKnown.RevokedKeys) {
+		return false, nil
+	}
+	if wellKnown.RevocationEndpoint != "" {
+		doc, err := revocation.FetchRevocationDocumentWithClient(ctx, p.client, wellKnown.RevocationEndpoint)
+		if err != nil {
+			return false, fmt.Errorf("revocation status unavailable (fail-closed): %w", err)
+		}
+		fingerprint, err := p.keyManager.CalculateKeyFingerprintFromPEM(publicKeyPEM)
+		if err != nil {
+			return false, err
+		}
+		if err := revocation.CheckRevocation(doc, fingerprint); err != nil {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // ValidateKeyNotRevokedWithTimeout validates key revocation with custom timeout

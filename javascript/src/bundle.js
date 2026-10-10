@@ -24,7 +24,7 @@
 import { createPublicKey } from 'crypto';
 import { SchemaPinCore } from './core.js';
 import { KeyManager, SignatureManager } from './crypto.js';
-import { ErrorCode } from './verification.js';
+import { ErrorCode, parseRfc3339 } from './verification.js';
 
 /** Bundle-distribution wire format version stamped on signed bundles. */
 export const BUNDLE_VERSION_SIGNED = '1.4';
@@ -48,16 +48,111 @@ function bundleError(code, message) {
     return err;
 }
 
+const DOCUMENT_OPTIONAL_FIELDS = ['developer_name', 'contact', 'revocation_endpoint'];
+
 /**
- * Build the canonical bytes that a bundle's signature covers: the bundle with
- * its `signature` field forced to `""`, `schemapin-v1`-canonicalized.
+ * Project a bundled discovery entry onto the signed field set (mirrors the
+ * Rust serde output: optional strings omitted when absent, `revoked_keys`
+ * always present).
+ */
+function normalizeDocument(doc) {
+    const out = {
+        domain: doc.domain ?? '',
+        schema_version: doc.schema_version ?? '',
+        public_key_pem: doc.public_key_pem ?? '',
+        revoked_keys: Array.isArray(doc.revoked_keys) ? [...doc.revoked_keys] : []
+    };
+    for (const key of DOCUMENT_OPTIONAL_FIELDS) {
+        if (doc[key] !== null && doc[key] !== undefined) {
+            out[key] = doc[key];
+        }
+    }
+    return out;
+}
+
+function normalizeRevocation(rev) {
+    return {
+        schemapin_version: rev.schemapin_version ?? '',
+        domain: rev.domain ?? '',
+        updated_at: rev.updated_at ?? '',
+        revoked_keys: (rev.revoked_keys ?? []).map((k) => ({
+            fingerprint: k.fingerprint,
+            revoked_at: k.revoked_at,
+            reason: k.reason
+        }))
+    };
+}
+
+/**
+ * Build the canonical bytes that a bundle's signature covers: the bundle's
+ * known fields (unknown fields are ignored and therefore unprotected) with
+ * `signature` forced to `""`, `schemapin-v1`-canonicalized.
  *
  * @param {Object} bundle
  * @returns {string} Canonical JSON string
  */
 function signingBytes(bundle) {
-    const obj = { ...bundle, signature: '' };
+    const obj = {
+        schemapin_bundle_version: bundle.schemapin_bundle_version,
+        created_at: bundle.created_at,
+        documents: (bundle.documents ?? []).map(normalizeDocument),
+        revocations: (bundle.revocations ?? []).map(normalizeRevocation)
+    };
+    if (bundle.bundle_authority) {
+        obj.bundle_authority = { kid: bundle.bundle_authority.kid, public_key_pem: bundle.bundle_authority.public_key_pem };
+    }
+    if (bundle.signed_at !== null && bundle.signed_at !== undefined) {
+        obj.signed_at = bundle.signed_at;
+    }
+    if (bundle.expires_at !== null && bundle.expires_at !== undefined) {
+        obj.expires_at = bundle.expires_at;
+    }
+    obj.signature = '';
     return SchemaPinCore.canonicalizeSchema(obj);
+}
+
+/**
+ * @param {Object} bundle
+ * @returns {string|null} a domain that appears more than once, or null
+ */
+export function findDuplicateDomain(bundle) {
+    for (const list of [bundle.documents ?? [], bundle.revocations ?? []]) {
+        const seen = new Set();
+        for (const entry of list) {
+            if (seen.has(entry.domain)) {
+                return entry.domain;
+            }
+            seen.add(entry.domain);
+        }
+    }
+    return null;
+}
+
+/**
+ * Pre-seed the expected fingerprint (`sha256:<hex>`) of a bundle authority.
+ * This is the allow-list entry {@link verifyTrustBundle} requires.
+ *
+ * @param {import('./verification.js').KeyPinStore} store
+ * @param {string} kid
+ * @param {string} fingerprint
+ */
+export function seedBundleAuthority(store, kid, fingerprint) {
+    store.seed(kid, BUNDLE_AUTHORITY_PIN_DOMAIN, fingerprint);
+}
+
+/**
+ * Seed an authority from its PEM public key (for example the `public_key_pem`
+ * of the authority's own discovery document). Returns the fingerprint.
+ *
+ * @param {import('./verification.js').KeyPinStore} store
+ * @param {string} kid
+ * @param {string} publicKeyPem
+ * @returns {string}
+ */
+export function seedBundleAuthorityFromPem(store, kid, publicKeyPem) {
+    const fingerprint = KeyManager.calculateKeyFingerprint(publicKeyPem);
+    seedBundleAuthority(store, kid, fingerprint);
+    return fingerprint;
 }
 
 /**
@@ -151,6 +246,10 @@ export function parseTrustBundle(jsonStr) {
  * @returns {Object} Signed trust bundle
  */
 export function signTrustBundle(bundle, privateKeyPem, kid, signedAt, expiresAt = null) {
+    const dup = findDuplicateDomain(bundle);
+    if (dup !== null) {
+        throw new Error(`trust bundle has duplicate entries for domain ${JSON.stringify(dup)}`);
+    }
     // Derive the authority public key PEM from the private key.
     const publicKeyPem = createPublicKey(privateKeyPem)
         .export({ type: 'spki', format: 'pem' });
@@ -178,20 +277,29 @@ export function signTrustBundle(bundle, privateKeyPem, kid, signedAt, expiresAt 
 }
 
 /**
- * Verify a signed trust bundle and TOFU-pin its authority key by `kid`.
+ * Verify a signed trust bundle against the authority allow-list.
  *
  * Steps: require `bundle_authority` + `signature` (else `BUNDLE_UNSIGNED`);
- * reject when `expires_at` is in the past or unparseable (`BUNDLE_EXPIRED`);
- * TOFU-pin the authority's key fingerprint by `kid` (mismatch →
- * `KEY_PIN_MISMATCH`); verify the signature over the canonical bytes
- * (failure → `SIGNATURE_INVALID`).
+ * reject duplicate domains (`DISCOVERY_INVALID`); reject when `expires_at`
+ * is in the past or not strict RFC 3339 (`BUNDLE_EXPIRED`); look the
+ * authority's key fingerprint up by `kid` -- a different pinned key is
+ * `KEY_PIN_MISMATCH`, an unknown `kid` is `BUNDLE_AUTHORITY_UNTRUSTED`
+ * unless `allowFirstUse` is true; verify the signature over the canonical
+ * bytes (`SIGNATURE_INVALID`); pin the authority on first use only after the
+ * signature verified.
+ *
+ * The bundle carries its own public key, so without an allow-list any
+ * self-signed bundle under a fresh `kid` would pass. Seed expected
+ * authorities with {@link seedBundleAuthority}; treat `allowFirstUse`
+ * exactly like TOFU for a tool key (prompt the user, log it).
  *
  * @param {Object} bundle - Signed trust bundle
  * @param {import('./verification.js').KeyPinStore} authorityPinStore
- * @returns {boolean} `true` on success
+ * @param {boolean} [allowFirstUse=false]
+ * @returns {{ kid: string, fingerprint: string, first_use: boolean }}
  * @throws {Error} With `.code` set to the relevant {@link ErrorCode}
  */
-export function verifyTrustBundle(bundle, authorityPinStore) {
+export function verifyTrustBundle(bundle, authorityPinStore, allowFirstUse = false) {
     const authority = bundle.bundle_authority;
     if (!authority) {
         throw bundleError(ErrorCode.BUNDLE_UNSIGNED, 'trust bundle has no bundle_authority');
@@ -201,15 +309,20 @@ export function verifyTrustBundle(bundle, authorityPinStore) {
         throw bundleError(ErrorCode.BUNDLE_UNSIGNED, 'trust bundle has no signature');
     }
 
+    const dup = findDuplicateDomain(bundle);
+    if (dup !== null) {
+        throw bundleError(ErrorCode.DISCOVERY_INVALID, `trust bundle has duplicate entries for domain ${JSON.stringify(dup)}`);
+    }
+
     if (bundle.expires_at !== null && bundle.expires_at !== undefined) {
-        const exp = new Date(bundle.expires_at);
-        if (Number.isNaN(exp.getTime())) {
+        const exp = parseRfc3339(bundle.expires_at);
+        if (exp === null) {
             throw bundleError(
                 ErrorCode.BUNDLE_EXPIRED,
                 `unparseable expires_at '${bundle.expires_at}'`
             );
         }
-        if (Date.now() > exp.getTime()) {
+        if (Date.now() > exp) {
             throw bundleError(
                 ErrorCode.BUNDLE_EXPIRED,
                 `trust bundle expired at ${bundle.expires_at}`
@@ -217,16 +330,23 @@ export function verifyTrustBundle(bundle, authorityPinStore) {
         }
     }
 
-    const fingerprint = KeyManager.calculateKeyFingerprint(authority.public_key_pem);
-    const pinResult = authorityPinStore.checkAndPin(
-        authority.kid,
-        BUNDLE_AUTHORITY_PIN_DOMAIN,
-        fingerprint
-    );
+    let fingerprint;
+    try {
+        fingerprint = KeyManager.calculateKeyFingerprint(authority.public_key_pem);
+    } catch (e) {
+        throw bundleError(ErrorCode.KEY_NOT_FOUND, `bundle authority key is invalid: ${e.message}`);
+    }
+    const pinResult = authorityPinStore.check(authority.kid, BUNDLE_AUTHORITY_PIN_DOMAIN, fingerprint);
     if (pinResult === 'changed') {
         throw bundleError(
             ErrorCode.KEY_PIN_MISMATCH,
-            `bundle authority key for kid '${authority.kid}' changed since last use`
+            `bundle authority key for kid '${authority.kid}' does not match the seeded authority key`
+        );
+    }
+    if (pinResult === 'first_use' && !allowFirstUse) {
+        throw bundleError(
+            ErrorCode.BUNDLE_AUTHORITY_UNTRUSTED,
+            `bundle authority kid '${authority.kid}' is not in the authority allow-list; seed it with seedBundleAuthority() or pass allowFirstUse`
         );
     }
 
@@ -242,58 +362,88 @@ export function verifyTrustBundle(bundle, authorityPinStore) {
             'trust bundle signature does not verify'
         );
     }
-    return true;
+    if (pinResult === 'first_use') {
+        authorityPinStore.pin(authority.kid, BUNDLE_AUTHORITY_PIN_DOMAIN, fingerprint);
+    }
+    return { kid: authority.kid, fingerprint, first_use: pinResult === 'first_use' };
+}
+
+/**
+ * Rank used by {@link mergeTrustBundles}: higher wins.
+ *
+ * @returns {[number, number]} [authority precedence, parsed timestamp ms]
+ */
+function mergeRank(bundle, precedence) {
+    const kid = bundle.bundle_authority?.kid ?? null;
+    let rank = 0;
+    if (precedence && precedence.length > 0) {
+        rank = -precedence.length - 1;
+        const idx = kid === null ? -1 : precedence.indexOf(kid);
+        if (idx >= 0) {
+            rank = -idx;
+        }
+    }
+    const ts = parseRfc3339(bundle.signed_at ?? bundle.created_at ?? '');
+    return [rank, ts === null ? Number.NEGATIVE_INFINITY : ts];
+}
+
+function rankGreater(a, b) {
+    return a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]);
 }
 
 /**
  * Merge trust bundles, deduplicating discovery + revocation documents by
- * domain. When two bundles carry the same domain, the entry from the bundle
- * with the newer timestamp (`signed_at`, else `created_at`) wins.
+ * domain.
  *
- * The result is an *unsigned* bundle (a merge cannot carry a single
- * authority's signature) stamped `schemapin_bundle_version = "1.4"` with
- * `created_at` set to the newest source timestamp. Re-sign it with
- * {@link signTrustBundle} before redistribution. Documents and revocations are
- * sorted by domain.
+ * When two bundles carry the same domain the winner is chosen by
+ * `authorityPrecedence` first (a list of authority `kid` values, earlier
+ * wins; bundles from unlisted or absent authorities rank last) and by the
+ * newer **parsed** RFC 3339 timestamp (`signed_at`, else `created_at`)
+ * second. Unparseable timestamps rank oldest, so a bundle cannot win a merge
+ * by claiming a bogus future date. Merge only bundles you have already
+ * verified with {@link verifyTrustBundle}.
+ *
+ * The result is an *unsigned* bundle stamped `schemapin_bundle_version =
+ * "1.4"` with `created_at` set to the newest source timestamp. Re-sign it
+ * with {@link signTrustBundle} before redistribution.
  *
  * @param {Object[]} bundles
+ * @param {string[]|null} [authorityPrecedence=null]
  * @returns {Object} Merged unsigned trust bundle
  */
-export function mergeTrustBundles(bundles) {
-    // domain -> { ts, doc }
+export function mergeTrustBundles(bundles, authorityPrecedence = null) {
     const docs = new Map();
     const revs = new Map();
-    let newestTs = '';
+    let newest = null;
+    let newestRaw = '';
 
     for (const b of bundles) {
-        const ts = b.signed_at ?? b.created_at ?? '';
-        if (ts > newestTs) {
-            newestTs = ts;
+        const rank = mergeRank(b, authorityPrecedence);
+        if (newest === null || rank[1] > newest) {
+            newest = rank[1];
+            newestRaw = b.signed_at ?? b.created_at ?? '';
         }
         for (const d of b.documents ?? []) {
             const existing = docs.get(d.domain);
-            if (!existing || existing.ts < ts) {
-                docs.set(d.domain, { ts, doc: d });
+            if (!existing || rankGreater(rank, existing.rank)) {
+                docs.set(d.domain, { rank, doc: d });
             }
         }
         for (const r of b.revocations ?? []) {
             const existing = revs.get(r.domain);
-            if (!existing || existing.ts < ts) {
-                revs.set(r.domain, { ts, doc: r });
+            if (!existing || rankGreater(rank, existing.rank)) {
+                revs.set(r.domain, { rank, doc: r });
             }
         }
     }
 
-    const documents = [...docs.values()]
-        .map((e) => e.doc)
-        .sort((a, b) => (a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : 0));
-    const revocations = [...revs.values()]
-        .map((e) => e.doc)
-        .sort((a, b) => (a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : 0));
+    const byDomain = (a, b) => (a.domain < b.domain ? -1 : a.domain > b.domain ? 1 : 0);
+    const documents = [...docs.values()].map((e) => e.doc).sort(byDomain);
+    const revocations = [...revs.values()].map((e) => e.doc).sort(byDomain);
 
     return {
         schemapin_bundle_version: BUNDLE_VERSION_SIGNED,
-        created_at: newestTs,
+        created_at: newestRaw,
         documents,
         revocations
     };

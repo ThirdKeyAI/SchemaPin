@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ThirdKeyAi/schemapin/go/pkg/bundle"
@@ -227,5 +228,33 @@ func TestChainResolverAllMiss(t *testing.T) {
 	_, err := chain.ResolveDiscovery("missing.com")
 	if err == nil {
 		t.Error("expected error when all resolvers miss")
+	}
+}
+
+// TestLocalFileResolverRejectsTraversal is the SP-16 regression: a hostile
+// domain string must not select a file outside the configured directory.
+func TestLocalFileResolverRejectsTraversal(t *testing.T) {
+	base := t.TempDir()
+	discoveryDir := filepath.Join(base, "discovery")
+	if err := os.MkdirAll(discoveryDir, 0750); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "evil.json")
+	doc := `{"schema_version":"1.4","public_key_pem":"-----BEGIN PUBLIC KEY-----\nMOCK\n-----END PUBLIC KEY-----"}`
+	if err := os.WriteFile(outside, []byte(doc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewLocalFileResolver(discoveryDir, "")
+	for _, bad := range []string{"../evil", "/" + strings.TrimSuffix(outside, ".json"), "evil.json/..", "localhost", "10.0.0.1"} {
+		if _, err := r.ResolveDiscovery(bad); err == nil {
+			t.Errorf("ResolveDiscovery(%q) must fail", bad)
+		}
+	}
+	// A valid domain still resolves and is case-normalized.
+	if err := os.WriteFile(filepath.Join(discoveryDir, "example.com.json"), []byte(doc), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ResolveDiscovery("Example.COM"); err != nil {
+		t.Fatalf("valid domain must resolve: %v", err)
 	}
 }

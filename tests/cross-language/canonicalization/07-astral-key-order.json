@@ -1,0 +1,8 @@
+{
+  "name": "07-astral-key-order",
+  "description": "Keys sort by code point: \"z\" (U+007A) < U+FFFF < U+1F600. UTF-16 order would put U+1F600 before U+FFFF.",
+  "input": "{\"\\ud83d\\ude00\":1,\"\\uffff\":2,\"z\":3}",
+  "reject": false,
+  "expected_canonical": "{\"z\":3,\"￿\":2,\"😀\":1}",
+  "expected_sha256": "ee0448f401397e05098248a25cb0c638fdf6002cdf69edda02986c02f2c6ed15"
+}

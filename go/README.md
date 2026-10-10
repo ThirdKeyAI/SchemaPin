@@ -179,7 +179,8 @@ Options:
   --tool-id string      Tool identifier for key pinning
   --public-key string   Explicit public key file (skips discovery)
   --db-path string      Key pinning database path (default "~/.schemapin/keys.db")
-  --auto-pin           Automatically pin keys on first use
+  --auto-pin           Pin keys on first use without prompting (requires --tool-id; opt-in,
+                       trusts whatever the domain serves -- prefer --interactive)
   --interactive        Enable interactive key pinning prompts
   --timeout duration   Discovery timeout (default 10s)
 ```

@@ -1,0 +1,6 @@
+{
+  "name": "22-reject-nan",
+  "description": "NaN is not valid JSON.",
+  "input": "{\"a\":NaN}",
+  "reject": true
+}

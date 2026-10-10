@@ -1,0 +1,8 @@
+{
+  "name": "01-spec-example",
+  "description": "The example from spec section 4.",
+  "input": "{\n  \"description\": \"Calculates the sum\",\n  \"name\": \"calculate_sum\",\n  \"parameters\": { \"b\": \"integer\", \"a\": \"integer\"}\n}",
+  "reject": false,
+  "expected_canonical": "{\"description\":\"Calculates the sum\",\"name\":\"calculate_sum\",\"parameters\":{\"a\":\"integer\",\"b\":\"integer\"}}",
+  "expected_sha256": "19180f803e81700c41e85abb988df2565095344d2186ba93aabf400e7d37c6f8"
+}

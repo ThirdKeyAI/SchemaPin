@@ -41,19 +41,41 @@ func compositeKey(kid, domain string) string {
 	return fmt.Sprintf("%s@%s", kid, domain)
 }
 
-// CheckAndPin checks a fingerprint against the store. The first time a kid@domain
-// is seen the fingerprint is pinned and PinningResultFirstUse is returned;
-// thereafter a matching fingerprint returns PinningResultMatched and a differing
-// one returns PinningResultChanged.
-func (s *AuthorityPinStore) CheckAndPin(kid, domain, fingerprint string) PinningResult {
-	key := compositeKey(kid, domain)
-	pinned, ok := s.fingerprints[key]
+// Check compares a fingerprint against the store without mutating it.
+// PinningResultFirstUse means nothing is pinned for kid@domain.
+func (s *AuthorityPinStore) Check(kid, domain, fingerprint string) PinningResult {
+	pinned, ok := s.fingerprints[compositeKey(kid, domain)]
 	if !ok {
-		s.fingerprints[key] = fingerprint
 		return PinningResultFirstUse
 	}
 	if pinned == fingerprint {
 		return PinningResultMatched
 	}
 	return PinningResultChanged
+}
+
+// Pin stores fingerprint for kid@domain (overwrites).
+func (s *AuthorityPinStore) Pin(kid, domain, fingerprint string) {
+	s.fingerprints[compositeKey(kid, domain)] = fingerprint
+}
+
+// Seed pre-seeds an expected fingerprint (allow-list entry).
+func (s *AuthorityPinStore) Seed(kid, domain, fingerprint string) {
+	s.Pin(kid, domain, fingerprint)
+}
+
+// Get returns the pinned fingerprint for kid@domain, or "".
+func (s *AuthorityPinStore) Get(kid, domain string) string {
+	return s.fingerprints[compositeKey(kid, domain)]
+}
+
+// CheckAndPin checks a fingerprint against the store and pins it on first use.
+// Prefer Check followed by Pin so that pinning can be deferred until after
+// signature verification.
+func (s *AuthorityPinStore) CheckAndPin(kid, domain, fingerprint string) PinningResult {
+	result := s.Check(kid, domain, fingerprint)
+	if result == PinningResultFirstUse {
+		s.Pin(kid, domain, fingerprint)
+	}
+	return result
 }

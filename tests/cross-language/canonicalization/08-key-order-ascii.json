@@ -1,0 +1,8 @@
+{
+  "name": "08-key-order-ascii",
+  "description": "Code point order: digits < uppercase < underscore < lowercase; \"a10\" < \"a2\".",
+  "input": "{\"b\":1,\"B\":2,\"_\":3,\"a2\":4,\"a10\":5,\"1\":6,\"\":7}",
+  "reject": false,
+  "expected_canonical": "{\"\":7,\"1\":6,\"B\":2,\"_\":3,\"a10\":5,\"a2\":4,\"b\":1}",
+  "expected_sha256": "c07a80aeedf135f87bb589b2b00126b29cd9f1b7f62e38da223e8020e36b0d1f"
+}

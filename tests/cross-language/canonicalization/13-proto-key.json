@@ -1,0 +1,8 @@
+{
+  "name": "13-proto-key",
+  "description": "__proto__ is an ordinary key and must be preserved.",
+  "input": "{\"__proto__\":{\"polluted\":true},\"constructor\":{\"prototype\":1},\"name\":\"x\"}",
+  "reject": false,
+  "expected_canonical": "{\"__proto__\":{\"polluted\":true},\"constructor\":{\"prototype\":1},\"name\":\"x\"}",
+  "expected_sha256": "a8653b851f420a832dc1e9b51a2548c11108c07afcd16d5cf213753360ddeffb"
+}

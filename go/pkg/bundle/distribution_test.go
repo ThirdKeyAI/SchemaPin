@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ThirdKeyAi/schemapin/go/pkg/crypto"
@@ -73,7 +74,7 @@ func TestSignVerifyRoundtrip(t *testing.T) {
 	}
 
 	store := NewAuthorityPinStore()
-	if err := VerifyTrustBundle(signed, store); err != nil {
+	if err := verifyFirstUse(signed, store); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
 }
@@ -88,7 +89,7 @@ func TestTamperedBundleFails(t *testing.T) {
 	signed.Documents[0].Domain = "evil.com"
 
 	store := NewAuthorityPinStore()
-	code := bundleErrCode(t, VerifyTrustBundle(signed, store))
+	code := bundleErrCode(t, verifyFirstUse(signed, store))
 	if code != ErrSignatureInvalid {
 		t.Errorf("code = %q, want %q", code, ErrSignatureInvalid)
 	}
@@ -97,7 +98,7 @@ func TestTamperedBundleFails(t *testing.T) {
 func TestUnsignedBundleRejected(t *testing.T) {
 	b := makeDistBundle("example.com", "2026-05-15T00:00:00Z")
 	store := NewAuthorityPinStore()
-	code := bundleErrCode(t, VerifyTrustBundle(b, store))
+	code := bundleErrCode(t, verifyFirstUse(b, store))
 	if code != ErrBundleUnsigned {
 		t.Errorf("code = %q, want %q", code, ErrBundleUnsigned)
 	}
@@ -111,7 +112,7 @@ func TestExpiredBundleRejected(t *testing.T) {
 		t.Fatalf("sign: %v", err)
 	}
 	store := NewAuthorityPinStore()
-	code := bundleErrCode(t, VerifyTrustBundle(signed, store))
+	code := bundleErrCode(t, verifyFirstUse(signed, store))
 	if code != ErrBundleExpired {
 		t.Errorf("code = %q, want %q", code, ErrBundleExpired)
 	}
@@ -126,7 +127,7 @@ func TestExpiredBundleUnparseable(t *testing.T) {
 	}
 	signed.ExpiresAt = "not-a-date"
 	store := NewAuthorityPinStore()
-	code := bundleErrCode(t, VerifyTrustBundle(signed, store))
+	code := bundleErrCode(t, verifyFirstUse(signed, store))
 	if code != ErrBundleExpired {
 		t.Errorf("code = %q, want %q", code, ErrBundleExpired)
 	}
@@ -148,10 +149,10 @@ func TestAuthorityTOFUMismatch(t *testing.T) {
 	}
 
 	store := NewAuthorityPinStore()
-	if err := VerifyTrustBundle(signed1, store); err != nil {
+	if err := verifyFirstUse(signed1, store); err != nil {
 		t.Fatalf("verify1 (pins kp1): %v", err)
 	}
-	code := bundleErrCode(t, VerifyTrustBundle(signed2, store))
+	code := bundleErrCode(t, verifyFirstUse(signed2, store))
 	if code != ErrKeyPinMismatch {
 		t.Errorf("code = %q, want %q", code, ErrKeyPinMismatch)
 	}
@@ -228,7 +229,7 @@ func TestJSONRPCEnvelopeRoundtrip(t *testing.T) {
 
 	// The parsed bundle still verifies.
 	store := NewAuthorityPinStore()
-	if err := VerifyTrustBundle(parsed, store); err != nil {
+	if err := verifyFirstUse(parsed, store); err != nil {
 		t.Fatalf("verify parsed: %v", err)
 	}
 }
@@ -259,17 +260,134 @@ func TestBuildTrustBundleRequestOmitsEmptyDomain(t *testing.T) {
 // fails the canonicalization diverges from Rust.
 func TestCrossLanguageFixture(t *testing.T) {
 	path := findFixture(t)
-	raw, err := os.ReadFile(path) //nolint:gosec // test fixture path
+	raw, err := os.ReadFile(path) // #nosec G304 -- test fixture
 	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+		t.Fatal(err)
 	}
 	var b SchemaPinTrustBundle
 	if err := json.Unmarshal(raw, &b); err != nil {
-		t.Fatalf("unmarshal fixture: %v", err)
+		t.Fatal(err)
+	}
+	if b.BundleAuthority.Kid != "schemapin-test-fixture-authority" {
+		t.Fatalf("unexpected fixture kid %q", b.BundleAuthority.Kid)
+	}
+	// Unknown authority: refused unless seeded.
+	if code := bundleErrCode(t, VerifyTrustBundle(&b, NewAuthorityPinStore())); code != ErrBundleAuthorityUntrusted {
+		t.Fatalf("expected %s, got %s", ErrBundleAuthorityUntrusted, code)
+	}
+	pub, err := os.ReadFile(filepath.Join(filepath.Dir(path), "keys", "test-only-bundle-authority.pub.pem")) // #nosec G304
+	if err != nil {
+		t.Fatal(err)
 	}
 	store := NewAuthorityPinStore()
-	if err := VerifyTrustBundle(&b, store); err != nil {
-		t.Fatalf("cross-language fixture failed to verify: %v", err)
+	if _, err := SeedBundleAuthorityFromPEM(store, b.BundleAuthority.Kid, string(pub)); err != nil {
+		t.Fatal(err)
+	}
+	res, err := VerifyTrustBundleWithOptions(&b, store, BundleVerifyOptions{})
+	if err != nil {
+		t.Fatalf("cross-language fixture must verify once seeded: %v", err)
+	}
+	if res.FirstUse {
+		t.Fatal("seeded authority must not be reported as first use")
+	}
+	other := NewAuthorityPinStore()
+	SeedBundleAuthority(other, b.BundleAuthority.Kid, "sha256:"+strings.Repeat("00", 32))
+	if code := bundleErrCode(t, VerifyTrustBundle(&b, other)); code != ErrKeyPinMismatch {
+		t.Fatalf("expected %s, got %s", ErrKeyPinMismatch, code)
+	}
+}
+
+// verifyFirstUse verifies with first-use trust allowed (the TOFU semantics
+// the pre-allow-list tests were written against).
+func verifyFirstUse(b *SchemaPinTrustBundle, store *AuthorityPinStore) error {
+	_, err := VerifyTrustBundleWithOptions(b, store, BundleVerifyOptions{AllowFirstUse: true})
+	return err
+}
+
+func TestAuthorityAllowList(t *testing.T) {
+	priv := genKeyPair(t)
+	signed, err := SignTrustBundle(makeDistBundle("victim.com", "2026-05-15T00:00:00Z"), priv, "victim-authority-2026", "2026-05-15T00:00:00Z", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := bundleErrCode(t, VerifyTrustBundle(signed, NewAuthorityPinStore())); code != ErrBundleAuthorityUntrusted {
+		t.Fatalf("self-signed bundle under a fresh kid must be refused, got %s", code)
+	}
+	store := NewAuthorityPinStore()
+	fp, err := SeedBundleAuthorityFromPEM(store, "victim-authority-2026", signed.BundleAuthority.PublicKeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := VerifyTrustBundleWithOptions(signed, store, BundleVerifyOptions{})
+	if err != nil || res.FirstUse || res.Fingerprint != fp {
+		t.Fatalf("seeded authority must pass strictly: %+v %v", res, err)
+	}
+	fresh := NewAuthorityPinStore()
+	res, err = VerifyTrustBundleWithOptions(signed, fresh, BundleVerifyOptions{AllowFirstUse: true})
+	if err != nil || !res.FirstUse {
+		t.Fatalf("first use must be reported: %+v %v", res, err)
+	}
+	if _, err := VerifyTrustBundleWithOptions(signed, fresh, BundleVerifyOptions{}); err != nil {
+		t.Fatalf("pinned authority must pass strictly afterwards: %v", err)
+	}
+	// A failed signature never pins.
+	tampered, _ := SignTrustBundle(makeDistBundle("example.com", "2026-05-15T00:00:00Z"), priv, "auth", "2026-05-15T00:00:00Z", "")
+	tampered.Documents[0].Domain = "evil.com"
+	s2 := NewAuthorityPinStore()
+	if code := bundleErrCode(t, verifyFirstUse(tampered, s2)); code != ErrSignatureInvalid {
+		t.Fatalf("expected signature failure, got %s", code)
+	}
+	if s2.Get("auth", BundleAuthorityPinDomain) != "" {
+		t.Fatal("failed verification must not pin the authority")
+	}
+}
+
+func TestStrictExpiresAtAndDuplicates(t *testing.T) {
+	priv := genKeyPair(t)
+	for _, bad := range []string{"2099-01-01", "2099-01-01T00:00:00", "2099-01-01 00:00:00Z"} {
+		signed, err := SignTrustBundle(makeDistBundle("example.com", "2026-05-15T00:00:00Z"), priv, "auth", "2026-05-15T00:00:00Z", bad)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if code := bundleErrCode(t, verifyFirstUse(signed, NewAuthorityPinStore())); code != ErrBundleExpired {
+			t.Errorf("%q: expected %s, got %s", bad, ErrBundleExpired, code)
+		}
+	}
+	dup := makeDistBundle("example.com", "2026-05-15T00:00:00Z")
+	dup.Documents = append(dup.Documents, dup.Documents[0])
+	if _, err := SignTrustBundle(dup, priv, "auth", "2026-05-15T00:00:00Z", ""); err == nil {
+		t.Fatal("duplicate domains must be rejected at sign time")
+	}
+	raw, _ := json.Marshal(dup)
+	if _, err := ParseTrustBundle(string(raw)); err == nil {
+		t.Fatal("duplicate domains must be rejected at parse time")
+	}
+}
+
+func TestMergePrecedence(t *testing.T) {
+	trusted := genKeyPair(t)
+	rogue := genKeyPair(t)
+	named := func(name, ts string) *SchemaPinTrustBundle {
+		b := makeDistBundle("example.com", ts)
+		b.Documents[0].WellKnown.DeveloperName = name
+		return b
+	}
+	good, _ := SignTrustBundle(named("Good", "2026-01-01T00:00:00Z"), trusted, "trusted", "2026-01-01T00:00:00Z", "")
+	bad, _ := SignTrustBundle(named("Rogue", "2099-01-01T00:00:00Z"), rogue, "rogue", "2099-01-01T00:00:00Z", "")
+	if got := MergeTrustBundlesWithPrecedence([]*SchemaPinTrustBundle{bad, good}, []string{"trusted"}).Documents[0].WellKnown.DeveloperName; got != "Good" {
+		t.Fatalf("precedence must beat timestamp, got %s", got)
+	}
+	if got := MergeTrustBundles([]*SchemaPinTrustBundle{good, bad}).Documents[0].WellKnown.DeveloperName; got != "Rogue" {
+		t.Fatalf("newer parsed timestamp must win without precedence, got %s", got)
+	}
+	real := named("Real", "2026-01-01T00:00:00Z")
+	bogus := named("Bogus", "9999-99-99 bogus")
+	if got := MergeTrustBundles([]*SchemaPinTrustBundle{real, bogus}).Documents[0].WellKnown.DeveloperName; got != "Real" {
+		t.Fatalf("unparseable timestamp must not win, got %s", got)
+	}
+	offset := named("Offset", "2026-02-01T00:00:00+00:00")
+	if got := MergeTrustBundles([]*SchemaPinTrustBundle{real, offset}).Documents[0].WellKnown.DeveloperName; got != "Offset" {
+		t.Fatalf("offset timestamps must compare as instants, got %s", got)
 	}
 }
 

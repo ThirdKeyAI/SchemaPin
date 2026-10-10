@@ -1,0 +1,8 @@
+{
+  "name": "17-deep-nesting",
+  "description": "Moderate nesting depth.",
+  "input": "{\"l1\":{\"l2\":{\"l3\":{\"l4\":{\"l5\":{\"z\":1,\"a\":[{\"b\":2,\"a\":1}]}}}}}}",
+  "reject": false,
+  "expected_canonical": "{\"l1\":{\"l2\":{\"l3\":{\"l4\":{\"l5\":{\"a\":[{\"a\":1,\"b\":2}],\"z\":1}}}}}}",
+  "expected_sha256": "c38fcb6e32b172c58b1716cbf8b6660df06446a60de925aa4ad31939180b28c8"
+}

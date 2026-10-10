@@ -1,0 +1,8 @@
+{
+  "name": "11-max-safe-integer",
+  "description": "2^53-1 is the largest accepted magnitude.",
+  "input": "{\"max\":9007199254740991,\"min\":-9007199254740991}",
+  "reject": false,
+  "expected_canonical": "{\"max\":9007199254740991,\"min\":-9007199254740991}",
+  "expected_sha256": "63546eb60913dcb1cdd5118f7bf4885beed344af930c8a9d5f38fad243fd4819"
+}

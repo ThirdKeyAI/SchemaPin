@@ -1,8 +1,22 @@
-"""Key pinning storage and management for Trust-On-First-Use (TOFU)."""
+"""Key pinning storage and management for Trust-On-First-Use (TOFU).
+
+.. deprecated:: 1.4.0
+    :class:`KeyPinning` is the legacy PEM-by-tool store used by
+    :class:`~schemapin.utils.SchemaVerificationWorkflow`. New code should use
+    :class:`~schemapin.verification.KeyPinStore` (fingerprint pins keyed by
+    ``tool_id@domain``) with :func:`~schemapin.verification.verify_schema_offline`;
+    this class is retained as a persistence backend for existing deployments.
+
+Pins are keyed by ``(tool_id, domain)``. A pin made for one domain is never
+returned for another, so a key pinned for ``evil.com`` cannot satisfy a
+verification for ``good.com`` that happens to reuse the same tool id.
+"""
 
 import json
+import os
 import sqlite3
-from datetime import UTC, datetime
+import warnings
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -41,6 +55,12 @@ class KeyPinning:
             mode: Pinning operation mode (automatic, interactive, strict)
             interactive_handler: Handler for interactive prompts
         """
+        warnings.warn(
+            "KeyPinning is the legacy PEM-by-tool pin store; prefer "
+            "schemapin.verification.KeyPinStore with verify_schema_offline",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if db_path is None:
             db_path = str(Path.home() / '.schemapin' / 'pinned_keys.db')
 
@@ -51,20 +71,45 @@ class KeyPinning:
         self._init_database()
 
     def _ensure_db_directory(self) -> None:
-        """Ensure database directory exists."""
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        """Ensure database directory exists (owner-only)."""
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def _init_database(self) -> None:
-        """Initialize database schema."""
+        """Initialize database schema, migrating legacy single-key tables."""
         with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='pinned_keys'"
+            ).fetchone()
+            if row and "PRIMARY KEY (tool_id, domain)" not in row[0]:
+                # Legacy schema keyed by tool_id only: rebuild with the
+                # composite key, preserving every existing row.
+                conn.execute("ALTER TABLE pinned_keys RENAME TO pinned_keys_legacy")
+                conn.execute('''
+                    CREATE TABLE pinned_keys (
+                        tool_id TEXT NOT NULL,
+                        public_key_pem TEXT NOT NULL,
+                        domain TEXT NOT NULL,
+                        developer_name TEXT,
+                        pinned_at TEXT NOT NULL,
+                        last_verified TEXT,
+                        PRIMARY KEY (tool_id, domain)
+                    )
+                ''')
+                conn.execute('''
+                    INSERT OR IGNORE INTO pinned_keys
+                    SELECT tool_id, public_key_pem, domain, developer_name, pinned_at, last_verified
+                    FROM pinned_keys_legacy
+                ''')
+                conn.execute("DROP TABLE pinned_keys_legacy")
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS pinned_keys (
-                    tool_id TEXT PRIMARY KEY,
+                    tool_id TEXT NOT NULL,
                     public_key_pem TEXT NOT NULL,
                     domain TEXT NOT NULL,
                     developer_name TEXT,
                     pinned_at TEXT NOT NULL,
-                    last_verified TEXT
+                    last_verified TEXT,
+                    PRIMARY KEY (tool_id, domain)
                 )
             ''')
 
@@ -77,6 +122,18 @@ class KeyPinning:
                 )
             ''')
             conn.commit()
+        try:
+            os.chmod(self.db_path, 0o600)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _where(tool_id: str, domain: Optional[str]) -> tuple:
+        """Build the lookup predicate; ``domain=None`` is the deprecated
+        tool-id-only lookup kept for callers that predate domain binding."""
+        if domain is None:
+            return "tool_id = ?", (tool_id,)
+        return "tool_id = ? AND domain = ?", (tool_id, domain)
 
     def pin_key(
         self,
@@ -108,59 +165,66 @@ class KeyPinning:
                     public_key_pem,
                     domain,
                     developer_name,
-                    datetime.now(UTC).isoformat()
+                    datetime.now(timezone.utc).isoformat()
                 ))
                 conn.commit()
                 return True
         except sqlite3.IntegrityError:
             return False
 
-    def get_pinned_key(self, tool_id: str) -> Optional[str]:
+    def get_pinned_key(self, tool_id: str, domain: Optional[str] = None) -> Optional[str]:
         """
-        Get pinned public key for tool.
+        Get the pinned public key for a tool at a domain.
 
         Args:
             tool_id: Tool identifier
+            domain: Tool provider domain. Always pass it: a pin recorded for
+                a different domain is never returned. ``None`` performs the
+                deprecated tool-id-only lookup and returns ``None`` when the
+                tool id is pinned for more than one domain.
 
         Returns:
             PEM-encoded public key if pinned, None otherwise
         """
+        where, params = self._where(tool_id, domain)
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                'SELECT public_key_pem FROM pinned_keys WHERE tool_id = ?',
-                (tool_id,)
-            )
-            result = cursor.fetchone()
-            return result[0] if result else None
+            rows = conn.execute(
+                f'SELECT public_key_pem FROM pinned_keys WHERE {where}', params
+            ).fetchall()
+            if len(rows) != 1:
+                return None
+            return rows[0][0]
 
-    def is_key_pinned(self, tool_id: str) -> bool:
+    def is_key_pinned(self, tool_id: str, domain: Optional[str] = None) -> bool:
         """
-        Check if key is pinned for tool.
+        Check if a key is pinned for a tool at a domain.
 
         Args:
             tool_id: Tool identifier
+            domain: Tool provider domain (see :meth:`get_pinned_key`)
 
         Returns:
             True if key is pinned, False otherwise
         """
-        return self.get_pinned_key(tool_id) is not None
+        return self.get_pinned_key(tool_id, domain) is not None
 
-    def update_last_verified(self, tool_id: str) -> bool:
+    def update_last_verified(self, tool_id: str, domain: Optional[str] = None) -> bool:
         """
         Update last verification timestamp for tool.
 
         Args:
             tool_id: Tool identifier
+            domain: Tool provider domain
 
         Returns:
             True if updated successfully, False if tool not found
         """
+        where, params = self._where(tool_id, domain)
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute('''
-                UPDATE pinned_keys
-                SET last_verified = ?
-                WHERE tool_id = ?
-            ''', (datetime.now(UTC).isoformat(), tool_id))
+            cursor = conn.execute(
+                f'UPDATE pinned_keys SET last_verified = ? WHERE {where}',
+                (datetime.now(timezone.utc).isoformat(), *params),
+            )
             conn.commit()
             return cursor.rowcount > 0
 
@@ -180,44 +244,46 @@ class KeyPinning:
             ''')
             return [dict(row) for row in cursor.fetchall()]
 
-    def remove_pinned_key(self, tool_id: str) -> bool:
+    def remove_pinned_key(self, tool_id: str, domain: Optional[str] = None) -> bool:
         """
         Remove pinned key for tool.
 
         Args:
             tool_id: Tool identifier
+            domain: Tool provider domain (``None`` removes every domain's pin)
 
         Returns:
             True if removed successfully, False if not found
         """
+        where, params = self._where(tool_id, domain)
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                'DELETE FROM pinned_keys WHERE tool_id = ?',
-                (tool_id,)
-            )
+            cursor = conn.execute(f'DELETE FROM pinned_keys WHERE {where}', params)
             conn.commit()
             return cursor.rowcount > 0
 
-    def get_key_info(self, tool_id: str) -> Optional[Dict[str, str]]:
+    def get_key_info(self, tool_id: str, domain: Optional[str] = None) -> Optional[Dict[str, str]]:
         """
         Get complete information about pinned key.
 
         Args:
             tool_id: Tool identifier
+            domain: Tool provider domain (see :meth:`get_pinned_key`)
 
         Returns:
             Dictionary with key information if found, None otherwise
         """
+        where, params = self._where(tool_id, domain)
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            cursor = conn.execute('''
+            rows = conn.execute(f'''
                 SELECT tool_id, public_key_pem, domain, developer_name,
                        pinned_at, last_verified
                 FROM pinned_keys
-                WHERE tool_id = ?
-            ''', (tool_id,))
-            result = cursor.fetchone()
-            return dict(result) if result else None
+                WHERE {where}
+            ''', params).fetchall()
+            if len(rows) != 1:
+                return None
+            return dict(rows[0])
 
     def export_pinned_keys(self) -> str:
         """
@@ -229,7 +295,7 @@ class KeyPinning:
         keys = self.list_pinned_keys()
         # Add public key data for export
         for key_info in keys:
-            key_info['public_key_pem'] = self.get_pinned_key(key_info['tool_id'])
+            key_info['public_key_pem'] = self.get_pinned_key(key_info['tool_id'], key_info['domain'])
 
         return json.dumps(keys, indent=2)
 
@@ -249,8 +315,8 @@ class KeyPinning:
             imported = 0
 
             for key_info in keys:
-                if overwrite and self.is_key_pinned(key_info['tool_id']):
-                    self.remove_pinned_key(key_info['tool_id'])
+                if overwrite and self.is_key_pinned(key_info['tool_id'], key_info['domain']):
+                    self.remove_pinned_key(key_info['tool_id'], key_info['domain'])
 
                 if self.pin_key(
                     key_info['tool_id'],
@@ -281,7 +347,7 @@ class KeyPinning:
                     INSERT OR REPLACE INTO domain_policies
                     (domain, policy, created_at)
                     VALUES (?, ?, ?)
-                ''', (domain, policy.value, datetime.now(UTC).isoformat()))
+                ''', (domain, policy.value, datetime.now(timezone.utc).isoformat()))
                 conn.commit()
                 return True
         except sqlite3.Error:
@@ -337,12 +403,12 @@ class KeyPinning:
         elif domain_policy == PinningPolicy.ALWAYS_TRUST:
             return self.pin_key(tool_id, public_key_pem, domain, developer_name)
 
-        # Check if key is already pinned
-        existing_key = self.get_pinned_key(tool_id)
+        # Check if key is already pinned for this tool at this domain
+        existing_key = self.get_pinned_key(tool_id, domain)
         if existing_key:
             if existing_key == public_key_pem:
                 # Same key, just update verification time
-                self.update_last_verified(tool_id)
+                self.update_last_verified(tool_id, domain)
                 return True
             else:
                 # Different key - handle key change
@@ -418,7 +484,7 @@ class KeyPinning:
 
         # Interactive prompt for key change
         if self.interactive_manager:
-            current_key_info = self.get_key_info(tool_id)
+            current_key_info = self.get_key_info(tool_id, domain)
             developer_info = PublicKeyDiscovery.get_developer_info(domain)
 
             decision = self.interactive_manager.prompt_key_change(
@@ -428,11 +494,11 @@ class KeyPinning:
 
             if decision == UserDecision.ACCEPT:
                 # Remove old key and pin new one
-                self.remove_pinned_key(tool_id)
+                self.remove_pinned_key(tool_id, domain)
                 return self.pin_key(tool_id, new_key_pem, domain, developer_name)
             elif decision == UserDecision.ALWAYS_TRUST:
                 self.set_domain_policy(domain, PinningPolicy.ALWAYS_TRUST)
-                self.remove_pinned_key(tool_id)
+                self.remove_pinned_key(tool_id, domain)
                 return self.pin_key(tool_id, new_key_pem, domain, developer_name)
             elif decision == UserDecision.NEVER_TRUST:
                 self.set_domain_policy(domain, PinningPolicy.NEVER_TRUST)

@@ -70,11 +70,14 @@ pub mod crypto;
 pub mod bundle;
 pub mod canonicalize;
 pub mod discovery;
+pub mod domain;
 pub mod error;
+pub mod lineage;
 pub mod pinning;
 pub mod resolver;
 pub mod revocation;
 pub mod skill;
+pub mod transport;
 pub mod types;
 pub mod verification;
 

@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from .core import SchemaPinCore
 from .crypto import KeyManager, SignatureManager
 from .discovery import PublicKeyDiscovery
+from .domain import InvalidDomainError, validate_domain
 from .pinning import KeyPinning
 
 
@@ -35,7 +36,15 @@ class SchemaSigningWorkflow:
 
 
 class SchemaVerificationWorkflow:
-    """High-level workflow for clients to verify schemas."""
+    """High-level workflow for clients to verify schemas.
+
+    .. deprecated:: 1.4.0
+        Built on the legacy :class:`~schemapin.pinning.KeyPinning` store.
+        Prefer :func:`~schemapin.verification.verify_schema_with_resolver`
+        with a :class:`~schemapin.verification.KeyPinStore`, which pins by
+        fingerprint only after a successful verification and reports a
+        structured :class:`~schemapin.verification.VerificationResult`.
+    """
 
     def __init__(self, pinning_db_path: Optional[str] = None):
         """
@@ -77,16 +86,20 @@ class SchemaVerificationWorkflow:
         }
 
         try:
-            # Check for pinned key
-            pinned_key_pem = self.pinning.get_pinned_key(tool_id)
+            domain = validate_domain(domain)
+
+            # Check for a key pinned for this tool at this domain
+            pinned_key_pem = self.pinning.get_pinned_key(tool_id, domain)
+            should_pin = False
 
             if pinned_key_pem:
-                # Use pinned key, but check if it's been revoked
+                # Use pinned key, but check if it's been revoked (fail-closed)
                 if not self.discovery.validate_key_not_revoked(pinned_key_pem, domain):
-                    result['error'] = 'Pinned public key has been revoked'
+                    result['error'] = 'Pinned public key has been revoked or its status is unavailable'
                     return result
 
                 public_key = KeyManager.load_public_key_pem(pinned_key_pem)
+                public_key_pem = pinned_key_pem
                 result['pinned'] = True
             else:
                 # First use - discover key
@@ -95,34 +108,36 @@ class SchemaVerificationWorkflow:
                     result['error'] = 'Could not discover public key'
                     return result
 
-                # Check if key is revoked
+                # Check if key is revoked (fail-closed)
                 if not self.discovery.validate_key_not_revoked(public_key_pem, domain):
-                    result['error'] = 'Public key has been revoked'
+                    result['error'] = 'Public key has been revoked or its status is unavailable'
                     return result
 
                 public_key = KeyManager.load_public_key_pem(public_key_pem)
                 result['first_use'] = True
                 result['developer_info'] = self.discovery.get_developer_info(domain)
+                should_pin = auto_pin
 
-                # Auto-pin if requested
-                if auto_pin:
-                    developer_name = None
-                    if result['developer_info']:
-                        developer_name = result['developer_info']['developer_name']
-
-                    self.pinning.pin_key(tool_id, public_key_pem, domain, developer_name)
-                    result['pinned'] = True
-
-            # Verify signature
+            # Verify signature before anything is pinned
             schema_hash = SchemaPinCore.canonicalize_and_hash(schema)
             result['valid'] = SignatureManager.verify_schema_signature(
                 schema_hash, signature_b64, public_key
             )
 
+            # Auto-pin only after a successful verification
+            if result['valid'] and should_pin:
+                developer_name = None
+                if result['developer_info']:
+                    developer_name = result['developer_info']['developer_name']
+                self.pinning.pin_key(tool_id, public_key_pem, domain, developer_name)
+                result['pinned'] = True
+
             # Update verification timestamp if valid and pinned
             if result['valid'] and result['pinned']:
-                self.pinning.update_last_verified(tool_id)
+                self.pinning.update_last_verified(tool_id, domain)
 
+        except InvalidDomainError as e:
+            result['error'] = f'Invalid domain: {e}'
         except Exception as e:
             result['error'] = str(e)
 

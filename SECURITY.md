@@ -4,11 +4,22 @@
 
 We actively support the following versions of SchemaPin with security updates:
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.1.x   | :white_check_mark: |
-| 1.0.x   | :white_check_mark: |
-| < 1.0   | :x:                |
+| Version        | Supported          |
+| -------------- | ------------------ |
+| 1.4.x (alpha)  | :white_check_mark: |
+| 1.3.x          | :white_check_mark: |
+| 1.2.x          | :white_check_mark: |
+| < 1.2          | :x:                |
+
+## Security Properties and Known Limitations
+
+- **Fail-closed by default.** Expired skill signatures (`SIGNATURE_EXPIRED`), unreachable revocation sources (`DISCOVERY_FETCH_FAILED`), unknown trust-bundle authorities (`BUNDLE_AUTHORITY_UNTRUSTED`) and domain mismatches all fail verification. Each has an explicit, per-call opt-out (`allow_expired`, `allow_unreachable_revocation`, `allow_first_use`) that a host must choose deliberately.
+- **Transport.** Discovery and revocation fetches are `https://` only, never follow redirects, cap the response body and apply timeouts. Domains are validated against the RFC 1123 hostname grammar before they are used as URLs, pin keys or file names.
+- **Keys.** Only ECDSA P-256 keys are accepted anywhere. Private keys produced by the tooling are written with mode 0600; never commit them.
+- **Pinning.** A pin is written only after a signature has verified, and pins are keyed by tool id *and* domain. Automatic first-use pinning is an opt-in; interactive or pre-seeded (`KeyPinStore.seed`, DNS TXT) trust is recommended.
+- **Legacy skill signatures** (`schemapin_version: "1.3"`) cover only the root hash: `expires_at`, `schema_version`, `previous_hash`, `file_manifest` and the other metadata fields are not signed. They still verify, with a `legacy_signature_format` warning, but cannot anchor a lineage. Re-sign skills with a current SDK to get the signed document format.
+- **Trust bundles** carry their own authority key. Seed the authority fingerprint out of band; treat `first_use` on a bundle exactly like a first-use tool key.
+- **Reference server.** The server in `server/` is a reference implementation; its management API is disabled by default and requires a bearer token when enabled. Terminate TLS in front of it.
 
 ## Reporting a Vulnerability
 

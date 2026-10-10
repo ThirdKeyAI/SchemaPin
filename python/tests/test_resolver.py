@@ -202,3 +202,22 @@ class TestChainResolver:
         )
         chain = ChainResolver([TrustBundleResolver(bundle)])
         assert chain.resolve_discovery("missing.com") is None
+
+
+class TestLocalFileResolverPathSafety:
+    """SP-16: a hostile domain string must not select a file outside the directory."""
+
+    def test_rejects_traversal_and_invalid_domains(self, tmp_path):
+        from schemapin.resolver import LocalFileResolver
+
+        disc_dir = tmp_path / "discovery"
+        disc_dir.mkdir()
+        doc = '{"schema_version":"1.4","public_key_pem":"-----BEGIN PUBLIC KEY-----\\nMOCK\\n-----END PUBLIC KEY-----"}'
+        (tmp_path / "evil.json").write_text(doc)
+        (tmp_path / "key.json").write_text(doc)
+        resolver = LocalFileResolver(str(disc_dir), str(disc_dir))
+        for bad in ("../evil", str(tmp_path / "key"), "localhost", "10.0.0.1", "evil.json/..", "../skills/evil/key"):
+            assert resolver.resolve_discovery(bad) is None, bad
+            assert resolver.resolve_revocation(bad, {}) is None, bad
+        (disc_dir / "example.com.json").write_text(doc)
+        assert resolver.resolve_discovery("Example.COM") is not None

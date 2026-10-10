@@ -1,0 +1,8 @@
+{
+  "name": "03-html-chars",
+  "description": "<, > and & are emitted literally, never as \\u003c etc.",
+  "input": "{\"description\":\"a < b && c > d\",\"html\":\"<string>&amp;\"}",
+  "reject": false,
+  "expected_canonical": "{\"description\":\"a < b && c > d\",\"html\":\"<string>&amp;\"}",
+  "expected_sha256": "0b11887d1b59827412c7e6f2cc3e7bc4c8ba845b09d2ca5b56983c0e05efd102"
+}

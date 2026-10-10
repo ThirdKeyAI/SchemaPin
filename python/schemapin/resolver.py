@@ -7,7 +7,26 @@ from typing import Any, Dict, List, Optional
 
 from .bundle import SchemaPinTrustBundle
 from .discovery import PublicKeyDiscovery
+from .domain import InvalidDomainError, validate_domain
 from .revocation import RevocationDocument, fetch_revocation_document
+
+
+def _safe_domain_path(base_dir: str, domain: str, suffix: str) -> Optional[str]:
+    """Join a validated domain-derived file name onto ``base_dir``.
+
+    Returns ``None`` when the domain is invalid or the resolved path would
+    escape ``base_dir`` (SP-16), so a hostile domain string can never select
+    an arbitrary file.
+    """
+    try:
+        normalized = validate_domain(domain)
+    except InvalidDomainError:
+        return None
+    root = os.path.realpath(base_dir)
+    path = os.path.realpath(os.path.join(root, f"{normalized}{suffix}"))
+    if path != root and not path.startswith(root + os.sep):
+        return None
+    return path
 
 
 class SchemaResolver(ABC):
@@ -50,7 +69,12 @@ class WellKnownResolver(SchemaResolver):
     def resolve_revocation(
         self, domain: str, discovery: Dict[str, Any]
     ) -> Optional[RevocationDocument]:
-        """Fetch revocation from the discovery's revocation_endpoint."""
+        """Fetch revocation from the discovery's revocation_endpoint.
+
+        Raises:
+            RevocationFetchError: when the endpoint is declared but cannot be
+                fetched or parsed (callers fail closed).
+        """
         endpoint = discovery.get("revocation_endpoint")
         if not endpoint:
             return None
@@ -58,7 +82,12 @@ class WellKnownResolver(SchemaResolver):
 
 
 class LocalFileResolver(SchemaResolver):
-    """Resolves discovery from local JSON files."""
+    """Resolves discovery from local JSON files.
+
+    The domain is validated and the resolved path must stay inside the
+    configured directory, so a hostile domain string cannot select an
+    arbitrary file.
+    """
 
     def __init__(
         self, discovery_dir: str, revocation_dir: Optional[str] = None
@@ -68,12 +97,15 @@ class LocalFileResolver(SchemaResolver):
 
     def resolve_discovery(self, domain: str) -> Optional[Dict[str, Any]]:
         """Read {domain}.json from the discovery directory."""
-        path = os.path.join(self._discovery_dir, f"{domain}.json")
+        path = _safe_domain_path(self._discovery_dir, domain, ".json")
+        if path is None:
+            return None
         try:
             with open(path) as f:
-                return json.load(f)
+                data = json.load(f)
         except (OSError, json.JSONDecodeError):
             return None
+        return data if isinstance(data, dict) else None
 
     def resolve_revocation(
         self, domain: str, discovery: Dict[str, Any]
@@ -81,21 +113,38 @@ class LocalFileResolver(SchemaResolver):
         """Read {domain}.revocations.json from the revocation directory."""
         if not self._revocation_dir:
             return None
-        path = os.path.join(
-            self._revocation_dir, f"{domain}.revocations.json"
-        )
+        path = _safe_domain_path(self._revocation_dir, domain, ".revocations.json")
+        if path is None:
+            return None
         try:
             with open(path) as f:
                 data = json.load(f)
                 return RevocationDocument.from_dict(data)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
 
 
 class TrustBundleResolver(SchemaResolver):
-    """Resolves discovery from an in-memory trust bundle."""
+    """Resolves discovery from an in-memory trust bundle.
+
+    Only load bundles you have verified with
+    :func:`schemapin.bundle_distribution.verify_trust_bundle`. Bundles with
+    duplicate domain entries are rejected (``ValueError``) so lookups are
+    unambiguous.
+    """
 
     def __init__(self, bundle: SchemaPinTrustBundle):
+        seen: set = set()
+        for doc in bundle.documents:
+            domain = doc.get("domain")
+            if domain in seen:
+                raise ValueError(f"trust bundle has duplicate entries for domain {domain!r}")
+            seen.add(domain)
+        seen = set()
+        for rev in bundle.revocations:
+            if rev.domain in seen:
+                raise ValueError(f"trust bundle has duplicate entries for domain {rev.domain!r}")
+            seen.add(rev.domain)
         self._bundle = bundle
 
     @classmethod
@@ -116,7 +165,12 @@ class TrustBundleResolver(SchemaResolver):
 
 
 class ChainResolver(SchemaResolver):
-    """Tries multiple resolvers in order, returning the first success."""
+    """Tries multiple resolvers in order, returning the first success.
+
+    Precedence is positional: put the most trusted source first. A
+    :class:`~schemapin.revocation.RevocationFetchError` raised by any member
+    propagates (fail-closed) instead of being skipped.
+    """
 
     def __init__(self, resolvers: List[SchemaResolver]):
         self._resolvers = resolvers

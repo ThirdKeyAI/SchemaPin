@@ -5,6 +5,120 @@ All notable changes to the SchemaPin project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Supported runtimes
+
+- Python package builds and CI use setuptools 83.0.0 or later to include its
+  security fixes.
+- Python now requires 3.10 or later and Rust requires 1.89 or later, matching
+  the patched dependency graph. Packaging metadata and current documentation
+  agree on these minimums; CI tests each minimum alongside a newer runtime.
+
+### Security
+
+- Updated the pinned Python cryptography dependency and JavaScript development
+  dependency lockfile to clear current dependency advisories. The reference
+  server uses patched FastAPI, Starlette, AnyIO and Pydantic versions and no
+  longer installs unused JWT, password, multipart or file-helper libraries.
+
+Fixes from the 2026-10 security review of all four SDKs, the reference server
+and the demo. IDs refer to the review's findings. Wire-format changes are
+called out explicitly; everything else is behavior.
+
+- **SP-1** — Skill signatures now cover the whole `.schemapin.sig` document
+  (`schemapin_version: "1.4"`): `expires_at`, `schema_version`,
+  `previous_hash`, `canonicalization`, `domain`, `skill_name`, `signer_kid`,
+  `signed_at` and `file_manifest` are all signed. Verifiers recompute the root
+  hash, require `skill_hash` to match, and verify over the canonical document.
+  Legacy `"1.3"` documents still verify (with a `legacy_signature_format`
+  warning) but cannot anchor a lineage. **Wire-format change** for new
+  signatures.
+- **SP-2** — Go signed the schema digest directly while Python, JavaScript and
+  Rust sign `ECDSA(SHA-256(digest))`; Go now matches. Go-produced schema and
+  skill signatures from earlier releases will not verify elsewhere (they never
+  did). A fixed cross-language ECDSA vector is committed.
+- **SP-3 / SP-4 / SP-5** — `schemapin-v1` canonicalization is now specified
+  normatively (spec §4) and implemented identically: code-point key order,
+  literal `<>&` and U+2028/9, minimal escaping, ES6 number formatting with a
+  2^53−1 magnitude limit, rejection of `NaN`/`Infinity`, duplicate keys, lone
+  surrogates and invalid UTF-8, `__proto__` preserved. 33 shared vectors in
+  `tests/cross-language/canonicalization/` are asserted by all four suites.
+  Schemas containing floats such as `1.0` or integers above 2^53 canonicalize
+  differently than before (or are rejected).
+- **SP-6** — Trust-bundle authorities must be allow-listed
+  (`seed_bundle_authority`); unknown authorities fail with
+  `BUNDLE_AUTHORITY_UNTRUSTED` unless first-use trust is explicitly allowed,
+  and the result reports `first_use`.
+- **SP-7** — Reference server: bearer-token authentication on all mutations
+  (off by default), merge-on-upload that never wipes revocations, no CORS
+  credentials with wildcard origins, enforced rate limit, localhost/debug-off
+  defaults, host-based `/.well-known/schemapin.json` with no first-developer
+  fallback.
+- **SP-8** — Skill verification binds the caller's domain: resolver paths fail
+  with `DOMAIN_MISMATCH` before any I/O when the signature's `domain` differs,
+  offline paths accept an expected domain, and the signature's own `domain`
+  is display-only.
+- **SP-9** — Revocation is fail-closed everywhere: an unreachable
+  `revocation_endpoint` or `.well-known` document is `DISCOVERY_FETCH_FAILED`
+  (opt-out: `allow_unreachable_revocation`), `ChainResolver` propagates
+  errors, and the legacy workflows consult `revocation_endpoint`.
+- **SP-10** — Only ECDSA P-256 keys are accepted in every SDK (load, sign,
+  verify, fingerprint).
+- **SP-11** — Discovery transport: `https://` only, no redirects, 64 KiB body
+  cap, timeouts in every fetcher, and a shared RFC 1123 domain validator
+  applied before URLs, pin keys and file paths.
+- **SP-12 / SP-13** — Skill canonicalization v2: symlinks and special files
+  abort hashing, per-entry hashes are length-prefixed
+  (`"f" ‖ be64(len(path)) ‖ path ‖ be64(len(content)) ‖ content`), the root
+  covers path/digest pairs, and entry count and total size are capped.
+  **Wire-format change** (selected by `schemapin_version: "1.4"`).
+- **SP-14** — `skill_hash` is `hex(root_hash)` in all SDKs (Rust previously
+  hashed the root hash again) and is verified.
+- **SP-15** — Legacy `KeyPinning` stores are keyed by `(tool_id, domain)` with
+  in-place migration; the JavaScript store fails hard on corruption, writes
+  atomically with mode 0600 and checks revocation in its interactive flows;
+  the legacy workflows pin only after a successful verification.
+- **SP-16** — `LocalFileResolver` validates the domain and confines resolved
+  paths to the configured directory.
+- **SP-17** — Expiration fails closed (`SIGNATURE_EXPIRED`, 5-minute skew,
+  strict RFC 3339); `allow_expired` restores the degraded behavior per call.
+- **SP-18** — Private keys are written with mode 0600; committed demo and
+  fixture private keys were removed and the fixture bundle re-signed under the
+  test-only authority `schemapin-test-fixture-authority`.
+- **SP-19** — Parity fixes: strict RFC 3339 parsing in JavaScript, Go rejects
+  an empty `canonicalization` field and trailing DER bytes, `go.mod` pins a
+  toolchain, bundle signing input is built from the known field set in every
+  SDK, duplicate bundle domains are rejected.
+- **SP-20** — Documentation, CLI and demo drift fixed (see below).
+- Pins are written only after signature verification in every verification
+  path; `KeyPinStore` gains `check` / `pin` / `seed`.
+- Trust-bundle merges honor an authority precedence list and compare parsed
+  timestamps.
+
+### Added
+
+- `LineageStore` (all SDKs): verifier-side `latest_known_hash` per
+  `tool_id@domain` with fork/rollback and monotonic `schema_version`
+  enforcement (spec §18.4).
+- `verify_schema_offline_with_dns` (all SDKs).
+- Cross-language fixtures: canonicalization corpus, ECDSA signature vector,
+  v1.4 and legacy skill directories, re-signed trust bundle, and test-only keys
+  under `tests/cross-language/keys/`.
+- Property-based tests (hypothesis, proptest, Go native fuzz seeds, a seeded
+  generator in JavaScript) and libFuzzer targets under `rust/fuzz/`.
+- `server/tests/` for the reference server.
+
+### Changed
+
+- Dependency bumps: `h2`, `rustls`, `crossbeam-epoch`, `chacha20` (Rust,
+  optional features); Go toolchain pinned to go1.26.9.
+- `KeyPinning` / `SchemaVerificationWorkflow` are deprecated in favor of
+  `KeyPinStore` + `verify_schema_with_resolver`.
+- `rust`: `canonicalize_schema` / `canonicalize_and_hash` return `Result`;
+  `verify_trust_bundle` is strict (use `verify_trust_bundle_with_options`
+  for first-use trust).
+
 ## [1.4.0-alpha.4] - 2026-06-21
 
 ### Added

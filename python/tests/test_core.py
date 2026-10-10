@@ -1,5 +1,7 @@
 """Tests for core SchemaPin functionality."""
 
+import pytest
+
 from schemapin.core import SchemaPinCore
 
 
@@ -89,3 +91,48 @@ class TestSchemaPinCore:
 
         # Should produce identical hashes
         assert hash1 == hash2
+
+
+class TestStrictCanonicalization:
+    """Regression tests for SP-5 (number / NaN / surrogate / duplicate-key rules)."""
+
+    def test_rejects_nan_and_infinity(self):
+        from schemapin.core import CanonicalizationError
+
+        with pytest.raises(CanonicalizationError):
+            SchemaPinCore.canonicalize_schema({"a": float("nan")})
+        with pytest.raises(CanonicalizationError):
+            SchemaPinCore.canonicalize_schema({"a": float("inf")})
+        with pytest.raises(CanonicalizationError):
+            SchemaPinCore.parse_schema_json('{"a": NaN}')
+
+    def test_rejects_integers_beyond_safe_range(self):
+        from schemapin.core import CanonicalizationError
+
+        with pytest.raises(CanonicalizationError):
+            SchemaPinCore.canonicalize_schema({"a": 2**53})
+        with pytest.raises(CanonicalizationError):
+            SchemaPinCore.canonicalize_schema({"a": 2**53 + 1})
+        assert SchemaPinCore.canonicalize_schema({"a": 2**53 - 1}) == '{"a":9007199254740991}'
+
+    def test_float_formatting_matches_es6(self):
+        assert SchemaPinCore.canonicalize_schema([1.0, 1e-7, 0.000001, 1e3, -0.0]) == "[1,1e-7,0.000001,1000,0]"
+
+    def test_rejects_duplicate_keys_at_parse(self):
+        from schemapin.core import CanonicalizationError
+
+        with pytest.raises(CanonicalizationError):
+            SchemaPinCore.parse_schema_json('{"a":1,"a":2}')
+
+    def test_rejects_lone_surrogates(self):
+        from schemapin.core import CanonicalizationError
+
+        with pytest.raises(CanonicalizationError):
+            SchemaPinCore.parse_schema_json('{"a":"\\ud800"}')
+        with pytest.raises(CanonicalizationError):
+            SchemaPinCore.canonicalize_schema({"a": "\ud800"})
+
+    def test_keys_sorted_by_code_point(self):
+        assert SchemaPinCore.canonicalize_schema({"\U0001F600": 1, "￿": 2, "z": 3}) == (
+            '{"z":3,"￿":2,"\U0001F600":1}'
+        )

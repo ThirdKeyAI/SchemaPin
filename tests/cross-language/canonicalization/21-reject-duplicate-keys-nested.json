@@ -1,0 +1,6 @@
+{
+  "name": "21-reject-duplicate-keys-nested",
+  "description": "Duplicate keys in nested objects are rejected too.",
+  "input": "{\"o\":{\"a\":1,\"b\":2,\"a\":3}}",
+  "reject": true
+}

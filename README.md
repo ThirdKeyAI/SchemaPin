@@ -17,7 +17,7 @@ SchemaPin lets tool developers sign their schemas and skill folders with ECDSA P
 - **Skill folder signing** for AgentSkills (SKILL.md + file manifests)
 - **Cross-language** — Python, JavaScript, Go, and Rust implementations
 
-> **v1.4.0-alpha.2** (all four languages): three additive optional features — [signature expiration (`expires_at`)](https://docs.schemapin.org/signature-expiration/) with degraded-not-failed verification, [DNS TXT cross-verification](https://docs.schemapin.org/dns-txt/) at `_schemapin.{domain}` for second-channel trust, and [schema version binding (`schema_version` + `previous_hash`)](https://docs.schemapin.org/schema-version-binding/) for opt-in lineage chain enforcement that defends against rug-pull substitutions. v1.3 verifiers ignore the new fields; v1.4 verifiers handle both. The remaining v1.4 items (canonicalization id, A2A context, A2A trust bundles, scan-aware sigs, cross-agent schema cache) ship in subsequent alphas before stable v1.4.0.
+> **v1.4.0-alpha.2** (all four languages): three additive optional features — [signature expiration (`expires_at`)](https://docs.schemapin.org/signature-expiration/) with fail-closed verification (`allow_expired` opt-out), [DNS TXT cross-verification](https://docs.schemapin.org/dns-txt/) at `_schemapin.{domain}` for second-channel trust, and [schema version binding (`schema_version` + `previous_hash`)](https://docs.schemapin.org/schema-version-binding/) for opt-in lineage chain enforcement that defends against rug-pull substitutions. v1.3 verifiers ignore the new fields; v1.4 verifiers handle both. The remaining v1.4 items (canonicalization id, A2A context, A2A trust bundles, scan-aware sigs, cross-agent schema cache) ship in subsequent alphas before stable v1.4.0.
 
 ## Quick Start
 
@@ -41,6 +41,8 @@ result = verifier.verify_schema(schema, signature, "example.com/my_tool", "examp
 
 ### Python
 
+The upcoming security release requires Python 3.10 or later.
+
 ```bash
 pip install schemapin
 ```
@@ -58,6 +60,8 @@ go install github.com/ThirdKeyAi/schemapin/go/cmd/...@latest
 ```
 
 ### Rust
+
+The upcoming security release requires Rust 1.89 or later.
 
 ```toml
 [dependencies]

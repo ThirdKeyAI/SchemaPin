@@ -5,6 +5,7 @@
 import { SchemaPinCore } from './core.js';
 import { KeyManager, SignatureManager } from './crypto.js';
 import { PublicKeyDiscovery } from './discovery.js';
+import { validateDomain } from './domain.js';
 import { KeyPinning } from './pinning.js';
 
 /**
@@ -34,6 +35,10 @@ export class SchemaSigningWorkflow {
 
 /**
  * High-level workflow for clients to verify schemas.
+ *
+ * @deprecated Built on the legacy `KeyPinning` store. Prefer
+ * `verifySchemaWithResolver` with a `KeyPinStore`, which pins by fingerprint
+ * only after a successful verification and returns a structured result.
  */
 export class SchemaVerificationWorkflow {
     /**
@@ -66,60 +71,62 @@ export class SchemaVerificationWorkflow {
         };
 
         try {
-            // Check for pinned key
-            const pinnedKeyPem = this.pinning.getPinnedKey(toolId);
+            domain = validateDomain(domain);
+
+            // Check for a key pinned for this tool at this domain
+            const pinnedKeyPem = this.pinning.getPinnedKey(toolId, domain);
             let publicKey;
+            let publicKeyPem;
+            let shouldPin = false;
 
             if (pinnedKeyPem) {
-                // Use pinned key, but check if it's been revoked
+                // Use pinned key, but check if it's been revoked (fail-closed)
                 const isNotRevoked = await PublicKeyDiscovery.validateKeyNotRevoked(pinnedKeyPem, domain);
                 if (!isNotRevoked) {
-                    result.error = 'Pinned public key has been revoked';
+                    result.error = 'Pinned public key has been revoked or its status is unavailable';
                     return result;
                 }
-                
+
                 publicKey = KeyManager.loadPublicKeyPem(pinnedKeyPem);
+                publicKeyPem = pinnedKeyPem;
                 result.pinned = true;
             } else {
                 // First use - discover key
-                const publicKeyPem = await this.discovery.getPublicKeyPem(domain);
+                publicKeyPem = await this.discovery.getPublicKeyPem(domain);
                 if (!publicKeyPem) {
                     result.error = 'Could not discover public key';
                     return result;
                 }
 
-                // Check if key is revoked
+                // Check if key is revoked (fail-closed)
                 const isNotRevoked = await PublicKeyDiscovery.validateKeyNotRevoked(publicKeyPem, domain);
                 if (!isNotRevoked) {
-                    result.error = 'Public key has been revoked';
+                    result.error = 'Public key has been revoked or its status is unavailable';
                     return result;
                 }
 
                 publicKey = KeyManager.loadPublicKeyPem(publicKeyPem);
                 result.first_use = true;
                 result.developer_info = await this.discovery.getDeveloperInfo(domain);
-
-                // Auto-pin if requested
-                if (autoPin) {
-                    let developerName = null;
-                    if (result.developer_info) {
-                        developerName = result.developer_info.developer_name;
-                    }
-
-                    this.pinning.pinKey(toolId, publicKeyPem, domain, developerName);
-                    result.pinned = true;
-                }
+                shouldPin = autoPin;
             }
 
-            // Verify signature
+            // Verify signature before anything is pinned
             const schemaHash = SchemaPinCore.canonicalizeAndHash(schema);
             result.valid = SignatureManager.verifySchemaSignature(
                 schemaHash, signatureB64, publicKey
             );
 
+            // Auto-pin only after a successful verification
+            if (result.valid && shouldPin) {
+                const developerName = result.developer_info ? result.developer_info.developer_name : null;
+                this.pinning.pinKey(toolId, publicKeyPem, domain, developerName);
+                result.pinned = true;
+            }
+
             // Update verification timestamp if valid and pinned
             if (result.valid && result.pinned) {
-                this.pinning.updateLastVerified(toolId);
+                this.pinning.updateLastVerified(toolId, domain);
             }
 
         } catch (error) {

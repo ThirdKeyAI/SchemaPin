@@ -17,6 +17,10 @@ import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from '
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
 
+// The legacy interactive flows check revocation fail-closed; stub the
+// network lookup so these tests stay offline.
+const NOT_REVOKED = { revocationChecker: async () => true };
+
 // Mock function helper
 function createMockFunction() {
     const calls = [];
@@ -163,7 +167,7 @@ describe('KeyPinning Interactive Functionality', () => {
         const dbPath = join(tempDir, 'test_pinning.json');
         
         try {
-            const pinning = new KeyPinning(dbPath, PinningMode.AUTOMATIC);
+            const pinning = new KeyPinning(dbPath, PinningMode.AUTOMATIC, null, NOT_REVOKED);
 
             const result = await pinning.interactivePinKey(
                 'test-tool',
@@ -192,7 +196,7 @@ describe('KeyPinning Interactive Functionality', () => {
                 displaySecurityWarning: createMockFunction()
             };
             
-            const pinning = new KeyPinning(dbPath, PinningMode.INTERACTIVE, mockHandler);
+            const pinning = new KeyPinning(dbPath, PinningMode.INTERACTIVE, mockHandler, NOT_REVOKED);
             
             // Mock the interactive manager
             const mockPrompt = createMockFunction();
@@ -220,7 +224,7 @@ describe('KeyPinning Interactive Functionality', () => {
         const dbPath = join(tempDir, 'test_pinning.json');
         
         try {
-            const pinning = new KeyPinning(dbPath, PinningMode.INTERACTIVE);
+            const pinning = new KeyPinning(dbPath, PinningMode.INTERACTIVE, null, NOT_REVOKED);
             
             // Set always trust policy
             pinning.setDomainPolicy('example.com', PinningPolicy.ALWAYS_TRUST);
@@ -246,7 +250,7 @@ describe('KeyPinning Interactive Functionality', () => {
         const dbPath = join(tempDir, 'test_pinning.json');
         
         try {
-            const pinning = new KeyPinning(dbPath, PinningMode.INTERACTIVE);
+            const pinning = new KeyPinning(dbPath, PinningMode.INTERACTIVE, null, NOT_REVOKED);
             
             // Set never trust policy
             pinning.setDomainPolicy('example.com', PinningPolicy.NEVER_TRUST);
@@ -272,7 +276,7 @@ describe('KeyPinning Interactive Functionality', () => {
         const dbPath = join(tempDir, 'test_pinning.json');
         
         try {
-            const pinning = new KeyPinning(dbPath, PinningMode.STRICT);
+            const pinning = new KeyPinning(dbPath, PinningMode.STRICT, null, NOT_REVOKED);
             
             // Pin initial key
             const initialKey = '-----BEGIN PUBLIC KEY-----\ninitial\n-----END PUBLIC KEY-----';
@@ -302,7 +306,7 @@ describe('Domain Policy Management', () => {
         const dbPath = join(tempDir, 'test_pinning.json');
         
         try {
-            const pinning = new KeyPinning(dbPath);
+            const pinning = new KeyPinning(dbPath, PinningMode.AUTOMATIC, null, NOT_REVOKED);
 
             assert.strictEqual(pinning.getDomainPolicy('example.com'), PinningPolicy.DEFAULT);
 
@@ -323,10 +327,10 @@ describe('Domain Policy Management', () => {
         const dbPath = join(tempDir, 'test_pinning.json');
         
         try {
-            const pinning1 = new KeyPinning(dbPath);
+            const pinning1 = new KeyPinning(dbPath, PinningMode.AUTOMATIC, null, NOT_REVOKED);
             pinning1.setDomainPolicy('example.com', PinningPolicy.ALWAYS_TRUST);
 
-            const pinning2 = new KeyPinning(dbPath);
+            const pinning2 = new KeyPinning(dbPath, PinningMode.AUTOMATIC, null, NOT_REVOKED);
             assert.strictEqual(pinning2.getDomainPolicy('example.com'), PinningPolicy.ALWAYS_TRUST);
         } finally {
             if (existsSync(dbPath)) unlinkSync(dbPath);

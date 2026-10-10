@@ -183,13 +183,15 @@ class TestKeyPinningInteractive(unittest.TestCase):
             mode=PinningMode.AUTOMATIC
         )
 
-        # Should pin automatically without prompts
-        result = pinning.interactive_pin_key(
-            self.tool_id,
-            self.public_key_pem,
-            self.domain,
-            self.developer_name
-        )
+        # Should pin automatically without prompts. Revocation checks are
+        # fail-closed, so the network lookup is mocked as "not revoked".
+        with patch('schemapin.pinning.PublicKeyDiscovery.validate_key_not_revoked', return_value=True):
+            result = pinning.interactive_pin_key(
+                self.tool_id,
+                self.public_key_pem,
+                self.domain,
+                self.developer_name
+            )
 
         self.assertTrue(result)
         self.assertTrue(pinning.is_key_pinned(self.tool_id))

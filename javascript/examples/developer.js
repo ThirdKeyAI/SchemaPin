@@ -66,8 +66,8 @@ function main() {
     // Step 5: Save files for demonstration
     console.log("\n5. Saving demonstration files...");
     
-    // Save private key (in real use, keep this secure!)
-    writeFileSync("demo_private_key.pem", privateKeyPem);
+    // Save private key with owner-only permissions (in real use, keep this secure!)
+    writeFileSync("demo_private_key.pem", privateKeyPem, { mode: 0o600 });
     
     // Save schema with signature
     const schemaWithSignature = {

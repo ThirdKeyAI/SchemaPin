@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::domain::validate_domain;
 use crate::error::Error;
 use crate::types::bundle::SchemaPinTrustBundle;
 use crate::types::discovery::WellKnownResponse;
@@ -44,6 +45,7 @@ pub trait SchemaResolver: Send + Sync {
 /// Async equivalent of [`SchemaResolver`].
 ///
 /// Gated behind the `fetch` feature because it brings in `async-trait`.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait AsyncSchemaResolver: Send + Sync {
     async fn resolve_discovery(&self, domain: &str) -> Result<WellKnownResponse, Error>;
@@ -110,9 +112,24 @@ impl LocalFileResolver {
     }
 }
 
+/// Join a validated domain-derived file name onto `base` and make sure the
+/// result stays inside `base` (SP-16).
+fn safe_domain_path(base: &Path, domain: &str, suffix: &str) -> Result<PathBuf, Error> {
+    let normalized = validate_domain(domain)?;
+    let path = base.join(format!("{}{}", normalized, suffix));
+    if !path.starts_with(base) {
+        return Err(Error::Discovery(format!(
+            "resolved path {} escapes {}",
+            path.display(),
+            base.display()
+        )));
+    }
+    Ok(path)
+}
+
 impl SchemaResolver for LocalFileResolver {
     fn resolve_discovery(&self, domain: &str) -> Result<WellKnownResponse, Error> {
-        let path = self.discovery_dir.join(format!("{}.json", domain));
+        let path = safe_domain_path(&self.discovery_dir, domain, ".json")?;
         let data = std::fs::read_to_string(&path)
             .map_err(|e| Error::Discovery(format!("Cannot read {}: {}", path.display(), e)))?;
         let doc: WellKnownResponse = serde_json::from_str(&data)?;
@@ -125,7 +142,7 @@ impl SchemaResolver for LocalFileResolver {
         _discovery: &WellKnownResponse,
     ) -> Result<Option<RevocationDocument>, Error> {
         let dir = self.revocation_dir.as_ref().unwrap_or(&self.discovery_dir);
-        let path = dir.join(format!("{}.revocations.json", domain));
+        let path = safe_domain_path(dir, domain, ".revocations.json")?;
         if !path.exists() {
             return Ok(None);
         }
@@ -164,8 +181,16 @@ impl TrustBundleResolver {
     }
 
     /// Build from a JSON string representing a [`SchemaPinTrustBundle`].
+    /// Bundles with duplicate domain entries are rejected so lookups are
+    /// unambiguous.
     pub fn from_json(json: &str) -> Result<Self, Error> {
         let bundle: SchemaPinTrustBundle = serde_json::from_str(json)?;
+        if let Some(dup) = crate::bundle::duplicate_domain(&bundle) {
+            return Err(Error::Discovery(format!(
+                "trust bundle has duplicate entries for domain {:?}",
+                dup
+            )));
+        }
         Ok(Self::new(&bundle))
     }
 }
@@ -193,6 +218,10 @@ impl SchemaResolver for TrustBundleResolver {
 
 /// Composite resolver that tries a sequence of resolvers in order until one
 /// succeeds.
+///
+/// Precedence is positional: put the most trusted source first. A revocation
+/// fetch failure from any member propagates (fail-closed) instead of being
+/// skipped.
 pub struct ChainResolver {
     resolvers: Vec<Box<dyn SchemaResolver>>,
 }
@@ -221,10 +250,11 @@ impl SchemaResolver for ChainResolver {
         discovery: &WellKnownResponse,
     ) -> Result<Option<RevocationDocument>, Error> {
         for resolver in &self.resolvers {
-            match resolver.resolve_revocation(domain, discovery) {
-                Ok(Some(doc)) => return Ok(Some(doc)),
-                Ok(None) => continue,
-                Err(_) => continue,
+            // Errors propagate: a declared-but-unreachable revocation source
+            // must not silently degrade to "not revoked".
+            match resolver.resolve_revocation(domain, discovery)? {
+                Some(doc) => return Ok(Some(doc)),
+                None => continue,
             }
         }
         Ok(None)
@@ -309,6 +339,39 @@ mod tests {
         let resolver = LocalFileResolver::new(dir.path(), None);
         let resolved = resolver.resolve_discovery("local.example.com").unwrap();
         assert_eq!(resolved.schema_version, "1.2");
+    }
+
+    #[test]
+    fn test_local_file_resolver_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let disc_dir = dir.path().join("discovery");
+        std::fs::create_dir_all(&disc_dir).unwrap();
+        let wk = make_well_known("-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----");
+        std::fs::write(
+            dir.path().join("evil.json"),
+            serde_json::to_string(&wk).unwrap(),
+        )
+        .unwrap();
+        let resolver = LocalFileResolver::new(&disc_dir, None);
+        for bad in [
+            "../evil",
+            "/etc/passwd",
+            "localhost",
+            "10.0.0.1",
+            "evil.json/..",
+        ] {
+            assert!(
+                resolver.resolve_discovery(bad).is_err(),
+                "{:?} must fail",
+                bad
+            );
+        }
+        std::fs::write(
+            disc_dir.join("example.com.json"),
+            serde_json::to_string(&wk).unwrap(),
+        )
+        .unwrap();
+        assert!(resolver.resolve_discovery("Example.COM").is_ok());
     }
 
     #[test]

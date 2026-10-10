@@ -13,10 +13,10 @@
   ],
   "revocations": [],
   "bundle_authority": {
-    "kid": "schemapin-bundle-authority-2026",
-    "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEg+aix0OfT3YmM1E+s98N6MoGP7C5\nCvO1BtD5K4KmJgv6N0B+LNtCf4Igu6Z94oyIoVHTUQ6i/cjQ1kzXx3Mv0w==\n-----END PUBLIC KEY-----\n"
+    "kid": "schemapin-test-fixture-authority",
+    "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEv/LahRognUVulltAhWO21jYl99EK\ntB6ekEsIyTpPor1e9oKeAW9aQ24sULg2MG2qvOWv4CLpZT08Ty4lAXSJXw==\n-----END PUBLIC KEY-----\n"
   },
   "signed_at": "2026-05-15T00:00:00Z",
   "expires_at": "2099-01-01T00:00:00Z",
-  "signature": "MEUCIQDyUMRPiPY6la8RTfOW7vRmOuIUkGMcrFjM4bAM/g9IRQIgQ3CRP/j/M1NrMzNU3s6f1S3kQm9h2a+ffLmfPHm9Uzs="
+  "signature": "MEQCIE+TK3k1VkNJbQbPTrTpH9doXlto+J7QN2NaIq4bdCr7AiBd58EMQzBC3F6K9V0Vi2vc/5U/7x7Bh9KV8w7iLeHN3w=="
 }
