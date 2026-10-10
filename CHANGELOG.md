@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Supported runtimes
 
+- Python package builds and CI use setuptools 83.0.0 or later to include its
+  security fixes.
 - Python now requires 3.10 or later and Rust requires 1.89 or later, matching
   the patched dependency graph. Packaging metadata and current documentation
   agree on these minimums; CI tests each minimum alongside a newer runtime.
