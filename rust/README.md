@@ -27,6 +27,8 @@ This implementation is fully compatible with the Python, JavaScript, and Go impl
 
 ## Installation
 
+Requires Rust 1.89 or later.
+
 Add this to your `Cargo.toml`:
 
 ```toml

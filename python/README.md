@@ -274,7 +274,7 @@ bandit -r . --exclude tests/
 
 ## Requirements
 
-- Python 3.8 or higher
+- Python 3.10 or higher
 - cryptography library for ECDSA operations
 - requests library for HTTP operations
 - sqlite3 (built-in) for key storage

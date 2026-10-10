@@ -41,6 +41,8 @@ result = verifier.verify_schema(schema, signature, "example.com/my_tool", "examp
 
 ### Python
 
+The upcoming security release requires Python 3.10 or later.
+
 ```bash
 pip install schemapin
 ```
@@ -58,6 +60,8 @@ go install github.com/ThirdKeyAi/schemapin/go/cmd/...@latest
 ```
 
 ### Rust
+
+The upcoming security release requires Rust 1.89 or later.
 
 ```toml
 [dependencies]
