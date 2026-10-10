@@ -1,0 +1,52 @@
+name: Runtime compatibility
+
+on:
+  push:
+    branches: [main]
+    paths: ['rust/**', 'python/**', 'server/**', 'tests/**', '.github/workflows/compatibility.yml']
+  pull_request:
+    paths: ['rust/**', 'python/**', 'server/**', 'tests/**', '.github/workflows/compatibility.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ['1.89', stable]
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: rust
+      - run: cargo test --all-features --locked
+      - run: cargo fmt --check
+        if: matrix.rust == 'stable'
+      - run: cargo clippy --all-features --all-targets --locked -- -D warnings
+        if: matrix.rust == 'stable'
+
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e './python[dev]' -r server/requirements.txt httpx pip-audit
+      - run: python -m pytest python/tests server/tests
+      - run: pip-audit --progress-spinner off

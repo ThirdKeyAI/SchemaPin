@@ -2,7 +2,7 @@
 name = "schemapin"
 version = "1.4.0-alpha.4"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.89"
 description = "Cryptographic schema integrity verification for AI tools - Rust implementation"
 license = "MIT"
 readme = "README.md"
