@@ -303,7 +303,7 @@ pub fn merge_trust_bundles_with_precedence(
 
     for b in bundles {
         let rank = merge_rank(b, authority_precedence);
-        if newest.map_or(true, |n| rank.1 > n) {
+        if newest.is_none_or(|n| rank.1 > n) {
             newest = Some(rank.1);
             newest_raw = b.signed_at.clone().unwrap_or_else(|| b.created_at.clone());
         }

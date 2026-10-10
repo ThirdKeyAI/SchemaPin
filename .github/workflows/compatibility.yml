@@ -46,7 +46,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install --upgrade pip
+      - run: python -m pip install --upgrade pip 'setuptools>=83.0.0' wheel
       - run: python -m pip install -e './python[dev]' -r server/requirements.txt httpx pip-audit
       - run: python -m pytest python/tests server/tests
       - run: pip-audit --progress-spinner off

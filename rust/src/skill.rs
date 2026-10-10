@@ -262,7 +262,7 @@ fn walk_v1(base: &Path, dir: &Path, manifest: &mut BTreeMap<String, String>) -> 
             }
             let rel = path
                 .strip_prefix(base)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
             let rel_str = rel
                 .components()
                 .map(|c| c.as_os_str().to_string_lossy().into_owned())
