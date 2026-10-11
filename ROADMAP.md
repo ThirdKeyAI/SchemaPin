@@ -35,7 +35,7 @@ See release notes for full details.
 
 ## v1.3.0 — AgentSkills Security: Skill Signing (Q1 2026)
 
-The AgentSkills specification (SKILL.md) has become the universal format for AI coding agent skills across Claude Code, Codex, Cursor, Copilot, and OpenClaw — but ships with zero cryptographic security. The ClawHavoc attack (January 2026, 341 malicious skills on ClawHub delivering AMOS infostealer) demonstrated the urgent need for a trust layer.
+The AgentSkills specification (SKILL.md) has become a shared format for coding agent skills, but it does not provide cryptographic security. The ClawHavoc attack (January 2026, 341 malicious skills on ClawHub delivering AMOS infostealer) demonstrated the urgent need for a trust layer.
 
 SchemaPin v1.3.0 extends the existing ECDSA P-256 signing infrastructure to sign and verify file-based skill folders. Same keys, same `.well-known` discovery, new target format.
 

@@ -240,8 +240,7 @@ cross-protocol loop with AgentPin v0.3's `AllowedDomains` typed wrapper
   v1.3 verifiers and existing v1.4 alpha.1/alpha.2 signatures are unaffected.
 - This is items 4 + 5 of the v1.4 roadmap. Items 6–8 (A2A trust bundle
   distribution, scan-aware signatures, cross-agent schema cache) follow in
-  `1.4.0-alpha.4` and `1.4.0` final per the scope doc at
-  `docs/superpowers/specs/2026-05-15-v1.4-remaining-items.md` (local only).
+  `1.4.0-alpha.4` and `1.4.0` final.
 - All four SDKs at `1.4.0-alpha.3` / `1.4.0a3` (Python per PEP 440).
 
 ## [1.4.0-alpha.2] - 2026-05-01

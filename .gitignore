@@ -221,9 +221,6 @@ yarn-error.log*
 .env.test.local
 .env.production.local
 
-# Claude / AI tooling
-.claude/
-docs/superpowers/
 # Private keys must never be committed (SP-18). Test-only key material lives
 # under tests/cross-language/keys/ and is listed explicitly there.
 *_private.pem
